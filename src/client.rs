@@ -289,6 +289,12 @@ impl Client {
         } else {
             (peer, "", key, token)
         };
+        if crate::nemo_public_network_blocked()
+            && (other_server == PUBLIC_SERVER
+                || (other_server.is_empty() && crate::using_public_server()))
+        {
+            bail!("Public RustDesk network is disabled by Nemo company network mode");
+        }
         let (rendezvous_server, servers, contained) = if other_server.is_empty() {
             crate::get_rendezvous_server(1_000).await
         } else {

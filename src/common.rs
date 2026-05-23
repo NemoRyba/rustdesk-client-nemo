@@ -2032,7 +2032,32 @@ pub fn create_symmetric_key_msg(their_pk_b: [u8; 32]) -> (Bytes, Bytes, secretbo
 
 #[inline]
 pub fn using_public_server() -> bool {
+    if nemo_exe_custom_server_configured() {
+        return false;
+    }
     crate::get_custom_rendezvous_server(get_option("custom-rendezvous-server")).is_empty()
+}
+
+#[inline]
+pub fn nemo_exe_custom_server_configured() -> bool {
+    if !config::EXE_RENDEZVOUS_SERVER.read().unwrap().trim().is_empty() {
+        return true;
+    }
+    #[cfg(windows)]
+    if let Ok(lic) = crate::platform::get_license_from_exe_name() {
+        return !lic.host.trim().is_empty();
+    }
+    false
+}
+
+#[inline]
+pub fn nemo_company_network_only() -> bool {
+    get_option("nemo-company-network-only") == "Y"
+}
+
+#[inline]
+pub fn nemo_public_network_blocked() -> bool {
+    nemo_exe_custom_server_configured() || nemo_company_network_only()
 }
 
 pub struct ThrottledInterval {

@@ -26,6 +26,11 @@ const disable_change_id = handler.get_builtin_option("disable-change-id") == "Y"
 const nemo_fit_initial_window_to_content = true;
 const nemo_initial_window_fit_padding = 24;
 
+// Nemo feature: normal launches keep editable/persistent GUI server settings,
+// while custom-name executables such as rustdesk-host=...,key=... lock them.
+const nemo_gui_server_settings = true;
+const nemo_company_network_only_option = "nemo-company-network-only";
+
 // html min-width, min-height not working on mac, below works for all
 if (incoming_only) {
   view.windowMinSize = (scaleIt(incoming_only_width), scaleIt((handler.is_installed() || disable_installation) ? 300 : 390));
@@ -103,10 +108,43 @@ class ConnectStatus: Reactor.Component {
     }
 }
 
+function nemoExeServerSettingsLocked() {
+    return nemo_gui_server_settings && handler.get_license() != "";
+}
+
+function nemoCompanyNetworkOnly() {
+    return handler.get_option(nemo_company_network_only_option) == "Y";
+}
+
+function nemoPublicNetworkBlocked() {
+    return nemoExeServerSettingsLocked() || nemoCompanyNetworkOnly();
+}
+
+function nemoRemoteIdUsesPublicServer(id) {
+    var at = id.indexOf("@");
+    if (at < 0) return false;
+    var server = id.substr(at + 1).split("?")[0].trim().toLowerCase();
+    return server == "public";
+}
+
+function nemoCurrentServerIsPublic() {
+    if (nemoExeServerSettingsLocked()) return false;
+    var options = handler.get_options();
+    return (options["custom-rendezvous-server"] || "").trim() == "";
+}
+
 function createNewConnect(id, type) {
     id = id.replace(/\s/g, "");
     app.remote_id.value = formatId(id);
     if (!id) return;
+    if (nemo_gui_server_settings && nemoRemoteIdUsesPublicServer(id) && nemoPublicNetworkBlocked()) {
+        msgbox("custom-error", "Error", "Public RustDesk network is disabled by Nemo company network mode");
+        return;
+    }
+    if (nemo_gui_server_settings && nemoCompanyNetworkOnly() && nemoCurrentServerIsPublic()) {
+        msgbox("custom-error", "Error", "Company network only requires an ID server");
+        return;
+    }
     var old_id = id;
     id = handler.handle_relay_id(id);
     var force_relay = old_id != id; 
@@ -383,25 +421,44 @@ function getAccountLabelWithHandle() {
 
 // Shared dialog functions
 function open_custom_server_dialog() {
+    if (nemoExeServerSettingsLocked()) {
+        msgbox("custom-nocancel-nook-hasclose", "ID/Relay Server",
+            "<div style='line-height: 2em'>" +
+            "Server settings are locked by this executable name." +
+            handler.get_license() +
+            "</div>",
+            "", function() {}, 260, get_msgbox_width());
+        return;
+    }
     var configOptions = handler.get_options();
     var old_relay = configOptions["relay-server"] || "";
     var old_api = configOptions["api-server"] || "";
     var old_id = configOptions["custom-rendezvous-server"] || "";
     var old_key = configOptions["key"] || "";
-    msgbox("custom-server", "ID/Relay Server", "<div .form .set-password> \
-            <div><span>" + translate("ID Server") + ": </span><input|text .outline-focus name='id' value='" + old_id + "' /></div> \
-            <div><span>" + translate("Relay Server") + ": </span><input|text name='relay' value='" + old_relay + "' /></div> \
-            <div><span>" + translate("API Server") + ": </span><input|text name='api' value='" + old_api + "' /></div> \
-            <div><span>" + translate("Key") + ": </span><input|text name='key' value='" + old_key + "' /></div> \
-            </div> \
-            ", "", function(res=null, show_progress) {
+    var old_company_only = configOptions[nemo_company_network_only_option] == "Y";
+    var company_only_attrs = old_company_only ? { checked: true } : {};
+    msgbox("custom-server", "ID/Relay Server",
+            <div .form .set-password>
+                <div><span>{translate("ID Server")}: </span><input|text .outline-focus name='id' value={old_id} /></div>
+                <div><span>{translate("Relay Server")}: </span><input|text name='relay' value={old_relay} /></div>
+                <div><span>{translate("API Server")}: </span><input|text name='api' value={old_api} /></div>
+                <div><span>{translate("Key")}: </span><input|text name='key' value={old_key} /></div>
+                {nemo_gui_server_settings ? <div><button|checkbox(company_only) {company_only_attrs}>Company network only</button></div> : ""}
+                {nemo_gui_server_settings ? <div style="font-size: 0.9em; color: #888; line-height: 1.4em;">Blocks public RustDesk network IDs such as id@public. Clear ID Server and uncheck this to use the public network again.</div> : ""}
+            </div>,
+            "", function(res=null, show_progress) {
                 if (!res) return;
                 if (typeof show_progress === 'function') show_progress();
                 var id = (res.id || "").trim();
                 var relay = (res.relay || "").trim();
                 var api = (res.api || "").trim().toLowerCase();
                 var key = (res.key || "").trim();
-                if (id == old_id && relay == old_relay && key == old_key && api == old_api) return;
+                var company_only = res.company_only ? true : false;
+                if (company_only && !id) {
+                    if (typeof show_progress === 'function') show_progress(false, "Company network only requires an ID server");
+                    return;
+                }
+                if (id == old_id && relay == old_relay && key == old_key && api == old_api && company_only == old_company_only) return;
                 if (id) {
                     var err = handler.test_if_valid_server(id, true);
                     if (err) { if (typeof show_progress === 'function') show_progress(false, translate("ID Server") + ": " + err); return; }
@@ -420,9 +477,10 @@ function open_custom_server_dialog() {
                 configOptions["relay-server"] = relay;
                 configOptions["api-server"] = api;
                 configOptions["key"] = key;
+                configOptions[nemo_company_network_only_option] = company_only ? "Y" : "";
                 handler.set_options(configOptions);
                 if (typeof show_progress === 'function') show_progress(-1);
-            }, 260, get_msgbox_width());
+            }, 330, get_msgbox_width());
 }
 
 function open_whitelist_dialog() {
@@ -533,7 +591,7 @@ class MyIdMenu: Reactor.Component {
                 <Enhancements />
                 {!disable_settings && <li #allow-remote-config-modification><span>{svg_checkmark}</span>{translate('Enable remote configuration modification')}</li>}
                 {!disable_settings && <div .separator />}
-                {!disable_settings && !hide_server_settings && <li #custom-server>{translate('ID/Relay Server')}</li>}
+                {!disable_settings && !hide_server_settings && <li #custom-server>{translate('ID/Relay Server')}{nemoExeServerSettingsLocked() ? " (locked)" : ""}</li>}
                 {!disable_settings && <li #whitelist title={translate('whitelist_tip')}>{translate('IP Whitelisting')}</li>}
                 {!disable_settings && !hide_proxy_settings && <li #socks5-server>{translate('Socks5/Http(s) Proxy')}</li>}
                 {!disable_settings && !hide_websocket_settings && <li #allow-websocket><span>{svg_checkmark}</span>{translate('Use WebSocket')}</li>}

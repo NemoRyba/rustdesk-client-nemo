@@ -80,6 +80,32 @@ lazy_static::lazy_static! {
     static ref CHILDREN : Children = Default::default();
 }
 
+const NEMO_SERVER_CONFIG_KEYS: &[&str] = &[
+    OPTION_CUSTOM_RENDEZVOUS_SERVER,
+    OPTION_RELAY_SERVER,
+    OPTION_API_SERVER,
+    OPTION_KEY,
+    "nemo-company-network-only",
+];
+
+fn nemo_is_server_config_key(key: &str) -> bool {
+    NEMO_SERVER_CONFIG_KEYS.contains(&key)
+}
+
+fn nemo_preserve_locked_server_options(options: &mut HashMap<String, String>) {
+    if !crate::nemo_exe_custom_server_configured() {
+        return;
+    }
+    let current = Config::get_options();
+    for key in NEMO_SERVER_CONFIG_KEYS {
+        if let Some(value) = current.get(*key) {
+            options.insert((*key).to_owned(), value.clone());
+        } else {
+            options.remove(*key);
+        }
+    }
+}
+
 #[cfg(target_os = "windows")]
 lazy_static::lazy_static! {
     pub static ref IS_FILE_TRANSFER_ENABLED: Arc<Mutex<Option<bool>>> = Arc::new(Mutex::new(None));
@@ -408,7 +434,8 @@ pub fn get_sound_inputs() -> Vec<String> {
 }
 
 #[inline]
-pub fn set_options(m: HashMap<String, String>) {
+pub fn set_options(mut m: HashMap<String, String>) {
+    nemo_preserve_locked_server_options(&mut m);
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
         *OPTIONS.lock().unwrap() = m.clone();
@@ -420,6 +447,9 @@ pub fn set_options(m: HashMap<String, String>) {
 
 #[inline]
 pub fn set_option(key: String, value: String) {
+    if crate::nemo_exe_custom_server_configured() && nemo_is_server_config_key(&key) {
+        return;
+    }
     if &key == "stop-service" {
         #[cfg(target_os = "macos")]
         {
