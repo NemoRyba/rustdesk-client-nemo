@@ -20,6 +20,12 @@ const hide_stop_service = handler.get_builtin_option("hide-stop-service") == "Y"
 const disable_change_permanent_password = handler.get_builtin_option("disable-change-permanent-password") == "Y";
 const disable_change_id = handler.get_builtin_option("disable-change-id") == "Y";
 
+// Nemo feature: keep the initial Windows Sciter client window large enough
+// for startup cards/status text. Runtime layout is untouched; set this to
+// false to return to vanilla startup sizing without removing the code.
+const nemo_fit_initial_window_to_content = true;
+const nemo_initial_window_fit_padding = 24;
+
 // html min-width, min-height not working on mac, below works for all
 if (incoming_only) {
   view.windowMinSize = (scaleIt(incoming_only_width), scaleIt((handler.is_installed() || disable_installation) ? 300 : 390));
@@ -1377,6 +1383,58 @@ function self.closing() {
     return true;
 }
 
+function nemoMax(a, b) {
+    return a > b ? a : b;
+}
+
+function nemoMeasuredHeight(el) {
+    if (!el) return 0;
+    return nemoMax(el.box(#height, #border), el.box(#height, #content));
+}
+
+function nemoInitialWindowFitSize() {
+    var minw = scaleIt(incoming_only ? incoming_only_width : 800);
+    var minh = scaleIt(incoming_only ? 390 : 600);
+    var h = minh;
+
+    h = nemoMax(h, nemoMeasuredHeight($(body)));
+    h = nemoMax(h, nemoMeasuredHeight($(div.app)));
+    h = nemoMax(h, nemoMeasuredHeight($(div.left-pane)));
+    h = nemoMax(h, nemoMeasuredHeight($(div.right-pane)));
+    h = nemoMax(h, nemoMeasuredHeight($(div.right-content)));
+
+    return [minw, h + scaleIt(nemo_initial_window_fit_padding)];
+}
+
+function nemoFitInitialWindowToContent() {
+    if (!nemo_fit_initial_window_to_content || !is_win) return;
+    if (view.windowState == View.WINDOW_MAXIMIZED ||
+        view.windowState == View.WINDOW_FULL_SCREEN) return;
+
+    var fit = nemoInitialWindowFitSize();
+    var (x, y, w, h) = view.box(#rectw, #border, #screen);
+    var targetw = nemoMax(w, fit[0]);
+    var targeth = nemoMax(h, fit[1]);
+    if (targetw == w && targeth == h) return;
+
+    var (sx, sy, sw, sh) = view.screenBox(#workarea, #rectw);
+    if (targetw > sw) targetw = sw;
+    if (targeth > sh) targeth = sh;
+    if (x + targetw > sx + sw) x = sx + sw - targetw;
+    if (y + targeth > sy + sh) y = sy + sh - targeth;
+    if (x < sx) x = sx;
+    if (y < sy) y = sy;
+
+    view.move(x.toInteger(), y.toInteger(), targetw.toInteger(), targeth.toInteger());
+}
+
+function nemoScheduleInitialWindowAutofit() {
+    if (!nemo_fit_initial_window_to_content || !is_win) return;
+    self.timer(1ms, nemoFitInitialWindowToContent);
+    self.timer(250ms, nemoFitInitialWindowToContent);
+    self.timer(1000ms, nemoFitInitialWindowToContent);
+}
+
 function self.ready() {
     var r = handler.get_size();
     if (isReasonableSize(r) && r[2] > 0) {
@@ -1392,6 +1450,7 @@ function self.ready() {
     if (!handler.get_remote_id()) {
         view.focus = $(#remote_id);
     }
+    nemoScheduleInitialWindowAutofit();
     refreshCurrentUser();
     updateTheme();
 }
