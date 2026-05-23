@@ -15,12 +15,20 @@ const OPTION_NEMO_MANAGEMENT_ENABLED: &str = "nemo-management-enabled";
 const OPTION_NEMO_MANAGEMENT_SERVER: &str = "nemo-management-server";
 const OPTION_NEMO_MANAGEMENT_PUBLIC_KEY: &str = "nemo-management-public-key";
 const OPTION_NEMO_MANAGEMENT_LAST_POLICY: &str = "nemo-management-last-policy";
+const OPTION_NEMO_COMPANY_NETWORK_ONLY: &str = "nemo-company-network-only";
+const NEMO_MANAGEMENT_SETTINGS: &[&str] = &[
+    OPTION_NEMO_MANAGEMENT_ENABLED,
+    OPTION_NEMO_MANAGEMENT_SERVER,
+    OPTION_NEMO_MANAGEMENT_PUBLIC_KEY,
+    OPTION_NEMO_COMPANY_NETWORK_ONLY,
+];
 
 #[derive(Clone, Copy)]
 enum ManagedOptionScope {
     Settings,
     Local,
     Display,
+    BuiltIn,
 }
 
 #[derive(Default, Deserialize, Serialize, Clone)]
@@ -177,6 +185,13 @@ fn apply_policy_option(
     value: &str,
     allow_user_override: bool,
 ) {
+    if matches!(scope, ManagedOptionScope::BuiltIn) {
+        config::BUILTIN_SETTINGS
+            .write()
+            .unwrap()
+            .insert(key.to_owned(), value.to_owned());
+        return;
+    }
     let (default_map, overwrite_map) = policy_maps(scope);
     if allow_user_override {
         overwrite_map.write().unwrap().remove(key);
@@ -194,6 +209,10 @@ fn apply_policy_option(
 }
 
 fn clear_policy_option(scope: ManagedOptionScope, key: &str) {
+    if matches!(scope, ManagedOptionScope::BuiltIn) {
+        config::BUILTIN_SETTINGS.write().unwrap().remove(key);
+        return;
+    }
     let (default_map, overwrite_map) = policy_maps(scope);
     default_map.write().unwrap().remove(key);
     overwrite_map.write().unwrap().remove(key);
@@ -215,16 +234,19 @@ fn policy_maps(
             &config::DEFAULT_DISPLAY_SETTINGS,
             &config::OVERWRITE_DISPLAY_SETTINGS,
         ),
+        ManagedOptionScope::BuiltIn => unreachable!(),
     }
 }
 
 fn option_scope(key: &str) -> Option<ManagedOptionScope> {
-    if keys::KEYS_SETTINGS.contains(&key) {
+    if keys::KEYS_SETTINGS.contains(&key) || NEMO_MANAGEMENT_SETTINGS.contains(&key) {
         Some(ManagedOptionScope::Settings)
     } else if keys::KEYS_LOCAL_SETTINGS.contains(&key) {
         Some(ManagedOptionScope::Local)
     } else if keys::KEYS_DISPLAY_SETTINGS.contains(&key) {
         Some(ManagedOptionScope::Display)
+    } else if keys::KEYS_BUILDIN_SETTINGS.contains(&key) {
+        Some(ManagedOptionScope::BuiltIn)
     } else {
         None
     }
