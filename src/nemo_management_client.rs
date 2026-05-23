@@ -1,7 +1,7 @@
 use hbb_common::{
     anyhow::{anyhow, Context},
     bail,
-    config::{keys, Config},
+    config::{self, keys, Config},
     log,
     sodiumoxide::crypto::sign,
     ResultType,
@@ -15,25 +15,18 @@ const OPTION_NEMO_MANAGEMENT_ENABLED: &str = "nemo-management-enabled";
 const OPTION_NEMO_MANAGEMENT_SERVER: &str = "nemo-management-server";
 const OPTION_NEMO_MANAGEMENT_PUBLIC_KEY: &str = "nemo-management-public-key";
 const OPTION_NEMO_MANAGEMENT_LAST_POLICY: &str = "nemo-management-last-policy";
-const MANAGED_OPTION_KEYS: &[&str] = &[
-    keys::OPTION_ENABLE_KEYBOARD,
-    keys::OPTION_ENABLE_CLIPBOARD,
-    keys::OPTION_ENABLE_FILE_TRANSFER,
-    keys::OPTION_ENABLE_CAMERA,
-    keys::OPTION_ENABLE_TERMINAL,
-    keys::OPTION_ENABLE_AUDIO,
-    keys::OPTION_ENABLE_TUNNEL,
-    keys::OPTION_ENABLE_REMOTE_RESTART,
-    keys::OPTION_ENABLE_RECORD_SESSION,
-    keys::OPTION_ENABLE_BLOCK_INPUT,
-    keys::OPTION_ENABLE_PRIVACY_MODE,
-    keys::OPTION_ENABLE_REMOTE_PRINTER,
-    keys::OPTION_ALLOW_REMOTE_CONFIG_MODIFICATION,
-    keys::OPTION_ENABLE_LAN_DISCOVERY,
-];
 
-#[derive(Default, Deserialize, Serialize)]
+#[derive(Clone, Copy)]
+enum ManagedOptionScope {
+    Settings,
+    Local,
+    Display,
+}
+
+#[derive(Default, Deserialize, Serialize, Clone)]
 struct ManagementPolicy {
+    #[serde(default)]
+    allow_user_override: bool,
     #[serde(default)]
     options: HashMap<String, String>,
 }
@@ -139,35 +132,25 @@ fn verified_payload(
 }
 
 fn apply_policy(policy: ManagementPolicy) -> ResultType<()> {
-    let previous = previous_policy_options();
-    for key in previous.keys() {
-        if !policy.options.contains_key(key) && is_managed_option(key) {
-            Config::set_option(key.to_owned(), String::new());
-        }
-    }
+    let previous = previous_policy();
+    clear_policy_maps(&previous);
     for (key, value) in &policy.options {
-        if !is_managed_option(key) {
-            continue;
-        }
-        let Some(normalized) = normalize_policy_value(value) else {
-            continue;
-        };
-        if Config::get_option(key) != normalized {
-            Config::set_option(key.to_owned(), normalized);
+        if let Some(scope) = option_scope(key) {
+            apply_policy_option(scope, key, value, policy.allow_user_override);
         }
     }
     Config::set_option(
         OPTION_NEMO_MANAGEMENT_LAST_POLICY.to_owned(),
         serde_json::to_string(&policy)?,
     );
+    crate::ui_interface::refresh_options();
     Ok(())
 }
 
-fn previous_policy_options() -> HashMap<String, String> {
+fn previous_policy() -> ManagementPolicy {
     serde_json::from_str::<ManagementPolicy>(&Config::get_option(
         OPTION_NEMO_MANAGEMENT_LAST_POLICY,
     ))
-    .map(|policy| policy.options)
     .unwrap_or_default()
 }
 
@@ -180,14 +163,69 @@ fn policy_url(server: &str) -> String {
     }
 }
 
-fn is_managed_option(key: &str) -> bool {
-    MANAGED_OPTION_KEYS.contains(&key)
+fn clear_policy_maps(policy: &ManagementPolicy) {
+    for key in policy.options.keys() {
+        if let Some(scope) = option_scope(key) {
+            clear_policy_option(scope, key);
+        }
+    }
 }
 
-fn normalize_policy_value(value: &str) -> Option<String> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "1" | "y" | "yes" | "true" | "on" | "allow" | "allowed" => Some("Y".to_owned()),
-        "0" | "n" | "no" | "false" | "off" | "deny" | "denied" => Some("N".to_owned()),
-        _ => None,
+fn apply_policy_option(
+    scope: ManagedOptionScope,
+    key: &str,
+    value: &str,
+    allow_user_override: bool,
+) {
+    let (default_map, overwrite_map) = policy_maps(scope);
+    if allow_user_override {
+        overwrite_map.write().unwrap().remove(key);
+        default_map
+            .write()
+            .unwrap()
+            .insert(key.to_owned(), value.to_owned());
+    } else {
+        default_map.write().unwrap().remove(key);
+        overwrite_map
+            .write()
+            .unwrap()
+            .insert(key.to_owned(), value.to_owned());
+    }
+}
+
+fn clear_policy_option(scope: ManagedOptionScope, key: &str) {
+    let (default_map, overwrite_map) = policy_maps(scope);
+    default_map.write().unwrap().remove(key);
+    overwrite_map.write().unwrap().remove(key);
+}
+
+fn policy_maps(
+    scope: ManagedOptionScope,
+) -> (
+    &'static std::sync::RwLock<HashMap<String, String>>,
+    &'static std::sync::RwLock<HashMap<String, String>>,
+) {
+    match scope {
+        ManagedOptionScope::Settings => (&config::DEFAULT_SETTINGS, &config::OVERWRITE_SETTINGS),
+        ManagedOptionScope::Local => (
+            &config::DEFAULT_LOCAL_SETTINGS,
+            &config::OVERWRITE_LOCAL_SETTINGS,
+        ),
+        ManagedOptionScope::Display => (
+            &config::DEFAULT_DISPLAY_SETTINGS,
+            &config::OVERWRITE_DISPLAY_SETTINGS,
+        ),
+    }
+}
+
+fn option_scope(key: &str) -> Option<ManagedOptionScope> {
+    if keys::KEYS_SETTINGS.contains(&key) {
+        Some(ManagedOptionScope::Settings)
+    } else if keys::KEYS_LOCAL_SETTINGS.contains(&key) {
+        Some(ManagedOptionScope::Local)
+    } else if keys::KEYS_DISPLAY_SETTINGS.contains(&key) {
+        Some(ManagedOptionScope::Display)
+    } else {
+        None
     }
 }

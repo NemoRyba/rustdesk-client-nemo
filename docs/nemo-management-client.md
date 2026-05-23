@@ -21,7 +21,13 @@ If the stored public key is set, the client requires the server response to
 contain a valid signed payload from the hbbs key. If the public key is empty,
 the client applies the unsigned payload for early lab testing.
 
-The first managed controls reuse existing RustDesk host-side settings:
+Managed controls reuse existing RustDesk setting keys. By default the server is
+authoritative: policy values are inserted into RustDesk's fixed setting maps,
+so the GUI treats those controls as locked and local writes are ignored. If the
+server policy sets `allow_user_override` to `true`, the values become defaults
+instead and users may override them locally.
+
+The quick controls include:
 
 - `enable-keyboard`
 - `enable-clipboard`
@@ -37,6 +43,11 @@ The first managed controls reuse existing RustDesk host-side settings:
 - `enable-remote-printer`
 - `allow-remote-config-modification`
 - `enable-lan-discovery`
+
+The advanced policy editor can also set other recognized global, local, and
+display option keys such as server settings, proxy settings, theme/language,
+codec/FPS/display preferences, approval mode, auto update, whitelist, and
+recording options.
 
 Future work: replace polling with a mutually authenticated encrypted control
 channel if we need low-latency commands or richer device integrations.

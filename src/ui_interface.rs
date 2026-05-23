@@ -106,6 +106,12 @@ fn nemo_preserve_locked_server_options(options: &mut HashMap<String, String>) {
     }
 }
 
+fn nemo_restore_fixed_options(options: &mut HashMap<String, String>) {
+    for (key, value) in config::OVERWRITE_SETTINGS.read().unwrap().iter() {
+        options.insert(key.clone(), value.clone());
+    }
+}
+
 #[cfg(target_os = "windows")]
 lazy_static::lazy_static! {
     pub static ref IS_FILE_TRANSFER_ENABLED: Arc<Mutex<Option<bool>>> = Arc::new(Mutex::new(None));
@@ -271,6 +277,9 @@ pub fn get_builtin_option(key: &str) -> String {
 
 #[inline]
 pub fn set_local_option(key: String, value: String) {
+    if is_option_fixed(&key) {
+        return;
+    }
     LocalConfig::set_option(key.clone(), value);
 }
 
@@ -339,6 +348,9 @@ pub fn get_peer_flutter_option(id: String, name: String) -> String {
 #[inline]
 #[cfg(feature = "flutter")]
 pub fn set_peer_flutter_option(id: String, name: String, value: String) {
+    if is_option_fixed(&name) {
+        return;
+    }
     let mut c = PeerConfig::load(&id);
     if value.is_empty() {
         c.ui_flutter.remove(&name);
@@ -350,6 +362,9 @@ pub fn set_peer_flutter_option(id: String, name: String, value: String) {
 
 #[inline]
 pub fn set_peer_option(id: String, name: String, value: String) {
+    if is_option_fixed(&name) {
+        return;
+    }
     let mut c = PeerConfig::load(&id);
     if value.is_empty() {
         c.options.remove(&name);
@@ -436,6 +451,7 @@ pub fn get_sound_inputs() -> Vec<String> {
 #[inline]
 pub fn set_options(mut m: HashMap<String, String>) {
     nemo_preserve_locked_server_options(&mut m);
+    nemo_restore_fixed_options(&mut m);
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
         *OPTIONS.lock().unwrap() = m.clone();
@@ -447,6 +463,9 @@ pub fn set_options(mut m: HashMap<String, String>) {
 
 #[inline]
 pub fn set_option(key: String, value: String) {
+    if is_option_fixed(&key) {
+        return;
+    }
     if crate::nemo_exe_custom_server_configured() && nemo_is_server_config_key(&key) {
         return;
     }

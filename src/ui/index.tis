@@ -116,6 +116,14 @@ function nemoExeServerSettingsLocked() {
     return nemo_gui_server_settings && handler.get_license() != "";
 }
 
+function nemoManagementServerSettingsLocked() {
+    return handler.is_option_fixed("custom-rendezvous-server")
+        || handler.is_option_fixed("relay-server")
+        || handler.is_option_fixed("api-server")
+        || handler.is_option_fixed("key")
+        || handler.is_option_fixed(nemo_company_network_only_option);
+}
+
 function nemoCompanyNetworkOnly() {
     return handler.get_option(nemo_company_network_only_option) == "Y";
 }
@@ -434,6 +442,12 @@ function open_custom_server_dialog() {
             "", function() {}, 260, get_msgbox_width());
         return;
     }
+    if (nemoManagementServerSettingsLocked()) {
+        msgbox("custom-nocancel-nook-hasclose", "ID/Relay Server",
+            "<div style='line-height: 2em'>Server settings are locked by management policy.</div>",
+            "", function() {}, 220, get_msgbox_width());
+        return;
+    }
     var configOptions = handler.get_options();
     var old_relay = configOptions["relay-server"] || "";
     var old_api = configOptions["api-server"] || "";
@@ -630,7 +644,7 @@ class MyIdMenu: Reactor.Component {
                 <Enhancements />
                 {!disable_settings && <li #allow-remote-config-modification><span>{svg_checkmark}</span>{translate('Enable remote configuration modification')}</li>}
                 {!disable_settings && <div .separator />}
-                {!disable_settings && !hide_server_settings && <li #custom-server>{translate('ID/Relay Server')}{nemoExeServerSettingsLocked() ? " (locked)" : ""}</li>}
+                {!disable_settings && !hide_server_settings && <li #custom-server>{translate('ID/Relay Server')}{(nemoExeServerSettingsLocked() || nemoManagementServerSettingsLocked()) ? " (locked)" : ""}</li>}
                 {!disable_settings && !hide_server_settings && nemo_management_settings && <li #nemo-management>Management</li>}
                 {!disable_settings && <li #whitelist title={translate('whitelist_tip')}>{translate('IP Whitelisting')}</li>}
                 {!disable_settings && !hide_proxy_settings && <li #socks5-server>{translate('Socks5/Http(s) Proxy')}</li>}

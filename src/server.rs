@@ -587,6 +587,9 @@ pub async fn start_server(is_server: bool, no_server: bool) {
         hbb_common::platform::windows::start_cpu_performance_monitor();
     });
 
+    #[cfg(feature = "nemo-management-client")]
+    crate::nemo_management_client::start();
+
     if is_server {
         crate::common::set_server_running(true);
         std::thread::spawn(move || {
@@ -610,8 +613,6 @@ pub async fn start_server(is_server: bool, no_server: bool) {
         crate::platform::try_kill_broker();
         #[cfg(feature = "hwcodec")]
         scrap::hwcodec::start_check_process();
-        #[cfg(feature = "nemo-management-client")]
-        crate::nemo_management_client::start();
         crate::RendezvousMediator::start_all().await;
     } else {
         match crate::ipc::connect(1000, "").await {
