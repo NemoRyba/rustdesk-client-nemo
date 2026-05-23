@@ -10,6 +10,8 @@ It stores:
 - `nemo-management-enabled`
 - `nemo-management-server`
 - `nemo-management-public-key`
+- `nemo-outbound-enabled`
+- `nemo-outbound-targets`
 
 When enabled, the controlled-side RustDesk service polls:
 
@@ -43,6 +45,19 @@ The quick controls include:
 - `enable-remote-printer`
 - `allow-remote-config-modification`
 - `enable-lan-discovery`
+- `nemo-outbound-enabled`
+- `nemo-outbound-targets`
+
+`nemo-outbound-enabled=N` disables outgoing connections in the Sciter main
+window and in the Rust connection path. `nemo-outbound-targets` limits outgoing
+connections to exact target IDs separated by comma, semicolon, or whitespace;
+`*` allows every target.
+
+Updated clients also identify their local RustDesk ID and UUID during
+rendezvous using existing protocol fields. That lets a Nemo hbbs reject a
+blocked controller or disallowed target before the connection reaches the
+password prompt, while keeping the upstream `hbb_common` protobuf schema
+unchanged.
 
 The advanced policy editor can also set other recognized global, local, and
 display option keys such as server settings, proxy settings, theme/language,

@@ -16,11 +16,17 @@ const OPTION_NEMO_MANAGEMENT_SERVER: &str = "nemo-management-server";
 const OPTION_NEMO_MANAGEMENT_PUBLIC_KEY: &str = "nemo-management-public-key";
 const OPTION_NEMO_MANAGEMENT_LAST_POLICY: &str = "nemo-management-last-policy";
 const OPTION_NEMO_COMPANY_NETWORK_ONLY: &str = "nemo-company-network-only";
+const OPTION_NEMO_PERMANENT_PASSWORD: &str = "nemo-permanent-password";
+const OPTION_NEMO_OUTBOUND_ENABLED: &str = "nemo-outbound-enabled";
+const OPTION_NEMO_OUTBOUND_TARGETS: &str = "nemo-outbound-targets";
+const MANAGED_SECRET_PLACEHOLDER: &str = "<managed-secret>";
 const NEMO_MANAGEMENT_SETTINGS: &[&str] = &[
     OPTION_NEMO_MANAGEMENT_ENABLED,
     OPTION_NEMO_MANAGEMENT_SERVER,
     OPTION_NEMO_MANAGEMENT_PUBLIC_KEY,
     OPTION_NEMO_COMPANY_NETWORK_ONLY,
+    OPTION_NEMO_OUTBOUND_ENABLED,
+    OPTION_NEMO_OUTBOUND_TARGETS,
 ];
 
 #[derive(Clone, Copy)]
@@ -142,14 +148,18 @@ fn verified_payload(
 fn apply_policy(policy: ManagementPolicy) -> ResultType<()> {
     let previous = previous_policy();
     clear_policy_maps(&previous);
+    apply_permanent_password(&policy);
     for (key, value) in &policy.options {
+        if key == OPTION_NEMO_PERMANENT_PASSWORD {
+            continue;
+        }
         if let Some(scope) = option_scope(key) {
             apply_policy_option(scope, key, value, policy.allow_user_override);
         }
     }
     Config::set_option(
         OPTION_NEMO_MANAGEMENT_LAST_POLICY.to_owned(),
-        serde_json::to_string(&policy)?,
+        serde_json::to_string(&policy_for_storage(&policy))?,
     );
     crate::ui_interface::refresh_options();
     Ok(())
@@ -160,6 +170,41 @@ fn previous_policy() -> ManagementPolicy {
         OPTION_NEMO_MANAGEMENT_LAST_POLICY,
     ))
     .unwrap_or_default()
+}
+
+fn apply_permanent_password(policy: &ManagementPolicy) {
+    let Some(password) = policy.options.get(OPTION_NEMO_PERMANENT_PASSWORD) else {
+        return;
+    };
+    if crate::common::is_server() {
+        Config::set_permanent_password(password);
+        log::info!("Nemo management applied incoming access password");
+    } else if crate::ui_interface::set_permanent_password_with_result(password.to_owned()) {
+        log::info!("Nemo management applied incoming access password through IPC");
+    } else {
+        log::warn!("Nemo management failed to apply incoming access password");
+    }
+}
+
+fn policy_for_storage(policy: &ManagementPolicy) -> ManagementPolicy {
+    let mut stored = policy.clone();
+    for key in secret_policy_keys() {
+        if stored.options.contains_key(*key) {
+            stored
+                .options
+                .insert((*key).to_owned(), MANAGED_SECRET_PLACEHOLDER.to_owned());
+        }
+    }
+    stored
+}
+
+fn secret_policy_keys() -> &'static [&'static str] {
+    &[
+        OPTION_NEMO_PERMANENT_PASSWORD,
+        keys::OPTION_DEFAULT_CONNECT_PASSWORD,
+        keys::OPTION_PROXY_PASSWORD,
+        keys::OPTION_PRESET_ADDRESS_BOOK_PASSWORD,
+    ]
 }
 
 fn policy_url(server: &str) -> String {

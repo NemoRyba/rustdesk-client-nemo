@@ -34,6 +34,8 @@ const nemo_management_settings = true;
 const nemo_management_enabled_option = "nemo-management-enabled";
 const nemo_management_server_option = "nemo-management-server";
 const nemo_management_public_key_option = "nemo-management-public-key";
+const nemo_outbound_enabled_option = "nemo-outbound-enabled";
+const nemo_outbound_targets_option = "nemo-outbound-targets";
 
 // html min-width, min-height not working on mac, below works for all
 if (incoming_only) {
@@ -145,10 +147,29 @@ function nemoCurrentServerIsPublic() {
     return (options["custom-rendezvous-server"] || "").trim() == "";
 }
 
+function nemoOutboundEnabled() {
+    return handler.get_option(nemo_outbound_enabled_option) != "N";
+}
+
+function nemoOutboundTargetAllowed(id) {
+    var targets = (handler.get_option(nemo_outbound_targets_option) || "").trim();
+    if (!targets) return true;
+    var parts = targets.split(/[,\s;]+/);
+    for (var target in parts) {
+        target = (target || "").trim();
+        if (target == "*" || target == id) return true;
+    }
+    return false;
+}
+
 function createNewConnect(id, type) {
     id = id.replace(/\s/g, "");
     app.remote_id.value = formatId(id);
     if (!id) return;
+    if (!nemoOutboundEnabled()) {
+        msgbox("custom-error", "Error", "Outgoing connections are disabled by Nemo management policy");
+        return;
+    }
     if (nemo_gui_server_settings && nemoRemoteIdUsesPublicServer(id) && nemoPublicNetworkBlocked()) {
         msgbox("custom-error", "Error", "Public RustDesk network is disabled by Nemo company network mode");
         return;
@@ -162,6 +183,10 @@ function createNewConnect(id, type) {
     var force_relay = old_id != id; 
     if (id == my_id) {
         msgbox("custom-error", "Error", "You cannot connect to your own computer");
+        return;
+    }
+    if (!nemoOutboundTargetAllowed(id)) {
+        msgbox("custom-error", "Error", "Target is not allowed by Nemo management policy");
         return;
     }
     handler.set_remote_id(id);
@@ -864,8 +889,8 @@ class App: Reactor.Component
                             <div .title>{translate('Control Remote Desktop')}</div>
                             <ID @{this.remote_id} />
                             <div .right-buttons>
-                                <button .button .outline #file-transfer>{translate('Transfer file')}</button>
-                                <button .button #connect>{translate('Connect')}</button>
+                                <button .button .outline #file-transfer disabled={nemoOutboundEnabled() ? "false" : "true"}>{translate('Transfer file')}</button>
+                                <button .button #connect disabled={nemoOutboundEnabled() ? "false" : "true"}>{translate('Connect')}</button>
                             </div>
                         </div>
                         <MultipleSessions @{this.multipleSessions} />
