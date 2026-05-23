@@ -17,12 +17,16 @@ const OPTION_NEMO_MANAGEMENT_PUBLIC_KEY: &str = "nemo-management-public-key";
 const OPTION_NEMO_MANAGEMENT_LAST_POLICY: &str = "nemo-management-last-policy";
 const OPTION_NEMO_COMPANY_NETWORK_ONLY: &str = "nemo-company-network-only";
 const OPTION_NEMO_PERMANENT_PASSWORD: &str = "nemo-permanent-password";
+const OPTION_NEMO_OUTBOUND_ENABLED: &str = "nemo-outbound-enabled";
+const OPTION_NEMO_OUTBOUND_TARGETS: &str = "nemo-outbound-targets";
 const MANAGED_SECRET_PLACEHOLDER: &str = "<managed-secret>";
 const NEMO_MANAGEMENT_SETTINGS: &[&str] = &[
     OPTION_NEMO_MANAGEMENT_ENABLED,
     OPTION_NEMO_MANAGEMENT_SERVER,
     OPTION_NEMO_MANAGEMENT_PUBLIC_KEY,
     OPTION_NEMO_COMPANY_NETWORK_ONLY,
+    OPTION_NEMO_OUTBOUND_ENABLED,
+    OPTION_NEMO_OUTBOUND_TARGETS,
 ];
 
 #[derive(Clone, Copy)]

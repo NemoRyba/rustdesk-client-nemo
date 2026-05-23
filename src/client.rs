@@ -98,6 +98,8 @@ pub const MILLI1: Duration = Duration::from_millis(1);
 pub const SEC30: Duration = Duration::from_secs(30);
 pub const VIDEO_QUEUE_SIZE: usize = 120;
 const MAX_DECODE_FAIL_COUNTER: usize = 3;
+const OPTION_NEMO_OUTBOUND_ENABLED: &str = "nemo-outbound-enabled";
+const OPTION_NEMO_OUTBOUND_TARGETS: &str = "nemo-outbound-targets";
 
 #[cfg(target_os = "linux")]
 pub const LOGIN_MSG_DESKTOP_NOT_INITED: &str = "Desktop env is not inited";
@@ -184,6 +186,39 @@ pub fn get_key_state(key: enigo::Key) -> bool {
     ENIGO.lock().unwrap().get_key_state(key)
 }
 
+fn check_nemo_outbound_policy(peer: &str) -> ResultType<()> {
+    if Config::get_option(OPTION_NEMO_OUTBOUND_ENABLED) == "N" {
+        bail!("Outgoing connections are disabled by Nemo management policy");
+    }
+    let targets = Config::get_option(OPTION_NEMO_OUTBOUND_TARGETS);
+    if targets.trim().is_empty() {
+        return Ok(());
+    }
+    let peer = peer.trim();
+    let allowed = targets
+        .split(|ch: char| ch == ',' || ch == ';' || ch.is_whitespace())
+        .map(str::trim)
+        .filter(|target| !target.is_empty())
+        .any(|target| target == "*" || target == peer);
+    if allowed {
+        Ok(())
+    } else {
+        bail!("Target is not allowed by Nemo management policy")
+    }
+}
+
+fn nemo_source_identity_header() -> String {
+    format!(
+        "nemo-source-v1:{}:{}",
+        Config::get_id(),
+        base64::encode(hbb_common::get_uuid(), base64::Variant::Original)
+    )
+}
+
+fn nemo_version_with_source() -> String {
+    format!("{} {}", crate::VERSION, nemo_source_identity_header())
+}
+
 impl Client {
     const CLIENT_CLIPBOARD_NAME: &'static str = "client-clipboard";
 
@@ -253,6 +288,7 @@ impl Client {
         if config::is_incoming_only() {
             bail!("Incoming only mode");
         }
+        check_nemo_outbound_policy(peer)?;
         // to-do: remember the port for each peer, so that we can retry easier
         if hbb_common::is_ip_str(peer) {
             return Ok((
@@ -469,7 +505,7 @@ impl Client {
             nat_type: nat_type.into(),
             licence_key: key.to_owned(),
             conn_type: conn_type.into(),
-            version: crate::VERSION.to_owned(),
+            version: nemo_version_with_source(),
             udp_port: udp_nat_port as _,
             force_relay: interface.is_force_relay(),
             socket_addr_v6: ipv6.1.unwrap_or_default(),
@@ -880,6 +916,7 @@ impl Client {
                 token: token.to_owned(),
                 uuid: uuid.clone(),
                 relay_server: relay_server.clone(),
+                licence_key: nemo_source_identity_header(),
                 secure,
                 ..Default::default()
             });
