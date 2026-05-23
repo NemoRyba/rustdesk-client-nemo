@@ -30,6 +30,10 @@ const nemo_initial_window_fit_padding = 24;
 // while custom-name executables such as rustdesk-host=...,key=... lock them.
 const nemo_gui_server_settings = true;
 const nemo_company_network_only_option = "nemo-company-network-only";
+const nemo_management_settings = true;
+const nemo_management_enabled_option = "nemo-management-enabled";
+const nemo_management_server_option = "nemo-management-server";
+const nemo_management_public_key_option = "nemo-management-public-key";
 
 // html min-width, min-height not working on mac, below works for all
 if (incoming_only) {
@@ -483,6 +487,41 @@ function open_custom_server_dialog() {
             }, 330, get_msgbox_width());
 }
 
+function open_nemo_management_dialog() {
+    var configOptions = handler.get_options();
+    var old_enabled = configOptions[nemo_management_enabled_option] == "Y";
+    var old_server = configOptions[nemo_management_server_option] || "";
+    var old_public_key = configOptions[nemo_management_public_key_option] || "";
+    var enabled_attrs = old_enabled ? { checked: true } : {};
+    msgbox("custom-server", "Management",
+            <div .form .set-password>
+                <div><span>Management Server: </span><input|text .outline-focus name='server' value={old_server} /></div>
+                <div><span>Public Key: </span><input|text name='public_key' value={old_public_key} /></div>
+                <div><button|checkbox(enabled) {enabled_attrs}>Enable management control</button></div>
+            </div>,
+            "", function(res=null, show_progress) {
+                if (!res) return;
+                if (typeof show_progress === 'function') show_progress();
+                var enabled = res.enabled ? true : false;
+                var server = (res.server || "").trim();
+                var public_key = (res.public_key || "").trim();
+                if (enabled && !server) {
+                    if (typeof show_progress === 'function') show_progress(false, "Management Server is required");
+                    return;
+                }
+                if (server && 0 != server.indexOf("https://") && 0 != server.indexOf("http://")) {
+                    if (typeof show_progress === 'function') show_progress(false, "Management Server: " + translate("invalid_http"));
+                    return;
+                }
+                if (enabled == old_enabled && server == old_server && public_key == old_public_key) return;
+                configOptions[nemo_management_enabled_option] = enabled ? "Y" : "";
+                configOptions[nemo_management_server_option] = server;
+                configOptions[nemo_management_public_key_option] = public_key;
+                handler.set_options(configOptions);
+                if (typeof show_progress === 'function') show_progress(-1);
+            }, 330, get_msgbox_width());
+}
+
 function open_whitelist_dialog() {
     var is_opt_fixed = handler.is_option_fixed("whitelist");
     var v = handler.get_option("whitelist");
@@ -592,6 +631,7 @@ class MyIdMenu: Reactor.Component {
                 {!disable_settings && <li #allow-remote-config-modification><span>{svg_checkmark}</span>{translate('Enable remote configuration modification')}</li>}
                 {!disable_settings && <div .separator />}
                 {!disable_settings && !hide_server_settings && <li #custom-server>{translate('ID/Relay Server')}{nemoExeServerSettingsLocked() ? " (locked)" : ""}</li>}
+                {!disable_settings && !hide_server_settings && nemo_management_settings && <li #nemo-management>Management</li>}
                 {!disable_settings && <li #whitelist title={translate('whitelist_tip')}>{translate('IP Whitelisting')}</li>}
                 {!disable_settings && !hide_proxy_settings && <li #socks5-server>{translate('Socks5/Http(s) Proxy')}</li>}
                 {!disable_settings && !hide_websocket_settings && <li #allow-websocket><span>{svg_checkmark}</span>{translate('Use WebSocket')}</li>}
@@ -690,6 +730,8 @@ class MyIdMenu: Reactor.Component {
             open_whitelist_dialog();
         } else if (me.id == "custom-server") {
             open_custom_server_dialog();
+        } else if (me.id == "nemo-management") {
+            open_nemo_management_dialog();
         } else if (me.id == "socks5-server") {
             open_proxy_dialog();
         } else if (me.id == "disable-udp") {
@@ -1418,6 +1460,11 @@ event click $(#open-settings) (_, me) {
 event click $(li#custom-server) (_, me) {
     if (!outgoing_only) return;
     open_custom_server_dialog();
+}
+
+event click $(li#nemo-management) (_, me) {
+    if (!outgoing_only) return;
+    open_nemo_management_dialog();
 }
 
 event click $(li#whitelist) (_, me) {

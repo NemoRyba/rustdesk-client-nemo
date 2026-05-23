@@ -38,6 +38,11 @@ pub mod flutter;
 pub mod flutter_ffi;
 use common::*;
 mod auth_2fa;
+#[cfg(all(
+    feature = "nemo-management-client",
+    not(any(target_os = "android", target_os = "ios"))
+))]
+mod nemo_management_client;
 #[cfg(feature = "cli")]
 pub mod cli;
 #[cfg(not(target_os = "ios"))]
