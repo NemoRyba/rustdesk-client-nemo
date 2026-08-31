@@ -1,7 +1,7 @@
 use hbb_common::{
     anyhow::{anyhow, Context},
     bail,
-    config::{self, keys, Config},
+    config::{self, keys, Config, LocalConfig},
     log,
     sodiumoxide::crypto::sign,
     ResultType,
@@ -31,6 +31,15 @@ const NEMO_MANAGEMENT_SETTINGS: &[&str] = &[
     // policy has allow_user_override the user may change it locally, otherwise
     // it is locked (see apply_policy_option).
     "nemo-alias",
+    // Identity-based policy signalling (read by the UI login gate).
+    // NOTE: "nemo-require-login" is deliberately NOT managed here. Managed keys are
+    // applied into OVERWRITE_SETTINGS (in-memory only), and is_option_can_save()
+    // then refuses to persist them, so Config::set_option would silently drop the
+    // flag. The login gate must know it at startup BEFORE the first policy poll
+    // (otherwise the full UI flashes for ~10s before the gate appears), so
+    // apply_policy() persists it explicitly to CONFIG2.options via set_option --
+    // which only works while the key is absent from OVERWRITE_SETTINGS.
+    "nemo-logged-in-user",
 ];
 
 #[derive(Clone, Copy)]
@@ -56,6 +65,9 @@ struct ClientPolicyRequest {
     policy_version: String,
     /// Logged-in user's session token, so the server returns that user's policy.
     access_token: String,
+    /// This peer's hostname, so the server can label the address book with which
+    /// computer an ID belongs to.
+    hostname: String,
 }
 
 #[derive(Deserialize)]
@@ -110,8 +122,11 @@ fn sync_policy() -> ResultType<()> {
         uuid: crate::common::encode64(hbb_common::get_uuid()),
         policy_version: Config::get_option(OPTION_NEMO_MANAGEMENT_LAST_POLICY),
         // Identity-based policy: send the logged-in user's token so the server
-        // returns that user's policy (empty when nobody is logged in).
-        access_token: Config::get_option("access_token"),
+        // returns that user's policy (empty when nobody is logged in). The token
+        // is written by the UI login via set_local_option -> LOCAL config.
+        access_token: LocalConfig::get_option("access_token"),
+        // Report our hostname so the server can label the address book.
+        hostname: crate::common::hostname(),
     };
     let body = serde_json::to_string(&request)?;
     let headers = serde_json::json!({
@@ -134,7 +149,33 @@ fn sync_policy() -> ResultType<()> {
     if payload.id != id {
         bail!("management policy id mismatch");
     }
-    apply_policy(payload.policy)
+    // Read the two signals before apply_policy() consumes the payload. The server
+    // inserts `nemo-logged-in-user` iff it resolved our token to a live session,
+    // and inserts `nemo-require-login=Y` only on the no-user path. So "require
+    // login, but the server saw no user" means our token was NOT recognised.
+    let server_saw_user = payload.policy.options.contains_key("nemo-logged-in-user");
+    let server_requires_login = payload
+        .policy
+        .options
+        .get("nemo-require-login")
+        .map_or(false, |v| v == "Y");
+    apply_policy(payload.policy)?;
+    // Stale-session self-heal: we polled WITH a token, yet the server signalled
+    // require-login and did not recognise us (server restart wiped its in-memory
+    // sessions, or the user was disabled/expired). Drop the dead token so the UI
+    // login gate returns instead of the client believing it is still signed in.
+    // Race-safe: only clear if the stored token is still exactly the one we polled
+    // with, so a login that completed during this request is never discarded.
+    if server_requires_login
+        && !server_saw_user
+        && !request.access_token.is_empty()
+        && LocalConfig::get_option("access_token") == request.access_token
+    {
+        log::info!("Nemo management: session token rejected by server; clearing stale login");
+        LocalConfig::set_option("access_token".to_owned(), String::new());
+        crate::ui_interface::refresh_options();
+    }
+    Ok(())
 }
 
 fn verified_payload(
@@ -177,6 +218,17 @@ fn apply_policy(policy: ManagementPolicy) -> ResultType<()> {
     Config::set_option(
         OPTION_NEMO_MANAGEMENT_LAST_POLICY.to_owned(),
         serde_json::to_string(&policy_for_storage(&policy))?,
+    );
+    // Persist the require-login flag durably so the UI login gate is correct at
+    // the very next startup, before the first policy poll completes (avoids a
+    // flash of the full UI when login is required).
+    Config::set_option(
+        "nemo-require-login".to_owned(),
+        policy
+            .options
+            .get("nemo-require-login")
+            .cloned()
+            .unwrap_or_default(),
     );
     crate::ui_interface::refresh_options();
     Ok(())

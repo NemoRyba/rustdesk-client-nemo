@@ -112,6 +112,13 @@ pub fn translate(name: String) -> String {
 pub fn translate_locale(name: String, locale: &str) -> String {
     let locale = locale.to_lowercase();
     let mut lang = hbb_common::config::LocalConfig::get_option("lang").to_lowercase();
+    // Nemo: German is the default UI language for this fork. Users can still
+    // pick another language via Settings > Language, which sets the "lang"
+    // option and overrides this default. "default" is what the custom-client
+    // picker writes for the built-in default.
+    if lang.is_empty() || lang == "default" {
+        lang = "de".to_owned();
+    }
     if lang.is_empty() {
         // zh_CN on Linux, zh-Hans-CN on mac, zh_CN_#Hans on Android
         if locale.starts_with("zh") {

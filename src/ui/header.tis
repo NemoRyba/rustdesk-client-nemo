@@ -139,19 +139,21 @@ class Header: Reactor.Component {
         if (is_osx) style += "margin:*";
         self.timer(1ms, updatePrivacyMode);
         self.timer(1ms, toggleMenuState);
+        var conn_label = this.direct_connection ? translate("Direct") : translate("Relay");
         return <div style={style}>
-            {is_osx || is_xfce ? "" : <span #fullscreen>{svg_fullscreen}</span>}
+            {is_osx || is_xfce ? "" : <span #fullscreen title={translate("Fullscreen")}>{svg_fullscreen}</span>}
             <div #screens>
                 <span #secure title={title_conn}>{icon_conn}</span>
                 <div .remote-id>{get_id()}</div>
                 <div style="flow:horizontal;border-spacing: 0.5em;">{screens}</div>
                 {this.renderGlobalScreens()}
             </div>
-            <span #chat>{svg_chat}</span>
-            <span #action>{svg_action}</span>
-            <span #display>{svg_display}</span>
-            <span #keyboard>{svg_keyboard}</span>
-            {recording_enabled ? <span #recording>{recording ? svg_recording_on : svg_recording_off}</span> : ""}
+            {this.stream_type ? <span #conn-type class={this.direct_connection ? "direct" : "relay"} title={title_conn}>{conn_label}</span> : ""}
+            <span #chat title={translate("Chat")}>{svg_chat}</span>
+            <span #action title={translate("Actions")}>{svg_action}</span>
+            <span #display title={translate("Display")}>{svg_display}</span>
+            <span #keyboard title={translate("Keyboard")}>{svg_keyboard}</span>
+            {recording_enabled ? <span #recording title={translate("Recording")}>{recording ? svg_recording_on : svg_recording_off}</span> : ""}
             {this.renderKeyboardPop()}
             {this.renderDisplayPop()}
             {this.renderActionPop()}
@@ -473,7 +475,7 @@ function handle_custom_image_quality() {
 function toggleMenuState() {
     var values = [];
     var q = handler.get_image_quality();
-    if (!q) q = "balanced";
+    if (!q) q = "low";
     values.push(q);
     var s = handler.get_view_style();
     if (!s) s = "original";

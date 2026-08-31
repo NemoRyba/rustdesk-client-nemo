@@ -188,7 +188,7 @@ pub fn get_key_state(key: enigo::Key) -> bool {
 
 fn check_nemo_outbound_policy(peer: &str) -> ResultType<()> {
     if Config::get_option(OPTION_NEMO_OUTBOUND_ENABLED) == "N" {
-        bail!("Outgoing connections are disabled by Nemo management policy");
+        bail!("Outgoing connections are disabled by TBF policy");
     }
     let targets = Config::get_option(OPTION_NEMO_OUTBOUND_TARGETS);
     if targets.trim().is_empty() {
@@ -203,7 +203,7 @@ fn check_nemo_outbound_policy(peer: &str) -> ResultType<()> {
     if allowed {
         Ok(())
     } else {
-        bail!("Target is not allowed by Nemo management policy")
+        bail!("Target is not allowed by TBF policy")
     }
 }
 
@@ -215,7 +215,9 @@ fn nemo_source_identity_header() -> String {
     );
     // Append the logged-in user's session token (if any) so the server can
     // enforce the per-user connection ACL and require-login at the punch.
-    let token = Config::get_option("access_token");
+    // The token is written by the UI login via set_local_option, so it lives in
+    // LOCAL config (RustDesk_local.toml) -- NOT the main config.
+    let token = LocalConfig::get_option("access_token");
     if token.is_empty() {
         base
     } else {
@@ -337,7 +339,7 @@ impl Client {
             && (other_server == PUBLIC_SERVER
                 || (other_server.is_empty() && crate::using_public_server()))
         {
-            bail!("Public RustDesk network is disabled by Nemo company network mode");
+            bail!("Public network access is disabled by TBF company network mode");
         }
         let (rendezvous_server, servers, contained) = if other_server.is_empty() {
             crate::get_rendezvous_server(1_000).await

@@ -350,6 +350,9 @@ class SessionList: Reactor.Component {
         var hostname = s[2] || s.hostname || "";
         var platform = s[3] || s.platform || "";
         var alias = s[4] || s.alias || "";
+        // Clean secondary label: "user@host", or just the host / user, never a
+        // bare "@host" when the username is empty (Nemo peers have no username).
+        var userhost = username ? (hostname ? username + "@" + hostname : username) : hostname;
         if (this.style == "list") {
             return <div .remote-session-link .remote-session-list id={id} platform={platform} title={alias ? "ID: " + id : ""}>
                 <div .platform style={"background:"+string2RGB(id+platform, 0.5)}>
@@ -358,7 +361,7 @@ class SessionList: Reactor.Component {
                 <div .name>
                     <div>
                         <div #alias .ellipsis>{alias ? alias : formatId(id)}</div>
-                        <div .username .ellipsis>{username}@{hostname}</div>
+                        <div .username .ellipsis>{userhost}</div>
                     </div>
                 </div>
                 <div>
@@ -369,7 +372,7 @@ class SessionList: Reactor.Component {
         return <div .remote-session-link .remote-session id={id} platform={platform} title={alias ? "ID: " + id : ""} style={"background:"+string2RGB(id+platform, 0.5)}>
             <div .platform>
                 {platform && platformSvg(platform, "white")}
-                <div .username .ellipsis>{username}@{hostname}</div>
+                <div .username .ellipsis>{userhost}</div>
             </div>
             <div .text>
                 <div #alias .ellipsis>{alias ? alias : formatId(id)}</div>

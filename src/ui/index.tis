@@ -167,11 +167,11 @@ function createNewConnect(id, type) {
     app.remote_id.value = formatId(id);
     if (!id) return;
     if (!nemoOutboundEnabled()) {
-        msgbox("custom-error", "Error", "Outgoing connections are disabled by Nemo management policy");
+        msgbox("custom-error", "Error", "Outgoing connections are disabled by TBF policy");
         return;
     }
     if (nemo_gui_server_settings && nemoRemoteIdUsesPublicServer(id) && nemoPublicNetworkBlocked()) {
-        msgbox("custom-error", "Error", "Public RustDesk network is disabled by Nemo company network mode");
+        msgbox("custom-error", "Error", "Public network access is disabled by TBF company network mode");
         return;
     }
     if (nemo_gui_server_settings && nemoCompanyNetworkOnly() && nemoCurrentServerIsPublic()) {
@@ -186,7 +186,7 @@ function createNewConnect(id, type) {
         return;
     }
     if (!nemoOutboundTargetAllowed(id)) {
-        msgbox("custom-error", "Error", "Target is not allowed by Nemo management policy");
+        msgbox("custom-error", "Error", "Target is not allowed by TBF policy");
         return;
     }
     handler.set_remote_id(id);
@@ -561,6 +561,25 @@ function open_nemo_management_dialog() {
             }, 330, get_msgbox_width());
 }
 
+function open_nemo_alias_dialog() {
+    var is_fixed = handler.is_option_fixed("nemo-alias");
+    var old_alias = handler.get_option("nemo-alias") || "";
+    msgbox("custom-server", "Alias",
+            <div .form .set-password>
+                <div><span>{translate('Alias')}: </span><input|text .outline-focus name='alias' value={old_alias} /></div>
+                {is_fixed ? <div style="margin-top:6px;opacity:0.7">{translate('This value is managed by your administrator.')}</div> : ""}
+            </div>,
+            "", function(res=null, show_progress) {
+                if (!res) return;
+                if (typeof show_progress === 'function') show_progress();
+                if (is_fixed) { if (typeof show_progress === 'function') show_progress(-1); return; }
+                var alias = (res.alias || "").trim();
+                if (alias == old_alias) { if (typeof show_progress === 'function') show_progress(-1); return; }
+                handler.set_option("nemo-alias", alias);
+                if (typeof show_progress === 'function') show_progress(-1);
+            }, 200, get_msgbox_width());
+}
+
 function open_whitelist_dialog() {
     var is_opt_fixed = handler.is_option_fixed("whitelist");
     var v = handler.get_option("whitelist");
@@ -671,6 +690,7 @@ class MyIdMenu: Reactor.Component {
                 {!disable_settings && <div .separator />}
                 {!disable_settings && !hide_server_settings && <li #custom-server>{translate('ID/Relay Server')}{(nemoExeServerSettingsLocked() || nemoManagementServerSettingsLocked()) ? " (locked)" : ""}</li>}
                 {!disable_settings && !hide_server_settings && nemo_management_settings && <li #nemo-management>Management</li>}
+                {!disable_settings && nemo_management_settings && <li #nemo-alias>{translate('Alias')}</li>}
                 {!disable_settings && <li #whitelist title={translate('whitelist_tip')}>{translate('IP Whitelisting')}</li>}
                 {!disable_settings && !hide_proxy_settings && <li #socks5-server>{translate('Socks5/Http(s) Proxy')}</li>}
                 {!disable_settings && !hide_websocket_settings && <li #allow-websocket><span>{svg_checkmark}</span>{translate('Use WebSocket')}</li>}
@@ -771,6 +791,8 @@ class MyIdMenu: Reactor.Component {
             open_custom_server_dialog();
         } else if (me.id == "nemo-management") {
             open_nemo_management_dialog();
+        } else if (me.id == "nemo-alias") {
+            open_nemo_alias_dialog();
         } else if (me.id == "socks5-server") {
             open_proxy_dialog();
         } else if (me.id == "disable-udp") {
@@ -847,6 +869,25 @@ function editDirectAccessPort() {
       }, msgbox_default_height, get_msgbox_width());
 }
 
+// Whether the login-first modal has been auto-opened for the current gate render.
+var nemoGateShown = false;
+// Last gate visibility we rendered (null = unknown), so the watcher only forces a
+// re-render on an actual transition (shown<->hidden) instead of every tick.
+var nemoLastGate = null;
+
+// Identity-based access helpers. These MUST be defined before class App: App is
+// mounted below via $(body).content(<App/>), and its render() calls these on the
+// very first paint. TIScript runs top-level definitions in source order (no
+// hoisting), so defining them later in the file leaves them `undefined` at first
+// render — which throws "Wrong type - undefined, expected instance of function"
+// in App.render and blanks the whole window.
+function nemoLoginRequired() {
+    return handler.get_option("nemo-require-login") == "Y";
+}
+function nemoIsLoggedIn() {
+    return !!handler.get_local_option("access_token");
+}
+
 class App: Reactor.Component
 {
     function this() {
@@ -854,6 +895,20 @@ class App: Reactor.Component
     }
 
     function render() {
+        // Login-first gate: when the server requires login and nobody is signed
+        // in, hide the entire UI (ID, connect field, address book) and show only
+        // a login screen. render() must stay pure — the login modal is opened by
+        // nemoEnforceLogin (view context), not here.
+        if (nemoLoginRequired() && !nemoIsLoggedIn()) {
+            return
+                <div style="background:#f0f2f5; size:*">
+                    <div style="margin:*; text-align:center; padding:60px 30px; width:320px">
+                        <div style="font-size:26px; font-weight:bold; color:#0b7285; margin-bottom:12px">TBFDesk</div>
+                        <div style="color:#555; margin-bottom:28px">{translate('Please sign in to continue')}</div>
+                        <button .button #gate-login style="padding:10px 22px">{translate('Login')}</button>
+                    </div>
+                </div>;
+        }
         var is_can_screen_recording = handler.is_can_screen_recording(false);
         return
             <div .app>
@@ -872,8 +927,8 @@ class App: Reactor.Component
                         </div>}
                         {!outgoing_only && <PasswordArea />}
                     </div>
-                    {(!is_win || handler.is_installed() || disable_installation) ? "" : <InstallMe />}
-                    {software_update_url && !disable_installation ? <UpdateMe /> : ""}
+                    {"" /* TBFDesk: UAC install nag removed */}
+                    {"" /* TBFDesk: upstream update banner removed */}
                     {is_win && handler.is_installed() && !software_update_url && handler.is_installed_lower_version() && !disable_installation ? <UpgradeMe /> : ""}
                     {is_can_screen_recording ? "": <CanScreenRecording />}
                     {is_can_screen_recording && !handler.is_process_trusted(false) ? <TrustMe /> : ""}
@@ -907,6 +962,10 @@ class App: Reactor.Component
 
     event click $(button#file-transfer) {
         this.newRemote("file-transfer");
+    }
+
+    event click $(button#gate-login) {
+        login(true);
     }
 
     function newRemote(type) {
@@ -1597,6 +1656,8 @@ function self.ready() {
     nemoScheduleInitialWindowAutofit();
     refreshCurrentUser();
     updateTheme();
+    // Login-first: start the perpetual login-gate watcher shortly after startup.
+    self.timer(400ms, nemoEnforceLogin);
 }
 
 function showAbout() {
@@ -1628,13 +1689,18 @@ function checkConnectStatus() {
         tmp = handler.using_public_server();
         if (tmp != using_public_server) {
             using_public_server = tmp;
-            app.connect_status.update();
+            // Guard: while the login gate is showing, App.render omits ConnectStatus
+            // and MyIdMenu, so these component refs are undefined. Calling .update()
+            // on undefined would throw and abort this callback BEFORE it re-arms the
+            // 1s timer below (line ~checkConnectStatus()), silently killing all live
+            // status polling even after login.
+            if (app.connect_status) app.connect_status.update();
         }
         tmp = handler.get_connect_status();
         if (tmp[0] != connect_status) {
             connect_status = tmp[0];
-            app.connect_status.update();
-            myIdMenu.update();
+            if (app.connect_status) app.connect_status.update();
+            if (myIdMenu) myIdMenu.update();
         }
         if (tmp[1] != key_confirmed) {
             key_confirmed = tmp[1];
@@ -1720,14 +1786,42 @@ function set_local_user_info(user) {
     handler.set_local_option("user_info", JSON.stringify(user_info));
 }
 
-function login() {
+// Login-first gate: when the server requires login and nobody is signed in, show
+// the login prompt as the first thing and keep it up until an authorized user
+// signs in (the client cannot be used otherwise). This runs as a perpetual, low
+// cost watcher (every few seconds) because the state can change asynchronously in
+// BOTH directions: the require-login flag arrives with the (async) policy poll,
+// and a mid-session token can be invalidated by the poll's stale-session self-heal
+// (server restart / user disabled). It re-renders only on a real transition.
+function nemoEnforceLogin() {
+    var gate = nemoLoginRequired() && !nemoIsLoggedIn();
+    if (gate !== nemoLastGate) {                 // shown<->hidden transition only
+        nemoLastGate = gate;
+        if (app) app.update();
+    }
+    if (gate) {
+        if (!nemoGateShown) { nemoGateShown = true; login(true); } // open the form once
+    } else {
+        nemoGateShown = false;                   // re-arm for a future gate episode
+    }
+    self.timer(3s, nemoEnforceLogin);
+}
+
+function login(force = false) {
     var name0 = getUserName();
     var pass0 = '';
-    msgbox("custom-login", translate('Login'), <div .form .set-password> 
-            <div><span>{translate('Username')}:</span><input|text name="username" value={name0} .outline-focus /></div> 
-            <div><span>{translate('Password')}:</span><PasswordComponent value={pass0} /></div> 
+    msgbox("custom-login", translate('Login'), <div .form .set-password>
+            <div><span>{translate('Username')}:</span><input|text name="username" value={name0} .outline-focus /></div>
+            <div><span>{translate('Password')}:</span><PasswordComponent value={pass0} /></div>
         </div>, "", function(res=null, show_progress) {
-        if (!res) return;
+        if (!res) {
+            // Login-first: if login is required and the user dismissed the prompt
+            // without signing in, re-show it (usage is blocked until login).
+            if (force && nemoLoginRequired() && !nemoIsLoggedIn()) {
+                self.timer(200ms, function() { login(true); });
+            }
+            return;
+        }
         show_progress();
         var name = (res.username || '').trim();
         if (!name) {
@@ -1756,9 +1850,18 @@ function login() {
             }
             handler.set_local_option("access_token", data.access_token);
             set_local_user_info(data.user);
-            show_progress(-1);
-            myIdMenu.update();
+            // Reveal the app immediately: drop the login gate now instead of waiting
+            // for the ~3s watcher tick, and load the address book BEFORE closing the
+            // modal. Closing a login modal that the gate transition may have detached
+            // can throw ("has no method show_progress"); doing it last (in try/catch)
+            // means that error can no longer abort the address-book load — which was
+            // why the address book came up empty right after logging in.
+            nemoGateShown = false;
+            nemoLastGate = false;
+            if (app) app.update();
+            if (myIdMenu) myIdMenu.update();
             getAb();
+            try { show_progress(-1); } catch (e) {}
         }, function(err, status) {
             abLoading = false;
             err = translate(err);

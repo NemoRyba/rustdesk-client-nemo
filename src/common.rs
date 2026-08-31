@@ -2057,7 +2057,11 @@ pub fn nemo_company_network_only() -> bool {
 
 #[inline]
 pub fn nemo_public_network_blocked() -> bool {
-    nemo_exe_custom_server_configured() || nemo_company_network_only()
+    // Nemo: this fork is private-network-only. The public RustDesk network is
+    // never a valid target, regardless of options; the public rendezvous server
+    // list (RENDEZVOUS_SERVERS) is also emptied in hbb_common so there is no
+    // fallback to reach.
+    true
 }
 
 pub struct ThrottledInterval {

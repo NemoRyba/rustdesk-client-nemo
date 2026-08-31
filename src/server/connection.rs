@@ -5264,10 +5264,12 @@ async fn start_ipc(
         }
         sleep(1.).await;
     }
+    // Nemo: always run the connection manager headless (--cm-no-ui) on Linux.
+    // The Sciter --cm GUI (libsciter-gtk.so) crashes on some desktop hosts, and
+    // unattended company hosts don't need the CM window anyway; the --server
+    // still captures the real desktop session.
     #[cfg(target_os = "linux")]
-    let headless_cm = crate::is_server()
-        && crate::platform::is_headless_allowed()
-        && linux_desktop_manager::is_headless();
+    let headless_cm = crate::is_server();
     #[cfg(not(target_os = "linux"))]
     let headless_cm = false;
     let mut stream = None;
