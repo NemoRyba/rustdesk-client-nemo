@@ -27,6 +27,10 @@ const NEMO_MANAGEMENT_SETTINGS: &[&str] = &[
     OPTION_NEMO_COMPANY_NETWORK_ONLY,
     OPTION_NEMO_OUTBOUND_ENABLED,
     OPTION_NEMO_OUTBOUND_TARGETS,
+    // Friendly per-client name. Admin can push it as a managed default; if the
+    // policy has allow_user_override the user may change it locally, otherwise
+    // it is locked (see apply_policy_option).
+    "nemo-alias",
 ];
 
 #[derive(Clone, Copy)]
@@ -50,6 +54,8 @@ struct ClientPolicyRequest {
     id: String,
     uuid: String,
     policy_version: String,
+    /// Logged-in user's session token, so the server returns that user's policy.
+    access_token: String,
 }
 
 #[derive(Deserialize)]
@@ -103,6 +109,9 @@ fn sync_policy() -> ResultType<()> {
         id: id.clone(),
         uuid: crate::common::encode64(hbb_common::get_uuid()),
         policy_version: Config::get_option(OPTION_NEMO_MANAGEMENT_LAST_POLICY),
+        // Identity-based policy: send the logged-in user's token so the server
+        // returns that user's policy (empty when nobody is logged in).
+        access_token: Config::get_option("access_token"),
     };
     let body = serde_json::to_string(&request)?;
     let headers = serde_json::json!({
@@ -133,8 +142,16 @@ fn verified_payload(
     public_key: &str,
 ) -> ResultType<ClientPolicyPayload> {
     if public_key.is_empty() {
-        log::debug!("Nemo management public key is empty; applying unsigned policy");
-        return Ok(response.payload);
+        // Nemo hardening (S1): refuse unsigned policy. Without a configured
+        // management public key the client cannot verify the server, so an
+        // unsigned payload is forgeable (a MITM could push a password or
+        // enable remote config). `nemo-management-allow-unsigned=Y` is a
+        // dev/lab-only escape hatch.
+        if Config::get_option("nemo-management-allow-unsigned") == "Y" {
+            log::warn!("Nemo management public key empty; applying UNSIGNED policy (dev override)");
+            return Ok(response.payload);
+        }
+        bail!("management public key not configured; refusing unsigned policy");
     }
     let pk = crate::common::get_rs_pk(public_key).ok_or_else(|| anyhow!("invalid public key"))?;
     if response.signed_payload.is_empty() {

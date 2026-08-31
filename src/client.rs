@@ -208,11 +208,19 @@ fn check_nemo_outbound_policy(peer: &str) -> ResultType<()> {
 }
 
 fn nemo_source_identity_header() -> String {
-    format!(
+    let base = format!(
         "nemo-source-v1:{}:{}",
         Config::get_id(),
         base64::encode(hbb_common::get_uuid(), base64::Variant::Original)
-    )
+    );
+    // Append the logged-in user's session token (if any) so the server can
+    // enforce the per-user connection ACL and require-login at the punch.
+    let token = Config::get_option("access_token");
+    if token.is_empty() {
+        base
+    } else {
+        format!("{}:{}", base, token)
+    }
 }
 
 fn nemo_version_with_source() -> String {
