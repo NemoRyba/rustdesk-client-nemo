@@ -466,6 +466,13 @@ impl Client {
             NatType::from_i32(my_nat_type).unwrap_or(NatType::UNKNOWN_NAT)
         };
 
+        // Nemo fork: this hbbs does not implement the rendezvous KeyExchange that
+        // secure_tcp waits for, so trying to secure the account token to the
+        // rendezvous times out ("Failed to secure tcp: deadline has elapsed").
+        // Nemo authorizes connections via signed management policy, not this
+        // account token, so drop it for the rendezvous punch rather than securing
+        // it. (The token is still used for the address-book HTTP API separately.)
+        let token = String::new();
         if !key.is_empty() && !token.is_empty() {
             // mainly for the security of token
             secure_tcp(&mut socket, &key)
