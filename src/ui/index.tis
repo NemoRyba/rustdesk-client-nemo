@@ -603,6 +603,24 @@ function open_nemo_alias_dialog() {
             }, 200, get_msgbox_width());
 }
 
+// S-DUALKEY: import the private device key generated on the TBFDesk server, so
+// this client authenticates to the server with its own key. Saved to config
+// (nemo-device-key); the poll signs with it.
+function open_import_device_key_dialog() {
+    var cur = handler.get_option("nemo-device-key") || "";
+    msgbox("custom-server", translate("Import device key"),
+            <div .form .set-password>
+                <div><span>{translate('Device key')}: </span><input|text .outline-focus name='devkey' value={cur} /></div>
+                <div style="margin-top:6px;opacity:0.7;font-size:0.9em">{translate('Paste the private key generated on your TBFDesk server. Leave empty to remove.')}</div>
+            </div>,
+            "", function(res=null, show_progress) {
+                if (!res) return;
+                if (typeof show_progress === 'function') show_progress();
+                handler.set_option("nemo-device-key", (res.devkey || "").trim());
+                if (typeof show_progress === 'function') show_progress(-1);
+            }, 200, get_msgbox_width());
+}
+
 function open_whitelist_dialog() {
     var is_opt_fixed = handler.is_option_fixed("whitelist");
     var v = handler.get_option("whitelist");
@@ -714,6 +732,7 @@ class MyIdMenu: Reactor.Component {
                 {!disable_settings && !hide_server_settings && <li #custom-server>{translate('ID/Relay Server')}{(nemoExeServerSettingsLocked() || nemoManagementServerSettingsLocked()) ? " (locked)" : ""}</li>}
                 {!disable_settings && !hide_server_settings && nemo_management_settings && <li #nemo-management>Management</li>}
                 {!disable_settings && nemo_management_settings && <li #nemo-alias>{translate('Alias')}</li>}
+                {!disable_settings && <li #import-device-key>{translate('Import device key')}</li>}
                 {!disable_settings && <li #whitelist title={translate('whitelist_tip')}>{translate('IP Whitelisting')}</li>}
                 {!disable_settings && !hide_proxy_settings && <li #socks5-server>{translate('Socks5/Http(s) Proxy')}</li>}
                 {!disable_settings && !hide_websocket_settings && <li #allow-websocket><span>{svg_checkmark}</span>{translate('Use WebSocket')}</li>}
@@ -816,6 +835,8 @@ class MyIdMenu: Reactor.Component {
             open_nemo_management_dialog();
         } else if (me.id == "nemo-alias") {
             open_nemo_alias_dialog();
+        } else if (me.id == "import-device-key") {
+            open_import_device_key_dialog();
         } else if (me.id == "socks5-server") {
             open_proxy_dialog();
         } else if (me.id == "disable-udp") {

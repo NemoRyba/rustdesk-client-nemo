@@ -68,6 +68,41 @@ struct ClientPolicyRequest {
     /// This peer's hostname, so the server can label the address book with which
     /// computer an ID belongs to.
     hostname: String,
+    /// S-DUALKEY: the provisioned device public key + a signature over
+    /// "nemo-poll:{id}:{ts}", proving this client holds its own private key.
+    /// Empty when no device key has been imported (server falls back to auth mode
+    /// "default").
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    device_key_pub: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    device_key_sig: String,
+}
+
+// Sign "nemo-poll:{id}:{ts}" with the imported device key (nemo-device-key), so
+// the server can authenticate this client with its own key. Returns empty strings
+// when no key is imported or it is malformed.
+fn nemo_sign_poll(id: &str) -> (String, String) {
+    let sk_b64 = Config::get_option("nemo-device-key");
+    let sk_b64 = sk_b64.trim();
+    if sk_b64.is_empty() {
+        return (String::new(), String::new());
+    }
+    let sk_bytes = match crate::common::decode64(sk_b64) {
+        Ok(b) if b.len() >= 64 => b,
+        _ => return (String::new(), String::new()),
+    };
+    let sk = match sign::SecretKey::from_slice(&sk_bytes) {
+        Some(s) => s,
+        None => return (String::new(), String::new()),
+    };
+    // Ed25519 secret key = seed(32) || public(32) — the public half is bytes[32..64].
+    let pub_b64 = crate::common::encode64(&sk_bytes[32..64]);
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let signed = sign::sign(format!("nemo-poll:{}:{}", id, ts).as_bytes(), &sk);
+    (pub_b64, crate::common::encode64(&signed))
 }
 
 #[derive(Deserialize)]
@@ -127,6 +162,14 @@ fn sync_policy() -> ResultType<()> {
         access_token: LocalConfig::get_option("access_token"),
         // Report our hostname so the server can label the address book.
         hostname: crate::common::hostname(),
+        device_key_pub: String::new(),
+        device_key_sig: String::new(),
+    };
+    let (device_key_pub, device_key_sig) = nemo_sign_poll(&id);
+    let request = ClientPolicyRequest {
+        device_key_pub,
+        device_key_sig,
+        ..request
     };
     let body = serde_json::to_string(&request)?;
     let headers = serde_json::json!({
