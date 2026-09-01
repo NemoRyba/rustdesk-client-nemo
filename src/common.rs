@@ -1068,6 +1068,13 @@ fn get_api_server_(api: String, custom: String) -> String {
         if !lic.api.is_empty() {
             return lic.api.clone();
         }
+        // Nemo: a locked exe named `host=…,key=…` with NO explicit `api=` should
+        // use the TBFDesk API on the same host over HTTPS:21120 — not RustDesk's
+        // default derivation http://host:21114 (which isn't served here).
+        if !lic.host.is_empty() {
+            let host = lic.host.split(':').next().unwrap_or(lic.host.as_str());
+            return format!("https://{}:21120", host);
+        }
     }
     if !api.is_empty() {
         return api.to_owned();

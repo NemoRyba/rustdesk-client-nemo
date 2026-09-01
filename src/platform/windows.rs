@@ -2146,6 +2146,33 @@ pub fn is_win_10_or_greater() -> bool {
 pub fn bootstrap() -> bool {
     if let Ok(lic) = get_license_from_exe_name() {
         *config::EXE_RENDEZVOUS_SERVER.write().unwrap() = lic.host.clone();
+        // Nemo: a locked exe named `host=…,key=…,relay=…` also provisions the whole
+        // TBFDesk control plane, so ONE rename fully configures a client. The name
+        // already supplies rendezvous/relay/key; here we derive and persist the
+        // API + management server (https://host:21120), the management public key
+        // (= the same server key), enable the managed policy poll (which drives the
+        // login gate + policy), and accept the self-signed API cert.
+        if !lic.host.is_empty() {
+            use config::Config;
+            let host = lic
+                .host
+                .split(':')
+                .next()
+                .unwrap_or(lic.host.as_str())
+                .to_string();
+            let api = if lic.api.trim().is_empty() {
+                format!("https://{}:21120", host)
+            } else {
+                lic.api.clone()
+            };
+            Config::set_option("nemo-management-server".to_owned(), api.clone());
+            Config::set_option("api-server".to_owned(), api);
+            Config::set_option("nemo-management-enabled".to_owned(), "Y".to_owned());
+            if !lic.key.trim().is_empty() {
+                Config::set_option("nemo-management-public-key".to_owned(), lic.key.clone());
+            }
+            Config::set_option("allow-insecure-tls-fallback".to_owned(), "Y".to_owned());
+        }
     }
 
     #[cfg(debug_assertions)]
