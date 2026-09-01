@@ -206,6 +206,23 @@ fn verified_payload(
 fn apply_policy(policy: ManagementPolicy) -> ResultType<()> {
     let previous = previous_policy();
     clear_policy_maps(&previous);
+    // Persist STARTUP-CRITICAL connectivity options durably HERE — after the
+    // previous policy's copy has been cleared from the in-memory OVERWRITE map and
+    // BEFORE the loop below re-applies it — because is_option_can_save() refuses to
+    // persist a key that is currently in OVERWRITE. Without this these live only in
+    // OVERWRITE (empty at startup and briefly during each poll), so at launch,
+    // before the first poll, the client cannot reach the server: `api-server` falls
+    // back to the default http://<host>:21114 derivation, and `allow-insecure-tls-
+    // fallback` is off so TLS to the self-signed https API is rejected
+    // ("untrusted root"). Reading them back later still prefers the OVERWRITE
+    // (managed) value; this is only the durable startup fallback.
+    for k in ["api-server", "allow-insecure-tls-fallback"] {
+        if let Some(v) = policy.options.get(k) {
+            if !v.trim().is_empty() {
+                Config::set_option(k.to_owned(), v.clone());
+            }
+        }
+    }
     apply_permanent_password(&policy);
     for (key, value) in &policy.options {
         if key == OPTION_NEMO_PERMANENT_PASSWORD {
@@ -227,6 +244,38 @@ fn apply_policy(policy: ManagementPolicy) -> ResultType<()> {
         policy
             .options
             .get("nemo-require-login")
+            .cloned()
+            .unwrap_or_default(),
+    );
+    // S-A: persist the require-encrypted-session flag so the peer handshake can
+    // read it (controller refuses plaintext fallback; controlled refuses an
+    // unencrypted session) from the very next connection.
+    Config::set_option(
+        "nemo-require-encrypted-session".to_owned(),
+        policy
+            .options
+            .get("nemo-require-encrypted-session")
+            .cloned()
+            .unwrap_or_default(),
+    );
+    // #3-push: persist the address-book version so the UI can notice an ACL change
+    // on the next poll and re-fetch the address book (no dedicated push channel).
+    Config::set_option(
+        "nemo-ab-version".to_owned(),
+        policy
+            .options
+            .get("nemo-ab-version")
+            .cloned()
+            .unwrap_or_default(),
+    );
+    // #2: persist the pushed blocklist of source IDs so the controlled side can
+    // reject an incoming connection from a blocked peer even if that peer bypasses
+    // the server (direct/modified client). Signed, so it can't be forged.
+    Config::set_option(
+        "nemo-blocked-ids".to_owned(),
+        policy
+            .options
+            .get("nemo-blocked-ids")
             .cloned()
             .unwrap_or_default(),
     );

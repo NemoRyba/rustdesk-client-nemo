@@ -456,6 +456,29 @@ function getAccountLabelWithHandle() {
     return '';
 }
 
+// TBFDesk: split accessors for the signed-in account bar (App.render) so the
+// display name can be highlighted and the @handle shown subtly beneath it.
+// Defined here (well above the App mount) so App.render can call them safely.
+function nemoAccountName() {
+    try {
+        var user = JSON.parse(handler.get_local_option("user_info"));
+        var dn = (user.display_name || '').trim();
+        var un = (user.name || '').trim();
+        return dn || un;
+    } catch(e) {}
+    return '';
+}
+
+function nemoAccountHandle() {
+    try {
+        var user = JSON.parse(handler.get_local_option("user_info"));
+        var un = (user.name || '').trim();
+        var dn = (user.display_name || '').trim();
+        return (un && dn && dn != un) ? ("@" + un) : '';
+    } catch(e) {}
+    return '';
+}
+
 // Shared dialog functions
 function open_custom_server_dialog() {
     if (nemoExeServerSettingsLocked()) {
@@ -487,7 +510,7 @@ function open_custom_server_dialog() {
                 <div><span>{translate("API Server")}: </span><input|text name='api' value={old_api} /></div>
                 <div><span>{translate("Key")}: </span><input|text name='key' value={old_key} /></div>
                 {nemo_gui_server_settings ? <div><button|checkbox(company_only) {company_only_attrs}>Company network only</button></div> : ""}
-                {nemo_gui_server_settings ? <div style="font-size: 0.9em; color: #888; line-height: 1.4em;">Blocks public RustDesk network IDs such as id@public. Clear ID Server and uncheck this to use the public network again.</div> : ""}
+                {nemo_gui_server_settings ? <div style="font-size: 0.9em; color: #888; line-height: 1.4em;">Blocks public network IDs such as id@public. Clear ID Server and uncheck this to use the public network again.</div> : ""}
             </div>,
             "", function(res=null, show_progress) {
                 if (!res) return;
@@ -710,7 +733,7 @@ class MyIdMenu: Reactor.Component {
                 <li #allow-darktheme><span>{svg_checkmark}</span>{translate('Dark Theme')}</li>
                 <Languages />
                 {disable_installation ? "" : <li #allow-auto-update><span>{svg_checkmark}</span>{translate('Auto update')}</li>} 
-                <li #about>{translate('About')} {" "}{handler.get_app_name()}</li>
+                <li #about>{translate('About') + " TBFDesk"}</li>
             </menu>
         </popup>;
     }
@@ -760,7 +783,7 @@ class MyIdMenu: Reactor.Component {
     }
 
     function showAbout() {
-        var name = handler.get_app_name();
+        var name = "TBFDesk";  // display name only; APP_NAME stays "RustDesk" (config dir)
         msgbox("custom-nocancel-nook-hasclose", translate("About") + " " + name, "<div style='line-height: 2em'> \
             <div>Version: " + handler.get_version() + " \
             <div>Fingerprint: " + handler.get_fingerprint() + " \
@@ -874,6 +897,7 @@ var nemoGateShown = false;
 // Last gate visibility we rendered (null = unknown), so the watcher only forces a
 // re-render on an actual transition (shown<->hidden) instead of every tick.
 var nemoLastGate = null;
+var nemoLastAbVersion = null;   // #3-push: last server address-book version seen
 
 // Identity-based access helpers. These MUST be defined before class App: App is
 // mounted below via $(body).content(<App/>), and its render() calls these on the
@@ -886,6 +910,219 @@ function nemoLoginRequired() {
 }
 function nemoIsLoggedIn() {
     return !!handler.get_local_option("access_token");
+}
+// TBFDesk: server address shown/edited on the login gate. Pre-fills with the
+// current api-server (or the ID server host if no api-server is set).
+function nemoGateServerValue() {
+    var opts = handler.get_options();
+    return (opts["api-server"] || opts["custom-rendezvous-server"] || "").trim();
+}
+// Derive the ID host and api-server URL from a user-typed server value.
+// Accepts a bare host ("tbfdesk.example.com" -> https://host:21120) or a full
+// http(s):// URL.
+function nemoDeriveApiUrl(val) {
+    val = (val || "").trim();
+    var host = val, api = val;
+    if (val.indexOf("http://") == 0 || val.indexOf("https://") == 0) {
+        api = val;
+        var rest = val.substr(val.indexOf("://") + 3);
+        var slash = rest.indexOf("/");
+        if (slash >= 0) rest = rest.substr(0, slash);
+        var colon = rest.indexOf(":");
+        host = colon >= 0 ? rest.substr(0, colon) : rest;
+    } else {
+        var colon = val.indexOf(":");
+        host = colon >= 0 ? val.substr(0, colon) : val;
+        api = "https://" + val + (colon >= 0 ? "" : ":21120");
+    }
+    return { host: host, api: api };
+}
+
+// Apply + SAVE the gate's server field before login: sets the ID/rendezvous
+// server (host), the api-server (login + address book), and the management
+// server (signed policy poll) all from one address.
+function nemoApplyGateServer(val) {
+    val = (val || "").trim();
+    if (!val) return;
+    var d = nemoDeriveApiUrl(val);
+    var opts = handler.get_options();
+    opts["custom-rendezvous-server"] = d.host;
+    opts["api-server"] = d.api;
+    opts[nemo_management_server_option] = d.api;
+    handler.set_options(opts);
+    // Seed the accept-self-signed default the first time only (see below).
+    nemoInitInsecureTlsDefault();
+}
+
+// --- Insecure-TLS (self-signed cert) control on the login gate ---------------
+// The TBFDesk API serves a self-signed certificate. Accepting it lets login work
+// while the password stays confidential (sealed to the server's NaCl key, S-B).
+// The user may allow/disallow this per client with a checkbox, UNLESS an admin
+// policy manages the option (then it is shown read-only).
+function nemoInsecureTlsValue() {
+    return (handler.get_option("allow-insecure-tls-fallback") || "").trim() == "Y";
+}
+function nemoInsecureTlsManaged() {
+    return handler.is_option_fixed("allow-insecure-tls-fallback");
+}
+function nemoInsecureTlsAttrs() {
+    return nemoInsecureTlsValue() ? { checked: true } : {};
+}
+// First-run default: with no explicit choice yet, allow the self-signed cert so
+// login works out of the box. Never overrides an explicit Y/N the user set, nor
+// an admin-managed value.
+function nemoInitInsecureTlsDefault() {
+    if (nemoInsecureTlsManaged()) return;
+    var cur = (handler.get_option("allow-insecure-tls-fallback") || "").trim();
+    if (cur == "") {
+        var opts = handler.get_options();
+        opts["allow-insecure-tls-fallback"] = "Y";
+        handler.set_options(opts);
+    }
+}
+function nemoToggleInsecureTls() {
+    if (nemoInsecureTlsManaged()) return;
+    var next = !nemoInsecureTlsValue();
+    var opts = handler.get_options();
+    opts["allow-insecure-tls-fallback"] = next ? "Y" : "N";
+    handler.set_options(opts);
+    var el = $(#gate-insecure-tls);
+    if (el) el.state.checked = next;
+    nemoRefreshCertInfo();
+}
+
+// The api-server URL to probe: the (possibly unsaved) gate field first, else the
+// currently configured api-server.
+function nemoGateApiUrl() {
+    var el = $(#gate-server);
+    var val = el ? (el.value || "") : "";
+    val = val.trim();
+    if (val) return nemoDeriveApiUrl(val).api;
+    return (handler.get_api_server() || "").trim();
+}
+// Fetch the server's certificate summary and render it into the gate info box.
+// Uses an accept-invalid probe (handler.nemo_cert_info_start) so the certificate
+// ALWAYS shows — even when the user has strict TLS on — because seeing the cert
+// is how they decide whether to trust it. Non-blocking: we poll the result and
+// animate the dots so the wait never looks frozen.
+// Certificate probe state, cached per server URL. App.render() builds the box
+// from this state (nemoCertBoxVnode) so the panel survives Reactor re-renders
+// instead of flickering away. The cert is downloaded ONCE per server; toggling
+// the checkbox only recomputes the local hint from the cache (no re-download).
+var nemoCertData = null;      // parsed /api/tls-cert-info JSON (includes .pem)
+var nemoCertErr = null;       // probe error text
+var nemoCertUrl = "";         // server URL the cache belongs to
+var nemoCertProbing = false;
+var nemoCertDotN = 0;
+// Trigger a probe, or reuse the cache when we already have this server's cert
+// (e.g. the user only toggled the checkbox). force=true always re-downloads.
+function nemoRefreshCertInfo(force = false) {
+    var url = nemoGateApiUrl();
+    if (!url) { nemoCertData = null; nemoCertErr = null; nemoCertUrl = ""; nemoCertProbing = false; if (app) app.update(); return; }
+    if (!force && url == nemoCertUrl && (nemoCertData || nemoCertErr)) { if (app) app.update(); return; }
+    nemoCertData = null; nemoCertErr = null; nemoCertUrl = url; nemoCertProbing = true; nemoCertDotN = 0;
+    handler.nemo_cert_info_start(url + "/api/tls-cert-info");
+    if (app) app.update();      // show the animated pending state
+    nemoCertPoll();
+}
+function nemoCertPoll() {
+    if (!nemoCertProbing) return;
+    var status = handler.nemo_cert_info_result();
+    if (status == " " || status == "") {          // in flight -> animate the dots
+        nemoCertDotN = (nemoCertDotN % 3) + 1;     // 1,2,3,1,2,3 ...
+        var box = $(#gate-cert-info);
+        if (box) {
+            var dots = ""; for (var i = 0; i < nemoCertDotN; ++i) dots += ".";
+            box.text = translate("Checking server certificate") + dots;
+        }
+        $(body).timer(350ms, nemoCertPoll);        // body is stable across re-renders
+        return;
+    }
+    var info = null;
+    try { info = JSON.parse(status); } catch (e) { info = null; }
+    if (!info || info.error) { nemoCertErr = info ? ("" + info.error) : status; nemoCertData = null; }
+    else { nemoCertData = info; nemoCertErr = null; }
+    nemoCertProbing = false;
+    if (app) app.update();       // reactive render -> the panel now persists
+}
+// Group the SHA-256 fingerprint into 8-byte runs separated by spaces so the long
+// hash wraps inside the narrow box (and stays easy to read/verify by hand).
+function nemoFmtFp(fp) {
+    if (!fp) return "";
+    var parts = fp.split(":");
+    var out = "";
+    for (var i = 0; i < parts.length; ++i) {
+        out += parts[i];
+        if (i < parts.length - 1) out += (((i + 1) % 8 == 0) ? " " : ":");
+    }
+    return out;
+}
+// Save the server certificate (PEM) to a file the user chooses.
+function nemoDownloadCert() {
+    if (!nemoCertData || !nemoCertData.pem) return;
+    var host = nemoCertData.server_host || "tbfdesk";
+    var initialPath = System.path(#USER_DOCUMENTS, "tbfdesk-" + host);
+    var url = view.selectFile(#save, "Certificate (*.crt)", "crt", initialPath, translate("Save certificate"));
+    if (!url) return;
+    handler.nemo_save_text_file(URL.toPath(url), nemoCertData.pem);
+}
+// Pure: build the certificate info box from the cached probe state + the current
+// checkbox value. Called by App.render(), so it survives re-renders.
+function nemoCertBoxVnode() {
+    var boxBase = "display:block; margin-top:16px; padding:10px 12px; border-radius:6px; font-size:11px; line-height:1.5em";
+    if (nemoCertProbing || (!nemoCertData && !nemoCertErr)) {
+        var pd = ""; for (var k = 0; k < (nemoCertDotN > 0 ? nemoCertDotN : 3); ++k) pd += ".";
+        var pst = boxBase + "; border:1px solid #e2e6ea; background:#f6f8fa; color:#556";
+        return <div #gate-cert-info style={pst}>{translate("Checking server certificate") + pd}</div>;
+    }
+    var bg = "#f6f8fa", bd = "#e2e6ea", fg = "#556";
+    var title = "", lines = [], hint = "";
+    var info = nemoCertData;
+    if (info && info.tls) {
+        if (info.self_signed) {
+            if (nemoInsecureTlsValue()) {
+                // ORANGE: self-signed accepted -> encrypted but not OS-verified.
+                bg = "#fff8e6"; bd = "#f0d98c"; fg = "#8a6d1a";
+                title = translate("Self-signed certificate - allowed, encrypted but not verified by your OS");
+                hint = translate("This is normal for TBFDesk and safe. Your password stays sealed end-to-end. To remove this warning, install a CA-signed certificate and check the fingerprint matches your server.");
+            } else {
+                // RED: self-signed rejected -> sign-in will fail.
+                bg = "#fdecea"; bd = "#f3b6ae"; fg = "#b42318";
+                title = translate("Self-signed certificate - not allowed, sign-in will fail");
+                hint = translate("Insecure TLS is off, so signing in to this self-signed server will fail. Tick 'Allow insecure TLS' above to sign in (your password stays sealed), or install a CA-signed certificate.");
+            }
+        } else {
+            // GREEN: CA-signed, verifiable by the OS trust store.
+            bg = "#eef8f0"; bd = "#b7dfc0"; fg = "#1a7a34";
+            title = translate("Certificate verified - secure connection");
+            hint = translate("This certificate is issued by a trusted authority. You can turn off 'Allow insecure TLS'.");
+        }
+        if (info.subject) lines.push(translate("Subject") + ": " + info.subject);
+        if (info.issuer && info.issuer != info.subject) lines.push(translate("Issuer") + ": " + info.issuer);
+        if (info.sans && info.sans.length) lines.push(translate("Names") + ": " + info.sans.join(", "));
+        if (info.fingerprint) lines.push(translate("Fingerprint (SHA-256)") + ": " + nemoFmtFp(info.fingerprint));
+        if (info.not_after) lines.push(translate("Valid until") + ": " + info.not_after);
+        lines.push(nemoInsecureTlsValue() ? translate("Insecure TLS is currently allowed") : translate("Insecure TLS is currently blocked"));
+    } else if (info && !info.tls) {
+        bg = "#fdecea"; bd = "#f3b6ae"; fg = "#b42318";
+        title = translate("The server is not using TLS");
+        hint = translate("Credentials would travel unencrypted. Enable TLS on the TBFDesk server (--nemo-api-tls auto).");
+    } else {
+        bg = "#fdecea"; bd = "#f3b6ae"; fg = "#b42318";
+        title = translate("Could not verify the server certificate");
+        if (nemoCertErr) lines.push(nemoCertErr);
+        hint = translate("If this is your TBFDesk server with a self-signed certificate, tick 'Allow insecure TLS' above. For production, install a CA-signed certificate.");
+    }
+    var text = title;
+    for (var j = 0; j < lines.length; ++j) text += "\n" + lines[j];
+    if (hint) text += "\n\n" + hint;
+    var boxSt = boxBase + "; border:1px solid " + bd + "; background:" + bg + "; color:" + fg;
+    var textSt = "display:block; white-space:pre-wrap; word-wrap:break-word; overflow-wrap:break-word; overflow-x:hidden";
+    var dlSt = "display:block; margin-top:8px; color:" + fg + "; text-decoration:underline; cursor:pointer";
+    return <div #gate-cert-info style={boxSt}>
+        <div style={textSt}>{text}</div>
+        {(info && info.pem) ? <div #gate-cert-download style={dlSt}>{translate("Download certificate")}</div> : ""}
+    </div>;
 }
 
 class App: Reactor.Component
@@ -902,10 +1139,23 @@ class App: Reactor.Component
         if (nemoLoginRequired() && !nemoIsLoggedIn()) {
             return
                 <div style="background:#f0f2f5; size:*">
-                    <div style="margin:*; text-align:center; padding:60px 30px; width:320px">
-                        <div style="font-size:26px; font-weight:bold; color:#0b7285; margin-bottom:12px">TBFDesk</div>
-                        <div style="color:#555; margin-bottom:28px">{translate('Please sign in to continue')}</div>
-                        <button .button #gate-login style="padding:10px 22px">{translate('Login')}</button>
+                    <div style="margin:*; width:340px; padding:40px 42px; background:#fff; border:1px solid #e2e6ea; border-radius:10px; flow:vertical">
+                        <div style="text-align:center; font-size:30px; font-weight:bold; color:#0b7285; margin-bottom:6px">TBFDesk</div>
+                        <div style="text-align:center; color:#667; margin-bottom:26px; font-size:14px">{translate('Please sign in to continue')}</div>
+                        <div style="font-size:12px; color:#556; margin-bottom:5px">{translate('Server')} <span style="color:#9aa7b2">({translate('address of your TBFDesk server')})</span></div>
+                        <input|text .gate-input #gate-server value={nemoGateServerValue()} placeholder="tbfdesk.example.com" style="width:*; padding:9px 10px; margin-bottom:8px; border:1px solid #ccd2d8; border-radius:6px; font-size:14px" />
+                        {nemoInsecureTlsManaged()
+                            ? <div style="font-size:11px; color:#8a94a0; margin-bottom:16px">{nemoInsecureTlsValue() ? translate('Insecure TLS is currently allowed') : translate('Insecure TLS is currently blocked')} ({translate('managed by your administrator')})</div>
+                            : <button|checkbox(gate_insecure) #gate-insecure-tls {nemoInsecureTlsAttrs()} style="margin-bottom:16px; font-size:12px; color:#667">{translate('Allow insecure TLS (self-signed certificate)')}</button>}
+                        <div style="font-size:12px; color:#556; margin-bottom:5px">{translate('Username')} <span style="color:#9aa7b2">({translate('use your Windows credentials')})</span></div>
+                        <input|text .gate-input #gate-username style="width:*; padding:9px 10px; margin-bottom:16px; border:1px solid #ccd2d8; border-radius:6px; font-size:14px" />
+                        <div style="font-size:12px; color:#556; margin-bottom:5px">{translate('Password')}</div>
+                        <div .gate-passwrap #gate-pass-wrap style="margin-bottom:24px"><PasswordComponent name='gatepass' /></div>
+                        <div style="text-align:center">
+                            <button .button #gate-login style="padding:11px 44px; background:#0b7285; color:#fff; border:none; border-radius:6px; font-size:15px; font-weight:bold">{translate('Login')}</button>
+                        </div>
+                        <div #gate-error style="color:#d4380d; font-size:12px; margin-top:16px; text-align:center"></div>
+                        {nemoCertBoxVnode()}
                     </div>
                 </div>;
         }
@@ -914,6 +1164,13 @@ class App: Reactor.Component
             <div .app>
                     <div .left-pane style={incoming_only ? "width:*" : ""}>
                     <div>
+                        {!outgoing_only && nemoIsLoggedIn() && <div .nemo-account-bar>
+                            <div .nemo-account-name>{nemoAccountName()}</div>
+                            <div style="flow:horizontal">
+                                <button .button .outline #nemo-refresh-ab style="margin-right:6px">{translate('Refresh')}</button>
+                                <button .button .outline #nemo-logoff>{translate('Logout')}</button>
+                            </div>
+                        </div>}
                         {is_custom_client && handler.get_builtin_option("hide-powered-by-me") != "Y" ? <div .link #powered-by style="opacity:0.5;font-size:0.8em;text-decoration:underline">{translate('powered_by_me')}</div> : ""}
                         <div .title style="flow:horizontal; position:relative; height:1.6em; line-height:1.6em">
                             <span>{translate('Your Desktop')}</span>
@@ -965,7 +1222,23 @@ class App: Reactor.Component
     }
 
     event click $(button#gate-login) {
-        login(true);
+        nemoGateSubmit();
+    }
+
+    event click $(button#gate-insecure-tls) {
+        nemoToggleInsecureTls();
+    }
+
+    event click $(#gate-cert-download) {
+        nemoDownloadCert();
+    }
+
+    event keydown $(input.gate-input) (evt) {
+        if (isEnterKey(evt)) nemoGateSubmit();
+    }
+
+    event keydown $(#gate-pass-wrap input) (evt) {
+        if (isEnterKey(evt)) nemoGateSubmit();
     }
 
     function newRemote(type) {
@@ -1029,7 +1302,7 @@ class UpdateMe: Reactor.Component {
         var update_or_download = "download"; // !is_win ? "download" : "update";
         return <div .install-me>
             <div>{translate('Status')}</div>
-            <div>There is a newer version of {handler.get_app_name()} ({handler.get_new_version()}) available.</div>
+            <div>There is a newer version of TBFDesk ({handler.get_new_version()}) available.</div>
             {is_custom_client
                 ? <div style="font-size: 1em; font-weight: normal; text-align: left; padding-top: 1em;">{translate('Enable \"Auto update\" or contact your administrator for the latest version.')}</div>
                 : <div #install-me.link>{translate('Click to ' + update_or_download)}</div>}
@@ -1665,7 +1938,7 @@ function showAbout() {
 }
 
 function showSettings() {
-    if ($(#overlay).style#display == 'block') return;
+    if ($(#overlay) && $(#overlay).style#display == 'block') return;
     var menu = myIdMenu.$(menu#config-options);
     var anchor = $(#open-settings);
     if (!anchor) anchor = myIdMenu.$(svg#menu);
@@ -1743,7 +2016,7 @@ function self.onMouse(evt) {
         check_if_overlay();
         break;
     case Event.MOUSE_LEAVE:
-        $(#overlay).style#display = 'none';
+        if ($(#overlay)) $(#overlay).style#display = 'none'; // login gate has no #overlay
         enter = false;
         break;
     }
@@ -1765,7 +2038,7 @@ function check_if_overlay() {
         self.timer(120ms, function() {
             if (!enter) return;
             var d = time0 - handler.get_mouse_time();
-            if (d < 120) $(#overlay).style#display = 'block';
+            if ($(#overlay) && d < 120) $(#overlay).style#display = 'block';
         });
     }
 }
@@ -1786,25 +2059,99 @@ function set_local_user_info(user) {
     handler.set_local_option("user_info", JSON.stringify(user_info));
 }
 
-// Login-first gate: when the server requires login and nobody is signed in, show
-// the login prompt as the first thing and keep it up until an authorized user
-// signs in (the client cannot be used otherwise). This runs as a perpetual, low
-// cost watcher (every few seconds) because the state can change asynchronously in
-// BOTH directions: the require-login flag arrives with the (async) policy poll,
-// and a mid-session token can be invalidated by the poll's stale-session self-heal
-// (server restart / user disabled). It re-renders only on a real transition.
+// Login-first gate watcher: keeps the App showing the sign-in screen (its own
+// "Login" button) whenever the server requires login and nobody is signed in, and
+// reveals the normal UI once signed in. Runs perpetually (cheap) because the state
+// changes asynchronously in BOTH directions — the require-login flag arrives with
+// the (async) policy poll, and a session can be invalidated by the poll's
+// stale-session self-heal. It only re-renders on a real transition. It does NOT
+// auto-open the login modal: the gate is shown so the user can read it and click
+// Login themselves (auto-opening it hid the gate and made Cancel a close/reopen loop).
 function nemoEnforceLogin() {
     var gate = nemoLoginRequired() && !nemoIsLoggedIn();
     if (gate !== nemoLastGate) {                 // shown<->hidden transition only
         nemoLastGate = gate;
+        if (gate) nemoInitInsecureTlsDefault();   // seed accept-self-signed before render
         if (app) app.update();
+        // Focus the username field and inspect the server cert once shown.
+        if (gate) self.timer(60ms, function() {
+            var u = $(#gate-username); if (u) view.focus = u;
+            nemoRefreshCertInfo();
+        });
     }
-    if (gate) {
-        if (!nemoGateShown) { nemoGateShown = true; login(true); } // open the form once
-    } else {
-        nemoGateShown = false;                   // re-arm for a future gate episode
+    // #3-push: the server bumps nemo-ab-version (delivered in the signed policy
+    // poll) whenever an ACL change affects what a user may see. Re-fetch the
+    // address book when it changes, so edits appear without a manual refresh.
+    if (nemoIsLoggedIn()) {
+        var abv = (handler.get_option("nemo-ab-version") || "").trim();
+        if (abv && abv != nemoLastAbVersion) {
+            if (nemoLastAbVersion !== null) getAb();   // skip the first observation
+            nemoLastAbVersion = abv;
+        }
     }
     self.timer(3s, nemoEnforceLogin);
+}
+
+// Inline sign-in for the login-first gate: the username/password fields are
+// rendered directly on the gate (no separate modal). Mirrors login()'s /api/login
+// flow but reads the gate inputs and reports errors inline in #gate-error.
+function nemoGateSubmit() {
+    var uEl = $(#gate-username), errEl = $(#gate-error);
+    var pwrap = $(#gate-pass-wrap);
+    var pEl = pwrap ? pwrap.$(input) : null;   // PasswordComponent's inner input
+    var name = (uEl ? (uEl.value || '') : '').trim();
+    var pass = (pEl ? (pEl.value || '') : '').trim();
+    var setErr = function(t) { if (errEl) errEl.text = t; };
+    if (!name) { setErr(translate("Username missed")); if (uEl) view.focus = uEl; return; }
+    if (!pass) { setErr(translate("Password missed")); if (pEl) view.focus = pEl; return; }
+    // Apply + save the server address from the gate field before logging in.
+    var srvEl = $(#gate-server);
+    if (srvEl) nemoApplyGateServer(srvEl.value);
+    var url = handler.get_api_server();
+    if (!url) { setErr(translate("API Server") + " ?"); if (srvEl) view.focus = srvEl; return; }
+    setErr("");
+    abLoading = true;
+    var onSuccess = function(data) {
+        if (data.error) { abLoading = false; setErr(translate(data.error)); return; }
+        if (data.type == 'email_check') { abLoading = false; setErr(""); on_2fa_check(data); return; }
+        handler.set_local_option("access_token", data.access_token);
+        set_local_user_info(data.user);
+        nemoGateShown = false;
+        nemoLastGate = false;
+        if (app) app.update();               // reveal the app
+        if (myIdMenu) myIdMenu.update();
+        getAb();                             // load the address book
+    };
+    var onError = function(err, status) {
+        abLoading = false;
+        err = translate(err);
+        if (url.indexOf('rustdesk') < 0) err = url + ', ' + err;
+        setErr(err);
+    };
+    var loginPlain = function() {
+        httpRequest(url + "/api/login", #post,
+            {username: name, password: pass, id: my_id, uuid: handler.get_uuid(), type: 'account', deviceInfo: getDeviceInfo()},
+            onSuccess, onError);
+    };
+    var loginSealed = function(sealed) {
+        httpRequest(url + "/api/login", #post,
+            {sealed: sealed, id: my_id, uuid: handler.get_uuid(), type: 'account', deviceInfo: getDeviceInfo()},
+            onSuccess, onError);
+    };
+    // S-B: seal the credential to the server's login-encryption key so the password
+    // is confidential regardless of TLS. On a MANAGED client (management key set),
+    // refuse to send plaintext if sealing fails; on an unmanaged/dev client, fall back.
+    var managed = (handler.get_option("nemo-management-public-key") || "").trim() != "";
+    httpRequest(url + "/api/login-key", #post, {},
+        function(keyData) {
+            var sealed = (keyData && keyData.signed_key) ? handler.nemo_seal_login(keyData.key || "", keyData.signed_key || "", name, pass) : "";
+            if (sealed) { loginSealed(sealed); }
+            else if (managed) { abLoading = false; setErr(translate("Secure login unavailable: the server key could not be verified.")); }
+            else { loginPlain(); }
+        },
+        function(err, status) {
+            if (managed) { onError(err, status); } else { loginPlain(); }
+        });
 }
 
 function login(force = false) {
@@ -1815,11 +2162,9 @@ function login(force = false) {
             <div><span>{translate('Password')}:</span><PasswordComponent value={pass0} /></div>
         </div>, "", function(res=null, show_progress) {
         if (!res) {
-            // Login-first: if login is required and the user dismissed the prompt
-            // without signing in, re-show it (usage is blocked until login).
-            if (force && nemoLoginRequired() && !nemoIsLoggedIn()) {
-                self.timer(200ms, function() { login(true); });
-            }
+            // Cancel just closes the modal. The login gate (logo + text + Login
+            // button) stays visible underneath, so the user can retry by clicking
+            // Login. Do NOT auto-re-prompt — that created a close/reopen deadloop.
             return;
         }
         show_progress();
@@ -1947,6 +2292,28 @@ function logout() {
         msgbox("custom-error", translate('Error'), err);
     }, getHttpHeaders());
     reset_token();
+}
+
+// TBFDesk: explicit sign-out from the visible "Log off" button on the main
+// screen (App.render's .nemo-logoff-bar). logout() clears the token via
+// reset_token(); force the login gate to reappear immediately instead of
+// waiting for the ~3s nemoEnforceLogin poll. If login isn't required, the user
+// simply lands on the logged-out UI (the address book shows its Login link).
+function nemoLogout() {
+    logout();
+    nemoGateShown = false;
+    nemoLastGate = null;      // make nemoEnforceLogin treat the next state as a transition
+    if (app) app.update();    // token already cleared → App.render shows the gate now
+}
+
+event click $(button#nemo-logoff) {
+    nemoLogout();
+}
+
+// Manual address-book refresh: re-fetch the server-curated peer list so ACL
+// changes (added/removed targets) show without waiting for a re-login.
+event click $(button#nemo-refresh-ab) {
+    getAb();
 }
 
 function refreshCurrentUser() {

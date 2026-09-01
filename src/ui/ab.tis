@@ -16,7 +16,10 @@ class AddressBook: Reactor.Component
     
     function render() {
         if (!handler.get_local_option("access_token")) {
-            return <div style="margin: *"><div #login-link .link style="margin: *; width: 100px; text-align: center; font-size: 1.2em;">{translate("Login")}</div></div>;
+            // TBFDesk: no stock "Login" link here — signing in is handled only by our
+            // custom login gate (App.render, shown when the server requires login).
+            // When login isn't required this pane is simply idle (non-clickable hint).
+            return <div style="margin: *; text-align: center; color: color(lighter-text)">{translate("Please sign in to continue")}</div>;
         }
         if (abLoading) {
             return <div style="margin: *"><progress style="color: #0071ff" /></div>;
@@ -38,17 +41,17 @@ class AddressBook: Reactor.Component
                     <li #remove-tag>{translate('Remove')}</li>
                 </menu>
             </popup>
-            <div .left-pane>
+            <div .right-pane>
+                <div .right-content style="padding-top:0; padding-right: 0;">
+                    <SessionList sessions={peers} type="ab" />
+                </div>
+            </div>
+            <div .left-pane style="border-right:none; border-left:1px solid color(border)">
                 <div style="padding: 0; padding-bottom: 1em" #tags-label>{translate('Tags')}{svg_menu}</div>
                 <div #tags>
                     {ab.tags.map(function(t) {
                         return <span class={me.selectedTags.indexOf(t) >= 0 ? "active" : "inactive"}>{t}</span>;
                     })}
-                </div>
-            </div>
-            <div .right-pane>
-                <div .right-content style="padding-top:0; padding-right: 0;">
-                    <SessionList sessions={peers} type="ab" />
                 </div>
             </div>
         </div>;
@@ -64,10 +67,6 @@ class AddressBook: Reactor.Component
     
     event click $(#retry) (_, __) {
         refreshCurrentUser();
-    }
-
-    event click $(#login-link) (_, __) {
-        login();
     }
 
     event click $(#tags-label svg#menu) (_, me) {
@@ -241,7 +240,7 @@ class SearchBar: Reactor.Component {
         self.timer(1ms, function() { (me.search_id || {}).value = value; });
         return <div .search-id style="margin-left: 12px">
             <span .search-icon>{search_icon}</span>
-            <input|text @{this.search_id} novalue={translate("Search ID")} />
+            <input|text @{this.search_id} novalue={translate("Search ID or hostname")} />
             {value && <span .clear-input>{clear_icon}</span>}
         </div>;
     }
@@ -251,6 +250,12 @@ class SearchBar: Reactor.Component {
     }
 
     event change $(input) (_, el) {
+        this.onChange(el.value.trim().toLowerCase());
+    }
+
+    // Filter live as the user types (not only on commit), so typing "4" shows
+    // every peer with "4" in its ID or hostname immediately. Local only.
+    event input $(input) (_, el) {
         this.onChange(el.value.trim().toLowerCase());
     }
     

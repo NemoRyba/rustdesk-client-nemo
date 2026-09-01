@@ -439,3 +439,32 @@ textarea.grey-text {
         font-size: 1em;
     }
 }
+
+/* TBFDesk login gate: password field (PasswordComponent) — full width like the
+   username input, with the show/hide eye positioned at the right. */
+.gate-passwrap div.password { position: relative; width: *; }
+.gate-passwrap div.password input { width: *; padding: 9px 36px 9px 10px; border: 1px solid #ccd2d8; border-radius: 6px; font-family: inherit; font-size: 14px; }
+.gate-passwrap div.password svg { position: absolute; right: 8px; top: 7px; size: 18px; color: #8a97a3; cursor: pointer; padding: 0; }
+
+/* TBFDesk: signed-in account bar, pinned to the TOP of the left pane (above
+   "Ihr Desktop"). A subtle highlighted pill with the display name in a nicer,
+   prominent font and the Log off button stacked directly beneath it. */
+.nemo-account-bar {
+    flow: vertical;
+    margin-bottom: 12px;
+    padding: 8px 10px;
+    background: #eef5f7;
+    border: 1px solid #d5e3e8;
+    border-radius: 8px;
+}
+.nemo-account-name {
+    font-family: "Segoe UI", "Segoe UI Semibold", Arial;
+    font-size: 1.08em;
+    font-weight: bold;
+    color: #0b7285;
+    margin-bottom: 8px;
+}
+.nemo-account-bar button#nemo-logoff {
+    padding: 4px 14px;
+    font-size: 0.85em;
+}

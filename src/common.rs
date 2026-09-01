@@ -1496,6 +1496,53 @@ pub async fn post_request_sync(url: String, body: String, header: &str) -> Resul
     post_request(url, body, header).await
 }
 
+lazy_static::lazy_static! {
+    // Result slot for the login gate's certificate probe. " " = a probe is in
+    // flight; otherwise the JSON body from /api/tls-cert-info (or {"error":...}).
+    static ref NEMO_CERT_INFO_RESULT: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+}
+
+// Start an async probe of the server's certificate summary. Reading a cert is a
+// non-sensitive diagnostic, so this ALWAYS accepts an invalid/self-signed cert
+// (even when the user has insecure-TLS disabled for real auth) — the login gate
+// must be able to show the certificate so the user can decide whether to trust
+// it. Non-blocking: the .tis polls nemo_cert_info_result().
+pub fn nemo_cert_info_start(url: String) {
+    *NEMO_CERT_INFO_RESULT.lock().unwrap() = " ".to_owned();
+    std::thread::spawn(move || {
+        let r = nemo_cert_info_fetch(url);
+        *NEMO_CERT_INFO_RESULT.lock().unwrap() = r;
+    });
+}
+
+pub fn nemo_cert_info_result() -> String {
+    NEMO_CERT_INFO_RESULT.lock().unwrap().clone()
+}
+
+#[tokio::main(flavor = "current_thread")]
+async fn nemo_cert_info_fetch(url: String) -> String {
+    // Rustls accept-invalid: the same path the login request uses successfully
+    // for the self-signed cert (it also bypasses the IP-not-in-SAN hostname
+    // mismatch, so the probe works when connecting by bare IP).
+    let client = create_http_client_async(TlsType::Rustls, true);
+    match client
+        .post(url.as_str())
+        .timeout(std::time::Duration::from_secs(8))
+        .send()
+        .await
+    {
+        Ok(resp) => resp.text().await.unwrap_or_default(),
+        Err(e) => {
+            let msg = e
+                .to_string()
+                .replace('\\', " ")
+                .replace('"', "'")
+                .replace('\n', " ");
+            format!("{{\"error\":\"{}\"}}", msg)
+        }
+    }
+}
+
 #[async_recursion]
 async fn get_http_response_async(
     url: &str,
@@ -2062,6 +2109,70 @@ pub fn nemo_public_network_blocked() -> bool {
     // list (RENDEZVOUS_SERVERS) is also emptied in hbb_common so there is no
     // fallback to reach.
     true
+}
+
+// Nemo S-A: when a managed policy sets `nemo-require-encrypted-session=Y`, the
+// controller must NOT fall back to a plaintext session when the peer's key is
+// absent or mismatched, and the controlled side must REFUSE an unencrypted
+// session — instead of the upstream silent downgrade to plaintext. Default off
+// (empty) preserves upstream behavior until the fleet opts in via policy.
+pub fn nemo_require_encrypted_session() -> bool {
+    Config::get_option("nemo-require-encrypted-session") == "Y"
+}
+
+// #2: is this source TBFDesk ID on the admin's server-pushed blocklist? The list
+// (`nemo-blocked-ids`, comma-separated) arrives inside the signed management
+// policy, so a controlled machine can refuse a blocked peer even if that peer
+// connects directly with a modified client.
+pub fn nemo_id_is_blocked(id: &str) -> bool {
+    let id = id.trim();
+    if id.is_empty() {
+        return false;
+    }
+    Config::get_option("nemo-blocked-ids")
+        .split(',')
+        .any(|b| !b.trim().is_empty() && b.trim() == id)
+}
+
+// Nemo S-B: seal the login credential to the server's login-encryption key so the
+// domain password is confidential regardless of TLS. `key_b64`/`sig_b64` come from
+// GET /api/login-key; the key is authenticated against the management signing key
+// this client already trusts. Returns base64 of a NaCl sealedbox of
+// {username,password,ts}, or "" on any failure (no trust anchor, bad sig, bad key)
+// so the caller can decide whether to fall back or refuse.
+pub fn nemo_seal_login(_key_b64: &str, signed_key_b64: &str, username: &str, password: &str) -> String {
+    use hbb_common::sodiumoxide::crypto::{box_, sealedbox, sign};
+    // Authenticate the server's login-encryption key: verify the ATTACHED signature
+    // with the management signing key we already trust, recovering the key bytes.
+    let mgmt_pk_b64 = Config::get_option("nemo-management-public-key");
+    if mgmt_pk_b64.trim().is_empty() || signed_key_b64.trim().is_empty() {
+        return String::new(); // no trust anchor / unsigned -> refuse to seal
+    }
+    let mgmt_pk = match get_rs_pk(mgmt_pk_b64.trim()) {
+        Some(pk) => pk,
+        None => return String::new(),
+    };
+    let signed = match decode64(signed_key_b64) {
+        Ok(b) => b,
+        _ => return String::new(),
+    };
+    let key_bytes = match sign::verify(&signed, &mgmt_pk) {
+        Ok(m) => m,
+        Err(_) => return String::new(),
+    };
+    if key_bytes.len() != box_::PUBLICKEYBYTES {
+        return String::new();
+    }
+    let server_pk = match box_::PublicKey::from_slice(&key_bytes) {
+        Some(pk) => pk,
+        None => return String::new(),
+    };
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let payload = serde_json::json!({ "username": username, "password": password, "ts": ts }).to_string();
+    encode64(sealedbox::seal(payload.as_bytes(), &server_pk))
 }
 
 pub struct ThrottledInterval {

@@ -843,6 +843,10 @@ impl Client {
         let sign_pk = match sign_pk {
             Some(v) => v,
             None => {
+                // S-A: fail closed instead of running plaintext when policy requires encryption.
+                if crate::common::nemo_require_encrypted_session() {
+                    bail!("Encrypted session required by TBF policy, but the peer's key is unavailable");
+                }
                 // send an empty message out in case server is setting up secure and waiting for first message
                 conn.send(&Message::new()).await?;
                 return Ok(option_pk);
@@ -870,6 +874,11 @@ impl Client {
                                 conn.send(&Message::new()).await?;
                             }
                         } else {
+                            // S-A: a pk mismatch is the MITM/attack signal. Fail closed
+                            // instead of downgrading to plaintext when policy requires it.
+                            if crate::common::nemo_require_encrypted_session() {
+                                bail!("Encrypted session required by TBF policy, but the peer key does not match (possible MITM)");
+                            }
                             // fall back to non-secure connection in case pk mismatch
                             log::info!("pk mismatch, fall back to non-secure");
                             let mut msg_out = Message::new();

@@ -230,6 +230,11 @@ pub async fn create_tcp_connection(
                                 &our_sk_b,
                             )?);
                         } else if pk.asymmetric_value.is_empty() {
+                            // S-A: refuse an unencrypted session when policy requires
+                            // encryption, instead of silently proceeding in plaintext.
+                            if crate::common::nemo_require_encrypted_session() {
+                                bail!("Encrypted session required by TBF policy; refusing unencrypted connection");
+                            }
                             Config::set_key_confirmed(false);
                             log::info!("Force to update pk");
                         } else {

@@ -1499,6 +1499,20 @@ impl Connection {
         if self.authorized {
             return true;
         }
+        // #2: refuse an incoming connection whose source ID the admin has blocked.
+        // The blocklist is pushed (signed) via the management policy, so this holds
+        // even if the source runs a modified client and connects directly, bypassing
+        // the server's own punch-time block.
+        if crate::common::nemo_id_is_blocked(&self.lr.my_id) {
+            log::info!(
+                "#{} refusing connection from blocked source id {}",
+                self.inner.id,
+                self.lr.my_id
+            );
+            self.send_login_error("You are blocked by the administrator")
+                .await;
+            return false;
+        }
         if self.require_2fa.is_some() && !self.is_recent_session(true) && !self.from_switch {
             self.require_2fa.as_ref().map(|totp| {
                 let bot = crate::auth_2fa::TelegramBot::get();

@@ -85,7 +85,9 @@ pub fn start(args: &mut [String]) {
     let mut frame = sciter::WindowBuilder::main_window().create();
     #[cfg(windows)]
     allow_err!(sciter::set_options(sciter::RuntimeOptions::UxTheming(true)));
-    frame.set_title(&crate::get_app_name());
+    // TBFDesk: brand the window title. (APP_NAME stays "RustDesk" so the config/
+    // data dir under %APPDATA% is unchanged — only the visible title differs.)
+    frame.set_title("TBFDesk");
     #[cfg(target_os = "macos")]
     crate::platform::delegate::make_menubar(frame.get_host(), args.is_empty());
     #[cfg(windows)]
@@ -688,6 +690,36 @@ impl UI {
         crate::verify_login(&raw, &id)
     }
 
+    // S-B: seal the login credential to the server's login-encryption key.
+    fn nemo_seal_login(
+        &self,
+        key: String,
+        sig: String,
+        username: String,
+        password: String,
+    ) -> String {
+        crate::common::nemo_seal_login(&key, &sig, &username, &password)
+    }
+
+    // Login-gate certificate probe (accept-invalid; diagnostic only).
+    fn nemo_cert_info_start(&self, url: String) {
+        crate::common::nemo_cert_info_start(url);
+    }
+    fn nemo_cert_info_result(&self) -> String {
+        crate::common::nemo_cert_info_result()
+    }
+
+    // Save text (e.g. the server certificate PEM) to a user-chosen path.
+    fn nemo_save_text_file(&self, path: String, content: String) -> bool {
+        match std::fs::write(&path, content) {
+            Ok(_) => true,
+            Err(e) => {
+                log::error!("nemo_save_text_file failed for {}: {}", path, e);
+                false
+            }
+        }
+    }
+
     fn generate_2fa_img_src(&self, data: String) -> String {
         let v = qrcode_generator::to_png_to_vec(data, qrcode_generator::QrCodeEcc::Low, 128)
             .unwrap_or_default();
@@ -820,6 +852,10 @@ impl sciter::EventHandler for UI {
         fn verify2fa(String);
         fn check_hwcodec();
         fn verify_login(String, String);
+        fn nemo_seal_login(String, String, String, String);
+        fn nemo_cert_info_start(String);
+        fn nemo_cert_info_result();
+        fn nemo_save_text_file(String, String);
         fn is_option_fixed(String);
         fn get_builtin_option(String);
         fn is_remote_modify_enabled_by_control_permissions();
