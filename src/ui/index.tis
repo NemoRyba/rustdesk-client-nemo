@@ -1177,6 +1177,7 @@ class App: Reactor.Component
                         </div>
                         <div #gate-error style="color:#d4380d; font-size:12px; margin-top:16px; text-align:center"></div>
                         {nemoCertBoxVnode()}
+                        <div .link #gate-import-devkey style="text-align:center; margin-top:14px; font-size:12px; color:#0b7285; text-decoration:underline; cursor:pointer">{translate('Import device key')}</div>
                     </div>
                 </div>;
         }
@@ -1252,6 +1253,10 @@ class App: Reactor.Component
 
     event click $(#gate-cert-download) {
         nemoDownloadCert();
+    }
+
+    event click $(#gate-import-devkey) {
+        open_import_device_key_dialog();
     }
 
     event keydown $(input.gate-input) (evt) {
