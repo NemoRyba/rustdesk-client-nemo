@@ -533,6 +533,10 @@ impl UI {
         get_version()
     }
 
+    fn get_build_id(&self) -> String {
+        get_build_id()
+    }
+
     fn get_fingerprint(&self) -> String {
         get_fingerprint()
     }
@@ -823,6 +827,7 @@ impl sciter::EventHandler for UI {
         fn get_software_update_url();
         fn get_new_version();
         fn get_version();
+        fn get_build_id();
         fn get_fingerprint();
         fn update_me(String);
         fn show_run_without_install();

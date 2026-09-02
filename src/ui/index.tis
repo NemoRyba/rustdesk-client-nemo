@@ -1702,6 +1702,7 @@ class App: Reactor.Component
                         {nemoCertBoxVnode()}
                         <div .link #gate-import-devkey style="text-align:center; margin-top:14px; font-size:12px; color:#0b7285; text-decoration:underline; cursor:pointer">{translate('Import device key')}</div>
                     </div>
+                    <div .nemo-build-id title={translate('Identifies the exact running build (git commit and date).')}>{"Build " + handler.get_build_id()}</div>
                 </div>;
         }
         var is_can_screen_recording = handler.is_can_screen_recording(false);
@@ -1739,6 +1740,7 @@ class App: Reactor.Component
                     {!system_error && handler.is_login_wayland() && !handler.current_is_wayland() ? <FixWayland /> : ""}
                     {!system_error && handler.current_is_wayland() ? <ModifyDefaultLogin /> : ""}
                     {incoming_only ? <ConnectStatus @{this.connect_status} /> : ""}
+                    <div .nemo-build-id title={translate('Identifies the exact running build (git commit and date).')}>{"Build " + handler.get_build_id()}</div>
                 </div>
                 {!incoming_only && <div .right-pane>
                     <div .right-content>

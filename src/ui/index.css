@@ -53,6 +53,19 @@ body {
     padding-bottom: 60px; /* reserve space for bottom connect-status */
 }
 
+/* TBFDesk: build-id readout, pinned bottom-left (left pane + login gate). */
+.nemo-build-id {
+    position: absolute;
+    bottom: 4px;
+    left: 8px;
+    font-size: 0.75em;
+    color: #8a94a0;
+    opacity: 0.8;
+}
+.left-pane .nemo-build-id {
+    color: color(lighter-text);
+}
+
 .left-pane > div.connect-status {
     position: absolute;
     bottom: 0;

@@ -812,6 +812,13 @@ pub fn get_version() -> String {
     crate::VERSION.to_owned()
 }
 
+/// TBFDesk: build id baked by build.rs (git short hash + commit date, "+" when
+/// the tree was dirty) so a user can tell WHICH build is running.
+#[inline]
+pub fn get_build_id() -> String {
+    env!("NEMO_BUILD_ID").to_owned()
+}
+
 #[cfg(any(target_os = "android", target_os = "ios", feature = "flutter"))]
 #[inline]
 pub fn get_app_name() -> String {

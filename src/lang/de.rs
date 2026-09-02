@@ -176,6 +176,7 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("Enter 1 to 30 days", "Bitte 1 bis 30 Tage eingeben"),
         ("Leave empty for the default (1 day). Allowed: 1 to 30 days.", "Leer lassen für den Standard (1 Tag). Erlaubt: 1 bis 30 Tage."),
         ("Automatic updates are not available yet.", "Automatische Updates sind noch nicht verfügbar – der TBF-Update-Server muss erst eingerichtet werden."),
+        ("Identifies the exact running build (git commit and date).", "Kennzeichnet den laufenden Build (Git-Commit und Datum)."),
         ("to be added", "wird ergänzt"),
         ("Based on the open-source RustDesk project.", "Basiert auf dem Open-Source-Projekt RustDesk."),
         ("Let the person connecting control this computer's keyboard and mouse.", "Erlaubt der verbindenden Person, Tastatur und Maus dieses Computers zu steuern."),
