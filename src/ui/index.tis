@@ -1391,13 +1391,8 @@ class NemoSettingsDialog: Reactor.Component {
             pw.push(this.tRow("tfa", translate('enable-2fa-title'), handler.has_valid_2fa(), false, "tfa"));
         }
 
-        // ---- Account -------------------------------------------------------
-        var acct = [];
-        if (!disable_account) {
-            var accountLabel = handler.get_local_option("access_token") ? getAccountLabelWithHandle() : '';
-            if (accountLabel) acct.push(this.aRow("logout", translate('Logout') + " (" + accountLabel + ")"));
-            else acct.push(this.aRow("login", translate('Login')));
-        }
+        // Account (Login/Logout) intentionally NOT here — it lives in the
+        // account bar at the top of the left pane.
 
         return <div .nemo-settings-overlay>
             <div .nemo-settings-panel>
@@ -1410,7 +1405,6 @@ class NemoSettingsDialog: Reactor.Component {
                     {this.section(translate('Security') + " & " + translate('Network'), sec)}
                     {this.section(translate('General'), gen)}
                     {this.section(translate('Password'), pw)}
-                    {this.section(translate('Account'), acct)}
                 </div>
             </div>
         </div>;
@@ -1532,6 +1526,7 @@ class App: Reactor.Component
                     <div .left-pane style={incoming_only ? "width:*" : ""}>
                     <div>
                         {!outgoing_only && nemoIsLoggedIn() && <div .nemo-account-bar>
+                            <span .link #open-settings title={translate('Settings')} style="position:absolute; right:4px; top:4px; transform:scale(0.72); transform-origin:right top; opacity:0.75">{svg_menu}</span>
                             <div .nemo-account-name>{nemoAccountName()}</div>
                             <div style="flow:horizontal">
                                 <button .button .outline #nemo-logoff>{translate('Logout')}</button>
@@ -1540,7 +1535,7 @@ class App: Reactor.Component
                         {is_custom_client && handler.get_builtin_option("hide-powered-by-me") != "Y" ? <div .link #powered-by style="opacity:0.5;font-size:0.8em;text-decoration:underline">{translate('powered_by_me')}</div> : ""}
                         <div .title style="flow:horizontal; position:relative; height:1.6em; line-height:1.6em">
                             <span>{translate('Your Desktop')}</span>
-                            <span .link #open-settings title={translate('Settings')} style="position:absolute; right:0; bottom:-2px; transform:scale(0.8); transform-origin:right bottom; opacity:0.8">{svg_menu}</span>
+                            {(outgoing_only || !nemoIsLoggedIn()) ? <span .link #open-settings title={translate('Settings')} style="position:absolute; right:0; bottom:-2px; transform:scale(0.8); transform-origin:right bottom; opacity:0.8">{svg_menu}</span> : ""}
                         </div>
                         <div .lighter-text>{outgoing_only ? translate('outgoing_only_desk_tip') : translate('desk_tip')}</div>
                         {outgoing_only ? <div style="position:absolute; left:-10000px; top:-10000px; width:0; height:0; overflow:hidden"><MyIdMenu /></div> : ""}
@@ -1915,7 +1910,7 @@ class PasswordArea: Reactor.Component {
             <div .password style="flow:horizontal">
                 {this.renderPop()}
                 <PasswordEyeArea />
-                {!disable_settings && svg_edit}
+                {"" /* pencil removed: password settings now live in the Settings dialog's Password section */}
             </div>
         </div>;
     }

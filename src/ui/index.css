@@ -451,6 +451,7 @@ textarea.grey-text {
    prominent font and the Log off button stacked directly beneath it. */
 .nemo-account-bar {
     flow: vertical;
+    position: relative;
     margin-bottom: 12px;
     padding: 8px 10px;
     background: #eef5f7;
@@ -463,6 +464,7 @@ textarea.grey-text {
     font-weight: bold;
     color: #0b7285;
     margin-bottom: 8px;
+    padding-right: 20px;
 }
 .nemo-account-bar button#nemo-logoff {
     padding: 4px 14px;
