@@ -1251,6 +1251,59 @@ function nemoToggle2fa() {
     }, 400, get_msgbox_width());
 }
 
+// Plain-language, one-line explanations shown as hover tooltips on each settings
+// row (keyed by row id / action). The English text is the translate() key;
+// German is filled in de.rs.
+var NEMO_SETTING_TIPS = {
+    "enable-keyboard": "Let the person connecting control this computer's keyboard and mouse.",
+    "enable-clipboard": "Share copy & paste (clipboard) between this computer and the remote one.",
+    "enable-file-transfer": "Allow copying files to and from this computer during a session.",
+    "enable-camera": "Let the connecting person view this computer's camera.",
+    "enable-terminal": "Allow opening a command line (terminal) on this computer.",
+    "enable-remote-restart": "Allow the connecting person to restart this computer.",
+    "enable-tunnel": "Allow forwarding a network port through the connection (advanced).",
+    "enable-block-input": "Let the controller block this computer's own keyboard and mouse during a session.",
+    "enable-privacy-mode": "Black out this computer's screen during a session so bystanders can't watch.",
+    "enable-lan-discovery": "Let other TBFDesk clients on the same local network find this computer.",
+    "allow-remote-config-modification": "Allow a connected controller to change this computer's TBFDesk settings remotely.",
+    "custom-server": "Choose which server this client uses to find and reach other computers.",
+    "nemo-management": "Central management server settings (address and key).",
+    "nemo-alias": "Give this computer a friendly name shown instead of its number.",
+    "import-device-key": "Import a key issued by your administrator so the server trusts this device.",
+    "whitelist": "Only accept incoming connections from these specific IP addresses.",
+    "socks5-server": "Send TBFDesk traffic through a proxy server.",
+    "allow-websocket": "Connect using WebSocket, which can help get through strict firewalls.",
+    "disable-udp": "Turn off UDP and use only TCP; can help on restrictive networks (usually slower).",
+    "allow-insecure-tls-fallback": "Accept the server's self-signed certificate. Needed until a trusted certificate is installed; the login stays encrypted.",
+    "stop-service": "Run TBFDesk as a background service so this computer is reachable even when nobody is logged in.",
+    "direct-server": "Allow connecting straight to this computer by its IP address, without going through the server.",
+    "edit-direct-port": "The network port used for direct IP access.",
+    "share-rdp": "Share Windows Remote Desktop (RDP) sessions through TBFDesk.",
+    "allow-darktheme": "Use the dark color scheme for the app.",
+    "allow-auto-update": "Automatically download and install new versions of the client.",
+    "audio": "Choose which microphone or sound the connecting person hears from this computer.",
+    "enhancements": "Extra image and session options (hardware acceleration, adaptive quality, and more).",
+    "language": "Choose the app's display language.",
+    "about": "Show the version, fingerprint and license information.",
+    "change-id": "Change this computer's TBFDesk ID number.",
+    "approve-mode-password": "Incoming connections must type this computer's password.",
+    "approve-mode-click": "Incoming connections must wait for you here to click Accept.",
+    "approve-mode-both": "Incoming connections are accepted by either the password or your click.",
+    "use-temporary-password": "Use the one-time password shown on screen (it changes each time).",
+    "use-permanent-password": "Use a fixed password that you set yourself.",
+    "use-both-passwords": "Accept either the one-time password or your fixed password.",
+    "set-permanent-password": "Set or change the fixed password for incoming access.",
+    "clear-permanent-password": "Remove the fixed password so only the one-time password works.",
+    "tpl-6": "Make the one-time password 6 characters long.",
+    "tpl-8": "Make the one-time password 8 characters long.",
+    "tpl-10": "Make the one-time password 10 characters long.",
+    "tfa": "Require a second code from an authenticator app to connect (two-factor).",
+};
+function settingTip(id) {
+    var t = NEMO_SETTING_TIPS[id];
+    return t ? translate(t) : "";
+}
+
 // Entry point used by both the main-window "..." button (MyIdMenu) and the
 // outgoing-only #open-settings link.
 function nemoOpenSettingsDialog() {
@@ -1279,7 +1332,7 @@ class NemoSettingsDialog: Reactor.Component {
     function tRow(id, label, on, fixed, kind, extra = null) {
         var cls = "nemo-set-row nemo-set-toggle " + (on ? "on" : "off");
         if (fixed) cls += " fixed";
-        return <div class={cls} data-toggle={id} data-kind={kind} data-fixed={fixed ? "1" : "0"}>
+        return <div class={cls} data-toggle={id} data-kind={kind} data-fixed={fixed ? "1" : "0"} title={settingTip(id)}>
             <span .nemo-set-box>{on ? svg_checkmark : ""}</span>
             <span .nemo-set-label>{label}</span>
             {extra ? extra : ""}
@@ -1287,7 +1340,7 @@ class NemoSettingsDialog: Reactor.Component {
     }
 
     function aRow(action, label) {
-        return <div class="nemo-set-row nemo-set-action" data-action={action}>
+        return <div class="nemo-set-row nemo-set-action" data-action={action} title={settingTip(action)}>
             <span .nemo-set-label>{label}</span>
             <span .nemo-set-arrow>{">"}</span>
         </div>;
@@ -1536,7 +1589,8 @@ class NemoSettingsDialog: Reactor.Component {
         var langs = JSON.parse(handler.get_langs());
         var curlang = handler.get_local_option("lang") || "default";
         var langItems = [<li id="default" class={curlang == "default" ? "selected" : ""}><span>{svg_checkmark}</span>{translate('Default')}</li>];
-        for (var lg in langs) langItems.push(<li id={lg[0]} class={curlang == lg[0] ? "selected" : ""}><span>{svg_checkmark}</span>{lg[1]}</li>);
+        // Only German + English are offered (this fork's supported languages).
+        for (var lg in langs) { if (lg[0] == "en" || lg[0] == "de") langItems.push(<li id={lg[0]} class={curlang == lg[0] ? "selected" : ""}><span>{svg_checkmark}</span>{lg[1]}</li>); }
 
         var ainputs = handler.get_sound_inputs();
         if (is_win) ainputs = ["System Sound"].concat(ainputs);
