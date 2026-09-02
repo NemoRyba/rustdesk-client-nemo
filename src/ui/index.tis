@@ -1189,7 +1189,6 @@ class App: Reactor.Component
                         {!outgoing_only && nemoIsLoggedIn() && <div .nemo-account-bar>
                             <div .nemo-account-name>{nemoAccountName()}</div>
                             <div style="flow:horizontal">
-                                <button .button .outline #nemo-refresh-ab style="margin-right:6px">{translate('Refresh')}</button>
                                 <button .button .outline #nemo-logoff>{translate('Logout')}</button>
                             </div>
                         </div>}
@@ -1216,6 +1215,9 @@ class App: Reactor.Component
                     {!system_error && handler.is_login_wayland() && !handler.current_is_wayland() ? <FixWayland /> : ""}
                     {!system_error && handler.current_is_wayland() ? <ModifyDefaultLogin /> : ""}
                     {incoming_only ? <ConnectStatus @{this.connect_status} /> : ""}
+                    {!outgoing_only && nemoIsLoggedIn() && <div .nemo-refresh-bottom>
+                        <button .button .outline #nemo-refresh-ab>{translate('Refresh')}</button>
+                    </div>}
                 </div>
                 {!incoming_only && <div .right-pane>
                     <div .right-content>
