@@ -334,6 +334,22 @@ menu {
   background: color(bg);
 }
 
+/* Nemo: the settings menu (#config-options) grew long enough to overflow below the
+   screen, hiding its lower entries. Flow it into multiple vertical columns capped to a
+   fixed height so every entry stays visible at once without scrolling. Tune max-height
+   to trade column count vs. height (smaller => more columns; ~380px gives ~3 columns for
+   the current item count). Other menus are unaffected. */
+menu#config-options {
+  flow: vertical-wrap;
+  max-height: 380px;
+}
+
+menu#config-options > div.separator {
+  /* keep separators as a thin rule spanning only their own column */
+  width: *;
+  height: 1px;
+}
+
 menu div.separator {
   height: 1px;
   width: *;

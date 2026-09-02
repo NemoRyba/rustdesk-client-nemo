@@ -36,7 +36,11 @@ pub const INIT_FPS: u32 = 15;
 // Bitrate ratio constants for different quality levels
 const BR_MAX: f32 = 40.0; // 2000 * 2 / 100
 const BR_MIN: f32 = 0.2;
-const BR_MIN_HIGH_RESOLUTION: f32 = 0.1; // For high resolution, BR_MIN is still too high, so we set a lower limit
+// Nemo: lowered 0.1 -> 0.01 so a user-set custom bitrate as low as 1% (ratio 0.02, and
+// down to 0.5%) is honored instead of being silently reset to balanced by `ratio()`.
+// This is the effective bitrate floor for the whole QoS loop (see `ratio()` bounds
+// check); a lower floor suits this fork's low-bandwidth / reaction-time priority.
+const BR_MIN_HIGH_RESOLUTION: f32 = 0.01; // For high resolution, BR_MIN is still too high, so we set a lower limit
 const MAX_BR_MULTIPLE: f32 = 1.0;
 
 const HISTORY_DELAY_LEN: usize = 2;
