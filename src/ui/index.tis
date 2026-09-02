@@ -1355,11 +1355,38 @@ class NemoSettingsDialog: Reactor.Component {
         }
         gen.push(this.tRow("allow-darktheme", translate('Dark Theme'), handler.get_option("allow-darktheme") == "Y", handler.is_option_fixed("allow-darktheme"), "theme"));
         if (!disable_installation) this.pAllow(gen, "allow-auto-update", translate('Auto update'));
-        gen.push(this.aRow("audio", translate('Audio Input')));
-        gen.push(this.aRow("enhancements", translate('Enhancements')));
-        gen.push(this.aRow("language", translate('Language')));
         gen.push(this.aRow("about", translate('About') + " TBFDesk"));
         if (!disable_change_id && !disable_settings && handler.is_ok_change_id() && key_confirmed && connect_status > 0) gen.push(this.aRow("change-id", translate('Change ID')));
+
+        // Language / Audio / Enhancements rendered INLINE as their own sections —
+        // their native submenus can't fly out of the modal reliably. Same option
+        // keys + set logic as the AudioInputs/Languages/Enhancements components.
+        var lang = [];
+        var dlangs = JSON.parse(handler.get_langs());
+        var curlang = handler.get_local_option("lang") || "default";
+        var langfixed = handler.is_option_fixed("lang");
+        lang.push(this.tRow("lang:default", translate('Default'), curlang == "default", langfixed, "lang"));
+        for (var lg in dlangs) lang.push(this.tRow("lang:" + lg[0], lg[1], curlang == lg[0], langfixed, "lang"));
+
+        var audio = [];
+        if (!disable_settings) {
+            var ainputs = handler.get_sound_inputs();
+            if (is_win) ainputs = ["System Sound"].concat(ainputs);
+            if (ainputs.length) {
+                audio.push(this.tRow("enable-audio", translate('Mute'), handler.get_option("enable-audio") == "N", handler.is_option_fixed("enable-audio"), "audiomute"));
+                var curaudio = handler.get_option("audio-input") || (is_win ? "System Sound" : "");
+                var afixed = handler.is_option_fixed("audio-input");
+                for (var inm in ainputs) audio.push(this.tRow("audioin:" + inm, translate(inm), curaudio == inm, afixed, "audioin"));
+            }
+        }
+
+        var enh = [];
+        if (!disable_settings) {
+            if (handler.has_hwcodec() || handler.has_vram()) enh.push(this.tRow("enable-hwcodec", translate('Enable hardware codec'), handler.get_option("enable-hwcodec") != "N", handler.is_option_fixed("enable-hwcodec"), "enh"));
+            enh.push(this.tRow("enable-abr", translate('Adaptive bitrate') + " (beta)", handler.get_option("enable-abr") != "N", handler.is_option_fixed("enable-abr"), "enh"));
+            if (handler.support_remove_wallpaper()) enh.push(this.tRow("allow-remove-wallpaper", translate('Remove wallpaper during incoming sessions'), handler.get_option("allow-remove-wallpaper") == "Y", handler.is_option_fixed("allow-remove-wallpaper"), "enh"));
+            enh.push(this.tRow("keep-awake-during-incoming-sessions", translate('keep-awake-during-incoming-sessions-label'), handler.get_option("keep-awake-during-incoming-sessions") != "N", handler.is_option_fixed("keep-awake-during-incoming-sessions"), "enh"));
+        }
 
         // ---- Password (moved here from the one-time-password "edit" menu) ---
         var pw = [];
@@ -1401,6 +1428,9 @@ class NemoSettingsDialog: Reactor.Component {
             { title: translate('Security') + " & " + translate('Network'), rows: sec },
             { title: translate('General'), rows: gen },
             { title: translate('Password'), rows: pw },
+            { title: translate('Language'), rows: lang },
+            { title: translate('Audio Input'), rows: audio },
+            { title: translate('Enhancements'), rows: enh },
         ];
         sections.sort(function(a, b) { return b.rows.length - a.rows.length; });
         var sectionNodes = [];
@@ -1461,6 +1491,23 @@ class NemoSettingsDialog: Reactor.Component {
             if (passwordArea) passwordArea.update();
         } else if (kind == "tfa") {
             nemoToggle2fa();
+        } else if (kind == "lang") {
+            var code = id.substring(5);
+            if (code == "default") code = default_option_lang;
+            handler.set_local_option("lang", code);
+            if (app) app.update();
+        } else if (kind == "audiomute") {
+            handler.set_option("enable-audio", handler.get_option("enable-audio") != "N" ? "N" : default_option_yes);
+        } else if (kind == "audioin") {
+            var name = id.substring(8);
+            if (name == (is_win ? "System Sound" : "")) name = "";
+            handler.set_option("audio-input", name);
+        } else if (kind == "enh") {
+            if (id.indexOf("allow-") == 0) {
+                handler.set_option(id, handler.get_option(id) == "Y" ? default_option_no : "Y");
+            } else {
+                handler.set_option(id, handler.get_option(id) != "N" ? "N" : default_option_yes);
+            }
         }
         this.update();
     }
@@ -1478,9 +1525,6 @@ class NemoSettingsDialog: Reactor.Component {
         else if (act == "change-id") nemoChangeIdDialog();
         else if (act == "login") { this.close(); login(); }
         else if (act == "logout") { this.close(); logout(); }
-        else if (act == "audio") this.popupSub("menu#audio-input", me);
-        else if (act == "enhancements") this.popupSub("menu#enhancements-menu", me);
-        else if (act == "language") this.popupSub("menu#languages", me);
         else if (act == "set-permanent-password") nemoSetPasswordDialog();
         else if (act == "clear-permanent-password") { handler.set_permanent_password(""); nemoRefreshPwUi(); this.update(); }
     }

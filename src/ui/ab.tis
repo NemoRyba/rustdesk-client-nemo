@@ -1,5 +1,8 @@
 var selectTags = [];
 var ab = { tags: [], peers: [] };
+// Reload icon (filled path, no inline fill -> takes the element color via CSS,
+// exactly like search_icon). Rendered as {svg_reload}; styled by .ab-reload-btn.
+var svg_reload = <svg viewBox="0 0 24 24"><path d="M17.65 6.35A7.958 7.958 0 0 0 12 4a8 8 0 1 0 7.73 10h-2.08A6 6 0 1 1 12 6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>;
 var abLoading;
 var abError;
 var current_menu_peer_id = '';
@@ -552,7 +555,7 @@ class MultipleSessions: Reactor.Component {
                         <span #fav class={type == "fav" ? 'active' : 'inactive'}>{translate('Favorites')}</span>
                         {handler.is_installed() && <span #lan class={type == "lan" ? 'active' : 'inactive'}>{translate('Discovered')}</span>}
                         {!disable_account && !disable_ab && <span #ab class={type == "ab" ? 'active' : 'inactive'}>{translate('Address book')}</span>}
-                        {!disable_account && !disable_ab && <span #nemo-refresh-ab .link title={translate('Reload address book from server')} style="padding:6px 6px; opacity:0.75; cursor:pointer"><svg viewBox="0 0 24 24" style="size:15px; vertical-align:middle"><path fill="#8a8a8a" d="M17.65 6.35A7.958 7.958 0 0 0 12 4a8 8 0 1 0 7.73 10h-2.08A6 6 0 1 1 12 6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg></span>}
+                        {!disable_account && !disable_ab && <span #nemo-refresh-ab .ab-reload-btn title={translate('Reload address book from server')}>{svg_reload}</span>}
                     </div>
                     {!this.hidden && !(disable_account && type == "ab") && <SearchBar type={type} />}
                     {!this.hidden && !(disable_account && type == "ab") && <SessionStyle type={type} />}
@@ -666,6 +669,15 @@ function getAb() {
             ab = JSON.parse(data.data);
             if (!ab.tags) ab.tags = [];
             if (!ab.peers) ab.peers = [];
+            // Filter this client itself out of the address book: the server may
+            // include the local machine in the curated list, but a client should
+            // never list/connect to itself.
+            var myid = handler.get_id();
+            if (myid) {
+                var kept = [];
+                for (var p in ab.peers) { if (p.id != myid) kept.push(p); }
+                ab.peers = kept;
+            }
         }
         abLoading = false;
         app.update();
