@@ -197,6 +197,16 @@ pub async fn create_tcp_connection(
     let mut stream = stream;
     let id = server.write().unwrap().get_new_id();
     let (sk, pk) = Config::get_key_pair();
+    // H3: the controlled side must never serve an unencryptable session when policy
+    // requires encryption. The secure handshake below only runs when `secure` is set and
+    // this machine has a keypair; if either is missing while encryption is required, a
+    // modified controller (e.g. one requesting a non-secure connection) could otherwise
+    // obtain a plaintext session on the workstation -- refuse it here, before the block.
+    if crate::common::nemo_require_encrypted_session()
+        && !(secure && pk.len() == sign::PUBLICKEYBYTES && sk.len() == sign::SECRETKEYBYTES)
+    {
+        bail!("Encrypted session required by TBF policy; refusing an unencryptable incoming connection");
+    }
     if secure && pk.len() == sign::PUBLICKEYBYTES && sk.len() == sign::SECRETKEYBYTES {
         let mut sk_ = [0u8; sign::SECRETKEYBYTES];
         sk_[..].copy_from_slice(&sk);

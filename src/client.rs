@@ -843,7 +843,17 @@ impl Client {
         let sign_pk = match sign_pk {
             Some(v) => v,
             None => {
-                // S-A: fail closed instead of running plaintext when policy requires encryption.
+                // B: server-anchored encrypted DIRECT-IP session. There is no rendezvous
+                // broker here (signed_id_pk is empty), but the controlled peer still sends a
+                // self-signed SignedId; verify it against the Ed25519 key the server pushed
+                // (signed) in `nemo-peer-keys` for the id it claims -> anchored, with no
+                // TOFU/MITM window, no connect-time round-trip, and no plaintext.
+                if signed_id_pk.is_empty() {
+                    if let Some(pk) = Self::secure_connection_direct(conn).await? {
+                        return Ok(Some(pk));
+                    }
+                }
+                // S-A/H2: fail closed instead of running plaintext when policy requires encryption.
                 if crate::common::nemo_require_encrypted_session() {
                     bail!("Encrypted session required by TBF policy, but the peer's key is unavailable");
                 }
@@ -852,6 +862,7 @@ impl Client {
                 return Ok(option_pk);
             }
         };
+        let mut secured = false;
         match timeout(READ_TIMEOUT, conn.next()).await? {
             Some(res) => {
                 let bytes = res?;
@@ -869,6 +880,7 @@ impl Client {
                                 });
                                 timeout(CONNECT_TIMEOUT, conn.send(&msg_out)).await??;
                                 conn.set_key(key);
+                                secured = true;
                             } else {
                                 log::error!("Handshake failed: sign failure");
                                 conn.send(&Message::new()).await?;
@@ -898,7 +910,61 @@ impl Client {
                 bail!("Reset by the peer");
             }
         }
+        // H2: if policy requires encryption and none of the branches above established an
+        // encrypted channel (id mismatch / invalid message type / invalid format), fail
+        // closed instead of silently returning a plaintext connection.
+        if !secured && crate::common::nemo_require_encrypted_session() {
+            bail!("Encrypted session required by TBF policy, but encryption was not established");
+        }
         Ok(option_pk)
+    }
+
+    // B: establish an encrypted session on a DIRECT-IP connection (no rendezvous broker)
+    // by verifying the controlled peer's self-signed SignedId against the Ed25519 key the
+    // management server pushed (signed) in `nemo-peer-keys`. Returns Some(anchored pk)
+    // once the encrypted channel is set up; None if no anchored key is known for the id
+    // the peer claims (the caller then fails closed under policy, or may fall back to
+    // plaintext). Bails on a signature-verify failure under a required-encryption policy
+    // so the channel is never silently downgraded by a MITM.
+    async fn secure_connection_direct(conn: &mut Stream) -> ResultType<Option<Vec<u8>>> {
+        let bytes = match timeout(READ_TIMEOUT, conn.next()).await? {
+            Some(res) => res?,
+            None => bail!("Reset by the peer"),
+        };
+        let si = match Message::parse_from_bytes(&bytes).ok().and_then(|m| m.union) {
+            Some(message::Union::SignedId(si)) => si,
+            // Not a secure handshake (peer sent no SignedId): let the caller decide.
+            _ => return Ok(None),
+        };
+        let Some(sign_pk) = crate::common::nemo_anchored_key_for_signed_id(&si.id) else {
+            // No server-pushed key for the id this peer claims; caller fails closed
+            // under policy (or falls back to plaintext when encryption isn't required).
+            return Ok(None);
+        };
+        let (id, their_pk_b) = match decode_id_pk(&si.id, &sign_pk) {
+            Ok(v) => v,
+            Err(_) => {
+                if crate::common::nemo_require_encrypted_session() {
+                    bail!("Encrypted session required by TBF policy: direct peer signature invalid (possible MITM)");
+                }
+                log::warn!("direct-IP peer key mismatch for claimed id; falling back to non-secure");
+                return Ok(None);
+            }
+        };
+        let (asymmetric_value, symmetric_value, secret) = create_symmetric_key_msg(their_pk_b);
+        let mut msg_out = Message::new();
+        msg_out.set_public_key(PublicKey {
+            asymmetric_value,
+            symmetric_value,
+            ..Default::default()
+        });
+        timeout(CONNECT_TIMEOUT, conn.send(&msg_out)).await??;
+        conn.set_key(secret);
+        log::info!(
+            "direct-IP session encrypted via server-anchored key (peer id {})",
+            id
+        );
+        Ok(Some(sign_pk.0.to_vec()))
     }
 
     /// Request a relay connection to the server.

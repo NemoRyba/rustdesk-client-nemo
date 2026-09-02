@@ -2084,6 +2084,45 @@ pub fn create_symmetric_key_msg(their_pk_b: [u8; 32]) -> (Bytes, Bytes, secretbo
     (Vec::from(our_pk_b.0).into(), sealed_key.into(), key)
 }
 
+// B (encrypted direct-IP): the management server pushes a signed `nemo-peer-keys` map
+// ("id,pkB64;id,pkB64", pk = the peer's registered Ed25519 identity key) inside the
+// signed policy, so it is anchored by the same server key the controller already trusts
+// as rs_pk. This lets a controller verify a direct-IP peer's self-signed `SignedId`
+// with no rendezvous broker, no TOFU/MITM window, and no connect-time round-trip.
+// Returns the peer's Ed25519 public key for the given id, if the server pushed one.
+pub fn nemo_peer_ed25519_pk(id: &str) -> Option<sign::PublicKey> {
+    if id.is_empty() {
+        return None;
+    }
+    let map = Config::get_option("nemo-peer-keys");
+    if map.is_empty() {
+        return None;
+    }
+    for entry in map.split(';') {
+        let mut it = entry.splitn(2, ',');
+        if it.next().map(|e| e.trim()) != Some(id) {
+            continue;
+        }
+        if let Some(pkb64) = it.next() {
+            return get_rs_pk(pkb64.trim());
+        }
+    }
+    None
+}
+
+// Select the anchored Ed25519 key to verify a direct peer's `SignedId`, keyed by the id
+// the peer *claims* inside it. The claimed id is parsed WITHOUT trusting the signature
+// (sodiumoxide `sign::sign` == 64-byte signature || message) purely to pick a candidate
+// key; the caller then verifies the signature against it, so a spoofed id cannot succeed
+// unless the attacker also holds that id's private key.
+pub fn nemo_anchored_key_for_signed_id(signed: &[u8]) -> Option<sign::PublicKey> {
+    if signed.len() <= sign::SIGNATUREBYTES {
+        return None;
+    }
+    let claimed = IdPk::parse_from_bytes(&signed[sign::SIGNATUREBYTES..]).ok()?;
+    nemo_peer_ed25519_pk(&claimed.id)
+}
+
 #[inline]
 pub fn using_public_server() -> bool {
     if nemo_exe_custom_server_configured() {

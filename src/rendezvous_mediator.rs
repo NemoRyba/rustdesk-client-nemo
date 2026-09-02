@@ -873,7 +873,13 @@ async fn direct_server(server: ServerPtr) {
                             server,
                             hbb_common::Stream::from(stream, local_addr),
                             addr,
-                            false,
+                            // B: was `false` (direct-IP always ran plaintext). Enable the
+                            // secure handshake so the controlled side sends its SignedId and
+                            // a controller holding the server-pushed anchored key encrypts
+                            // the session (server-anchored, no relay). Falls back to plaintext
+                            // for a controller that can't anchor UNLESS policy requires
+                            // encryption, in which case the handshake below fails closed.
+                            true,
                             None, // Direct connections don't have control_permissions
                         )
                         .await

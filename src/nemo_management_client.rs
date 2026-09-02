@@ -322,6 +322,17 @@ fn apply_policy(policy: ManagementPolicy) -> ResultType<()> {
             .cloned()
             .unwrap_or_default(),
     );
+    // B: persist the signed `{id -> Ed25519 pubkey}` map so a controller can verify a
+    // direct-IP peer's SignedId (server-anchored encryption with no rendezvous broker).
+    // Signed by the same server key trusted as rs_pk, so it can't be forged.
+    Config::set_option(
+        "nemo-peer-keys".to_owned(),
+        policy
+            .options
+            .get("nemo-peer-keys")
+            .cloned()
+            .unwrap_or_default(),
+    );
     crate::ui_interface::refresh_options();
     Ok(())
 }
