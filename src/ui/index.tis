@@ -242,7 +242,9 @@ class AudioInputs: Reactor.Component {
         if (is_win) inputs = ["System Sound"].concat(inputs);
         if (!inputs.length) return <li style="display:hidden" />;
         var me = this;
-        self.timer(1ms, function() { me.toggleMenuState() });
+        // try/catch: after the Settings-dialog rework these vestigial native-menu
+        // components can re-render unbound (plain <li>, no methods) — harmless.
+        self.timer(1ms, function() { try { me.toggleMenuState() } catch (e) {} });
         return <li>{translate('Audio Input')}
             <menu #audio-input key={inputs.length}>
                 <li #enable-audio><span>{svg_checkmark}</span>{translate("Mute")}</li>
@@ -297,7 +299,7 @@ class Languages: Reactor.Component {
     function render() {
         var langs = JSON.parse(handler.get_langs());
         var me = this;
-        self.timer(1ms, function() { me.toggleMenuState() });
+        self.timer(1ms, function() { try { me.toggleMenuState() } catch (e) {} });
         return <li>{translate('Language')}
             <menu #languages key={langs.length}>
                 <li id="default"><span>{svg_checkmark}</span>Default</li>
@@ -343,7 +345,7 @@ class Enhancements: Reactor.Component {
         var has_vram = handler.has_vram();
         var support_remove_wallpaper = handler.support_remove_wallpaper();
         var me = this;
-        self.timer(1ms, function() { me.toggleMenuState() });
+        self.timer(1ms, function() { try { me.toggleMenuState() } catch (e) {} });
         return <li>{translate('Enhancements')}
             <menu #enhancements-menu>
                 {(has_hwcodec || has_vram) ? <li #enable-hwcodec><span>{svg_checkmark}</span>{translate("Enable hardware codec")}</li> : ""}
@@ -808,14 +810,18 @@ class MyIdMenu: Reactor.Component {
 
     function showAbout() {
         var name = "TBFDesk";  // display name only; APP_NAME stays "RustDesk" (config dir)
+        // Placeholders below (website/support/privacy) — real TBF info TBD, see
+        // OPEN-TODOS.md "About-dialog placeholders". Clickable-link wiring
+        // (.link .custom-event url='…') is kept ready in the callback.
         msgbox("custom-nocancel-nook-hasclose", translate("About") + " " + name, "<div style='line-height: 2em'> \
             <div>Version: " + handler.get_version() + " \
             <div>Fingerprint: " + handler.get_fingerprint() + " \
-            <div .link .custom-event url='https://rustdesk.com/privacy.html'>" + translate("Privacy Statement") + "</div> \
-            <div .link .custom-event url='https://rustdesk.com'>" + translate("Website") + "</div> \
-	    <div style='background: #2c8cff; color: white; padding: 1em; margin-top: 1em;'>Copyright &copy; 2025 Purslane Ltd.\
+            <div>" + translate("Website") + ": (" + translate("to be added") + ") \
+            <div>Support: (" + translate("to be added") + ") \
+            <div>" + translate("Privacy Statement") + ": (" + translate("to be added") + ") \
+	    <div style='background: #2c8cff; color: white; padding: 1em; margin-top: 1em;'>Copyright &copy; 2026 TBF GmbH\
             <br />" + handler.get_license() + " \
-            <p style='font-weight: bold'>" + translate("Slogan_tip") + "</p>\
+            <p>" + translate("Based on the open-source RustDesk project.") + "</p>\
             </div>\
         </div>", "", function(el) {
             if (el && el.attributes) {
@@ -915,6 +921,39 @@ function editDirectAccessPort() {
             p = p + '';
         }
         if (p != p0) handler.set_option('direct-access-port', p);
+      }, msgbox_default_height, get_msgbox_width());
+}
+
+// ---- Auto-update check interval (Settings → General) -----------------------
+// Stored in SECONDS in "auto-update-check-interval"; empty = default (1 day).
+// Allowed 1–30 days. The whole feature is DORMANT (row greyed) until the TBF
+// update server exists — see OPEN-TODOS HIGH #1.
+
+function nemoUpdateIntervalLabel() {
+    var s = (handler.get_option('auto-update-check-interval') || '').toInteger();
+    if (!(s > 0) || s % 86400 != 0) return translate('1 day');
+    var d = s / 86400;
+    return d == 1 ? translate('1 day') : d + " " + translate('days');
+}
+
+function nemoEditUpdateInterval() {
+    var cur = (handler.get_option('auto-update-check-interval') || '').toInteger();
+    var num = (cur > 0 && cur % 86400 == 0) ? (cur / 86400) + '' : "";
+    msgbox("custom-update-interval", translate('Auto update check interval'), <div .form .set-password>
+            <div><span style="width: 90px;">{translate('Interval')}:</span><input|text name='ival' value={num} style="width: 70px;" /><span style="margin-left: 8px;">{translate('days')}</span></div>
+            <div style="font-size: 0.9em; opacity: 0.7; margin-top: 0.5em;">{translate('Leave empty for the default (1 day). Allowed: 1 to 30 days.')}</div>
+        </div>, "", function(res=null) {
+        if (!res) return;
+        var v = (res.ival || '').trim();
+        if (!v) {
+            handler.set_option('auto-update-check-interval', '');
+            if (nemoSettingsDialog) nemoSettingsDialog.update();
+            return;
+        }
+        var n = v.toInteger();
+        if (!(n >= 1 && n <= 30)) return translate('Enter 1 to 30 days');
+        handler.set_option('auto-update-check-interval', (n * 86400) + '');
+        if (nemoSettingsDialog) nemoSettingsDialog.update();
       }, msgbox_default_height, get_msgbox_width());
 }
 
@@ -1298,6 +1337,7 @@ var NEMO_SETTING_TIPS = {
     "tpl-8": "Make the one-time password 8 characters long.",
     "tpl-10": "Make the one-time password 10 characters long.",
     "tfa": "Require a second code from an authenticator app to connect (two-factor).",
+    "update-interval": "How often the app checks for a new version.",
 };
 function settingTip(id) {
     var t = NEMO_SETTING_TIPS[id];
@@ -1407,7 +1447,16 @@ class NemoSettingsDialog: Reactor.Component {
             if (is_win && handler.is_installed()) gen.push(this.tRow("share-rdp", translate('Enable RDP session sharing'), handler.is_share_rdp(), false, "rdp"));
         }
         gen.push(this.tRow("allow-darktheme", translate('Dark Theme'), handler.get_option("allow-darktheme") == "Y", handler.is_option_fixed("allow-darktheme"), "theme"));
-        if (!disable_installation) this.pAllow(gen, "allow-auto-update", translate('Auto update'));
+        if (!disable_installation) {
+            // Auto update is DORMANT until the TBF update server exists
+            // (OPEN-TODOS HIGH #1): the row is greyed and fully non-interactive
+            // (no nemo-set-toggle class → no click handler matches it).
+            gen.push(<div class="nemo-set-row fixed" title={translate('Automatic updates are not available yet.')}>
+                <span .nemo-set-box></span>
+                <span .nemo-set-label>{translate('Auto update')}</span>
+                <div .nemo-upint-right><span .nemo-set-arrow>{"(" + nemoUpdateIntervalLabel() + ")  >"}</span></div>
+            </div>);
+        }
         gen.push(this.aRow("audio", translate('Audio Input')));
         gen.push(this.aRow("enhancements", translate('Enhancements')));
         gen.push(this.aRow("language", translate('Language')));

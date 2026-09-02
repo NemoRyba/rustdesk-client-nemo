@@ -22,7 +22,19 @@ lazy_static::lazy_static! {
 
 static CONTROLLING_SESSION_COUNT: AtomicUsize = AtomicUsize::new(0);
 
-const DUR_ONE_DAY: Duration = Duration::from_secs(60 * 60 * 24);
+// User-configurable check interval (Settings → General → Auto update), stored
+// in SECONDS in the "auto-update-check-interval" option; default one day.
+// Allowed range: 1 to 30 days. NOTE: the whole feature is dormant until the
+// TBF update server exists (OPEN-TODOS HIGH #1) — the Settings row is greyed.
+fn get_check_interval() -> Duration {
+    const DAY: u64 = 60 * 60 * 24;
+    let secs = config::Config::get_option("auto-update-check-interval")
+        .parse::<u64>()
+        .ok()
+        .filter(|s| (DAY..=DAY * 30).contains(s))
+        .unwrap_or(DAY);
+    Duration::from_secs(secs)
+}
 
 pub fn update_controlling_session_count(count: usize) {
     CONTROLLING_SESSION_COUNT.store(count, Ordering::SeqCst);
@@ -87,29 +99,40 @@ fn start_auto_update_check_(rx_msg: Receiver<UpdateMsg>) {
         log::error!("Error checking for updates: {}", e);
     }
 
-    const MIN_INTERVAL: Duration = Duration::from_secs(60 * 10);
-    const RETRY_INTERVAL: Duration = Duration::from_secs(60 * 30);
+    const MIN_MANUAL_INTERVAL: Duration = Duration::from_secs(60 * 10);
+    const MIN_RETRY: Duration = Duration::from_secs(60);
+    const MAX_RETRY: Duration = Duration::from_secs(60 * 30);
+    // Wake at least this often so a changed "auto-update-check-interval" takes
+    // effect without restarting; a check only runs when it is actually due.
+    const POLL_INTERVAL: Duration = Duration::from_secs(60 * 5);
     let mut last_check_time = Instant::now();
-    let mut check_interval = DUR_ONE_DAY;
+    let mut retry_not_before = Instant::now();
     loop {
-        let recv_res = rx_msg.recv_timeout(check_interval);
+        let interval = get_check_interval();
+        let recv_res = rx_msg.recv_timeout(POLL_INTERVAL.min(interval));
         match &recv_res {
             Ok(UpdateMsg::CheckUpdate) | Err(_) => {
-                if last_check_time.elapsed() < MIN_INTERVAL {
-                    // log::debug!("Update check skipped due to minimum interval.");
+                let manually = matches!(recv_res, Ok(UpdateMsg::CheckUpdate));
+                if manually {
+                    if last_check_time.elapsed() < MIN_MANUAL_INTERVAL {
+                        // log::debug!("Update check skipped due to minimum interval.");
+                        continue;
+                    }
+                } else if Instant::now() < retry_not_before
+                    || last_check_time.elapsed() < interval
+                {
                     continue;
                 }
                 // Don't check update if there are alive connections.
                 if !has_no_active_conns() {
-                    check_interval = RETRY_INTERVAL;
+                    retry_not_before = Instant::now() + interval.clamp(MIN_RETRY, MAX_RETRY);
                     continue;
                 }
-                if let Err(e) = check_update(matches!(recv_res, Ok(UpdateMsg::CheckUpdate))) {
+                if let Err(e) = check_update(manually) {
                     log::error!("Error checking for updates: {}", e);
-                    check_interval = RETRY_INTERVAL;
+                    retry_not_before = Instant::now() + interval.clamp(MIN_RETRY, MAX_RETRY);
                 } else {
                     last_check_time = Instant::now();
-                    check_interval = DUR_ONE_DAY;
                 }
             }
             Ok(UpdateMsg::Exit) => break,

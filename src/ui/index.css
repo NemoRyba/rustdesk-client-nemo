@@ -488,8 +488,10 @@ html.darktheme .nemo-account-name {
     vertical-align: middle;
 }
 .ab-reload-btn:hover { opacity: 1; }
-.ab-reload-btn svg { vertical-align: middle; fill: none; stroke: #808080; }
-.ab-reload-btn:hover svg { stroke: #b8b8b8; }
+.ab-reload-btn svg { vertical-align: middle; fill: none; stroke: #666; }
+.ab-reload-btn:hover svg { stroke: #0071ff; }
+html.darktheme .ab-reload-btn svg { stroke: #ddd; }
+html.darktheme .ab-reload-btn:hover svg { stroke: #4da6ff; }
 /* TBFDesk: modal Settings dialog (replaces the native "..." context menu) */
 .nemo-settings-hidden { display: none; }
 
@@ -612,6 +614,15 @@ html.darktheme .nemo-account-name {
 
 .nemo-set-action .nemo-set-label {
     color: color(accent);
+}
+/* Auto-update row: right-aligned interval display (row is inert while the
+   feature is dormant — no update server yet). */
+.nemo-upint-right {
+    width: 50%;
+    flow: horizontal;
+}
+.nemo-upint-right .nemo-set-arrow {
+    margin-left: *;
 }
 .nemo-set-arrow {
     color: color(lighter-text);

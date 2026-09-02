@@ -1,7 +1,8 @@
 var selectTags = [];
 var ab = { tags: [], peers: [] };
-// Reload icon — copied from the app's WORKING svg_refresh_password: width/height
-// ATTRIBUTES (not CSS size) + fill:none + stroke via a LITERAL CSS color.
+// Address-book reload icon (styled via .ab-reload-btn svg in index.css).
+// NOTE: MultipleSessions.onSize() must skip the icon's span — it sizes tabs by
+// text length, and a textless span would get max-width:0 (invisible icon).
 var svg_reload = <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 2v6h6M2.66 15.57a10 10 0 1 0 .57-8.38"/></svg>;
 var abLoading;
 var abError;
@@ -593,11 +594,15 @@ class MultipleSessions: Reactor.Component {
         var len = translate('Recent sessions').length;
         var totalChars = 0;
         var nEle = 0;
+        // The reload icon span has no text — the proportional width share below
+        // would give it max-width:0 and squash it invisible, so leave it alone.
         for (var el in this.$$(#sessions-type span)) {
+            if (el.id == "nemo-refresh-ab") continue;
             nEle += 1;
             totalChars += el.text.length;
         }
         for (var el in this.$$(#sessions-type span)) {
+            if (el.id == "nemo-refresh-ab") continue;
             var maxWidth = (w - nEle * 2 * 8) * el.text.length / totalChars;
             if (maxWidth < 0) maxWidth = 36;
             el.style.set{

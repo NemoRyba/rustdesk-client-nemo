@@ -334,6 +334,9 @@ class MsgboxComponent: Reactor.Component {
         for (var el in this.$$(.form button)) {
             values[el.attributes["name"]] = el.value;
         }
+        for (var el in this.$$(.form select)) {
+            if (el.attributes["name"]) values[el.attributes["name"]] = el.value;
+        }
         if (this.type == "input-password") {
             values.password = (values.password || "").trim();
             if (!values.password) {
