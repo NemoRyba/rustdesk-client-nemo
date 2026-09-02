@@ -488,7 +488,8 @@ html.darktheme .nemo-account-name {
     vertical-align: middle;
 }
 .ab-reload-btn:hover { opacity: 1; color: color(text); }
-.ab-reload-btn svg { size: 15px; vertical-align: middle; }
+.ab-reload-btn svg { size: 16px; vertical-align: middle; fill: none; stroke: color(light-text); }
+.ab-reload-btn:hover svg { stroke: color(text); }
 /* TBFDesk: modal Settings dialog (replaces the native "..." context menu) */
 .nemo-settings-hidden { display: none; }
 

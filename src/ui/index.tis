@@ -1355,38 +1355,11 @@ class NemoSettingsDialog: Reactor.Component {
         }
         gen.push(this.tRow("allow-darktheme", translate('Dark Theme'), handler.get_option("allow-darktheme") == "Y", handler.is_option_fixed("allow-darktheme"), "theme"));
         if (!disable_installation) this.pAllow(gen, "allow-auto-update", translate('Auto update'));
+        gen.push(this.aRow("audio", translate('Audio Input')));
+        gen.push(this.aRow("enhancements", translate('Enhancements')));
+        gen.push(this.aRow("language", translate('Language')));
         gen.push(this.aRow("about", translate('About') + " TBFDesk"));
         if (!disable_change_id && !disable_settings && handler.is_ok_change_id() && key_confirmed && connect_status > 0) gen.push(this.aRow("change-id", translate('Change ID')));
-
-        // Language / Audio / Enhancements rendered INLINE as their own sections —
-        // their native submenus can't fly out of the modal reliably. Same option
-        // keys + set logic as the AudioInputs/Languages/Enhancements components.
-        var lang = [];
-        var dlangs = JSON.parse(handler.get_langs());
-        var curlang = handler.get_local_option("lang") || "default";
-        var langfixed = handler.is_option_fixed("lang");
-        lang.push(this.tRow("lang:default", translate('Default'), curlang == "default", langfixed, "lang"));
-        for (var lg in dlangs) lang.push(this.tRow("lang:" + lg[0], lg[1], curlang == lg[0], langfixed, "lang"));
-
-        var audio = [];
-        if (!disable_settings) {
-            var ainputs = handler.get_sound_inputs();
-            if (is_win) ainputs = ["System Sound"].concat(ainputs);
-            if (ainputs.length) {
-                audio.push(this.tRow("enable-audio", translate('Mute'), handler.get_option("enable-audio") == "N", handler.is_option_fixed("enable-audio"), "audiomute"));
-                var curaudio = handler.get_option("audio-input") || (is_win ? "System Sound" : "");
-                var afixed = handler.is_option_fixed("audio-input");
-                for (var inm in ainputs) audio.push(this.tRow("audioin:" + inm, translate(inm), curaudio == inm, afixed, "audioin"));
-            }
-        }
-
-        var enh = [];
-        if (!disable_settings) {
-            if (handler.has_hwcodec() || handler.has_vram()) enh.push(this.tRow("enable-hwcodec", translate('Enable hardware codec'), handler.get_option("enable-hwcodec") != "N", handler.is_option_fixed("enable-hwcodec"), "enh"));
-            enh.push(this.tRow("enable-abr", translate('Adaptive bitrate') + " (beta)", handler.get_option("enable-abr") != "N", handler.is_option_fixed("enable-abr"), "enh"));
-            if (handler.support_remove_wallpaper()) enh.push(this.tRow("allow-remove-wallpaper", translate('Remove wallpaper during incoming sessions'), handler.get_option("allow-remove-wallpaper") == "Y", handler.is_option_fixed("allow-remove-wallpaper"), "enh"));
-            enh.push(this.tRow("keep-awake-during-incoming-sessions", translate('keep-awake-during-incoming-sessions-label'), handler.get_option("keep-awake-during-incoming-sessions") != "N", handler.is_option_fixed("keep-awake-during-incoming-sessions"), "enh"));
-        }
 
         // ---- Password (moved here from the one-time-password "edit" menu) ---
         var pw = [];
@@ -1428,9 +1401,6 @@ class NemoSettingsDialog: Reactor.Component {
             { title: translate('Security') + " & " + translate('Network'), rows: sec },
             { title: translate('General'), rows: gen },
             { title: translate('Password'), rows: pw },
-            { title: translate('Language'), rows: lang },
-            { title: translate('Audio Input'), rows: audio },
-            { title: translate('Enhancements'), rows: enh },
         ];
         sections.sort(function(a, b) { return b.rows.length - a.rows.length; });
         var sectionNodes = [];
@@ -1446,6 +1416,7 @@ class NemoSettingsDialog: Reactor.Component {
                     {sectionNodes}
                 </div>
             </div>
+            {this.renderDlgSubmenus()}
         </div>;
     }
 
@@ -1525,8 +1496,65 @@ class NemoSettingsDialog: Reactor.Component {
         else if (act == "change-id") nemoChangeIdDialog();
         else if (act == "login") { this.close(); login(); }
         else if (act == "logout") { this.close(); logout(); }
+        else if (act == "audio") me.popup(this.$(menu#dlg-audio));
+        else if (act == "enhancements") me.popup(this.$(menu#dlg-enh));
+        else if (act == "language") me.popup(this.$(menu#dlg-lang));
         else if (act == "set-permanent-password") nemoSetPasswordDialog();
         else if (act == "clear-permanent-password") { handler.set_permanent_password(""); nemoRefreshPwUi(); this.update(); }
+    }
+
+    // Language / Audio Input / Enhancements popups, rendered INSIDE the dialog so
+    // me.popup() works (same-component, like the config-options menu) — reusing the
+    // same option keys/actions as the native submenus.
+    event click $(menu#dlg-lang>li) (_, me) {
+        var v = me.id;
+        if (v == "default") v = default_option_lang;
+        handler.set_local_option("lang", v);
+        if (app) app.update();
+    }
+
+    event click $(menu#dlg-audio>li) (_, me) {
+        var v = me.id;
+        if (v == "enable-audio") {
+            handler.set_option("enable-audio", handler.get_option("enable-audio") != "N" ? "N" : default_option_yes);
+        } else if (v.indexOf("ai:") == 0) {
+            var name = v.substring(3);
+            if (name == (is_win ? "System Sound" : "")) name = "";
+            handler.set_option("audio-input", name);
+        }
+        this.update();
+    }
+
+    event click $(menu#dlg-enh>li) (_, me) {
+        var v = me.id;
+        if (v.indexOf("allow-") == 0) handler.set_option(v, handler.get_option(v) == "Y" ? default_option_no : "Y");
+        else handler.set_option(v, handler.get_option(v) != "N" ? "N" : default_option_yes);
+        this.update();
+    }
+
+    function renderDlgSubmenus() {
+        var langs = JSON.parse(handler.get_langs());
+        var curlang = handler.get_local_option("lang") || "default";
+        var langItems = [<li id="default" class={curlang == "default" ? "selected" : ""}><span>{svg_checkmark}</span>{translate('Default')}</li>];
+        for (var lg in langs) langItems.push(<li id={lg[0]} class={curlang == lg[0] ? "selected" : ""}><span>{svg_checkmark}</span>{lg[1]}</li>);
+
+        var ainputs = handler.get_sound_inputs();
+        if (is_win) ainputs = ["System Sound"].concat(ainputs);
+        var curaudio = handler.get_option("audio-input") || (is_win ? "System Sound" : "");
+        var audioItems = [<li id="enable-audio" class={handler.get_option("enable-audio") == "N" ? "selected" : ""}><span>{svg_checkmark}</span>{translate('Mute')}</li>, <div .separator />];
+        for (var inm in ainputs) audioItems.push(<li id={"ai:" + inm} class={curaudio == inm ? "selected" : ""}><span>{svg_checkmark}</span>{translate(inm)}</li>);
+
+        var enhItems = [];
+        if (handler.has_hwcodec() || handler.has_vram()) enhItems.push(<li id="enable-hwcodec" class={handler.get_option("enable-hwcodec") != "N" ? "selected" : ""}><span>{svg_checkmark}</span>{translate('Enable hardware codec')}</li>);
+        enhItems.push(<li id="enable-abr" class={handler.get_option("enable-abr") != "N" ? "selected" : ""}><span>{svg_checkmark}</span>{translate('Adaptive bitrate')} (beta)</li>);
+        if (handler.support_remove_wallpaper()) enhItems.push(<li id="allow-remove-wallpaper" class={handler.get_option("allow-remove-wallpaper") == "Y" ? "selected" : ""}><span>{svg_checkmark}</span>{translate('Remove wallpaper during incoming sessions')}</li>);
+        enhItems.push(<li id="keep-awake-during-incoming-sessions" class={handler.get_option("keep-awake-during-incoming-sessions") != "N" ? "selected" : ""}><span>{svg_checkmark}</span>{translate('keep-awake-during-incoming-sessions-label')}</li>);
+
+        return <div style="size:0">
+            <popup><menu.context #dlg-lang>{langItems}</menu></popup>
+            <popup><menu.context #dlg-audio>{audioItems}</menu></popup>
+            <popup><menu.context #dlg-enh>{enhItems}</menu></popup>
+        </div>;
     }
 
     // Pop one of the original sub-menus (kept alive inside MyIdMenu's popup) as a
