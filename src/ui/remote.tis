@@ -178,10 +178,15 @@ function handleTileMouse(evt, dispIndex) {
       case Event.MOUSE_DCLICK: mask = 1; break;
       case Event.MOUSE_WHEEL:
         mask = 3;
-        var (rdx, rdy) = evt.wheelDeltas;
-        wheel_dx = rdx > 0 ? 1 : (rdx < 0 ? -1 : 0);
-        wheel_dy = rdy > 0 ? 1 : (rdy < 0 ? -1 : 0);
-        if (Math.abs(rdx) > Math.abs(rdy)) wheel_dy = 0; else wheel_dx = 0;
+        // TIScript needs a braced block for a `var (...)` destructuring inside a
+        // case (a bare case label can't take the declaration) — mirror the existing
+        // wheel handler below.
+        {
+            var (rdx, rdy) = evt.wheelDeltas;
+            wheel_dx = rdx > 0 ? 1 : (rdx < 0 ? -1 : 0);
+            wheel_dy = rdy > 0 ? 1 : (rdy < 0 ? -1 : 0);
+            if (Math.abs(rdx) > Math.abs(rdy)) wheel_dy = 0; else wheel_dx = 0;
+        }
         if (wheel_dx == 0 && wheel_dy == 0) return keyboard_enabled;
         break;
       case Event.MOUSE_ENTER:
