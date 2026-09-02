@@ -528,7 +528,7 @@ textarea.grey-text {
     flow: horizontal-wrap;
     padding: 10px;
     height: *;
-    overflow-y: scroll;
+    overflow-y: auto;
     overflow-x: hidden;
 }
 
