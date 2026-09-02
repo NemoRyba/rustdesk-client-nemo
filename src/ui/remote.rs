@@ -25,8 +25,26 @@ use crate::{
 
 type Video = AssetPtr<video_destination>;
 
+/// Holds the Sciter <video> render surfaces.
+///
+/// Default (legacy) behavior: a SINGLE surface (`single`) is bound by the one
+/// `<video #handler>` element and every decoded frame is blitted into it. This
+/// is byte-for-byte the original behavior whenever `view_all == false`.
+///
+/// New "view all displays" behavior: when `view_all == true`, one surface per
+/// remote display is bound (each `<video display="N">` tile) and frames are
+/// routed to `tiles[N]` by their display index. `tile_dims` tracks the size each
+/// tile surface was last (re)started with so we only re-init streaming on change.
+#[derive(Default)]
+struct VideoSurfaces {
+    single: Option<Video>,
+    tiles: HashMap<usize, Video>,
+    tile_dims: HashMap<usize, (i32, i32)>,
+    view_all: bool,
+}
+
 lazy_static::lazy_static! {
-    static ref VIDEO: Arc<Mutex<Option<Video>>> = Default::default();
+    static ref VIDEO: Arc<Mutex<VideoSurfaces>> = Default::default();
 }
 
 /// SciterHandler
@@ -62,6 +80,7 @@ impl SciterHandler {
             display.set_item("width", d.width);
             display.set_item("height", d.height);
             display.set_item("cursor_embedded", d.cursor_embedded);
+            display.set_item("scale", if d.scale <= 0.0 { 1.0 } else { d.scale });
             displays_value.push(display);
         }
         displays_value
@@ -148,7 +167,10 @@ impl InvokeUiSession for SciterHandler {
         // Nothing spectacular in decoder – done on CPU side.
         // So if you can do BGRA translation on your side – the better.
         // BGRA is used as internal image format so it will not require additional transformations.
-        VIDEO.lock().unwrap().as_mut().map(|v| {
+        // Only (re)initializes the legacy single surface. Tile surfaces used by
+        // "view all" mode are (re)started lazily in `on_rgba` from the actual
+        // frame dimensions, so this path is unchanged for default behavior.
+        VIDEO.lock().unwrap().single.as_mut().map(|v| {
             v.stop_streaming().ok();
             let ok = v.start_streaming((w, h), COLOR_SPACE::Rgb32, None);
             log::info!("[video] reinitialized: {:?}", ok);
@@ -289,10 +311,27 @@ impl InvokeUiSession for SciterHandler {
         self.call("adaptSize", &make_args!());
     }
 
-    fn on_rgba(&self, _display: usize, rgba: &mut scrap::ImageRgb) {
-        VIDEO
-            .lock()
-            .unwrap()
+    fn on_rgba(&self, display: usize, rgba: &mut scrap::ImageRgb) {
+        let mut lock = VIDEO.lock().unwrap();
+        // "View all displays" mode: route each display's frame to its own tile
+        // surface. Streaming is (re)started lazily using the actual frame size.
+        if lock.view_all && lock.tiles.contains_key(&display) {
+            let dims = (rgba.w as i32, rgba.h as i32);
+            let need_restart = lock.tile_dims.get(&display) != Some(&dims);
+            if need_restart {
+                lock.tile_dims.insert(display, dims);
+            }
+            if let Some(v) = lock.tiles.get_mut(&display) {
+                if need_restart {
+                    v.stop_streaming().ok();
+                    v.start_streaming(dims, COLOR_SPACE::Rgb32, None).ok();
+                }
+                v.render_frame(&rgba.raw).ok();
+            }
+            return;
+        }
+        // Default (legacy) behavior: blit into the single surface.
+        lock.single
             .as_mut()
             .map(|v| v.render_frame(&rgba.raw).ok());
     }
@@ -470,8 +509,24 @@ impl sciter::EventHandler for SciterSession {
                     }
                     let site = AssetPtr::adopt(ptr as *mut video_destination);
                     log::debug!("[video] start video");
-                    *VIDEO.lock().unwrap() = Some(site);
-                    self.reconnect(false);
+                    // A tile surface for "view all" mode is tagged `dispidx="N"`.
+                    // The legacy single `<video #handler>` has no such attribute.
+                    let disp_idx = source
+                        .get_attribute("dispidx")
+                        .and_then(|s| s.trim().parse::<usize>().ok());
+                    match disp_idx {
+                        Some(idx) => {
+                            // A newly bound tile: store it and force a re-init on
+                            // the next frame. Do NOT reconnect (session is live).
+                            let mut lock = VIDEO.lock().unwrap();
+                            lock.tile_dims.remove(&idx);
+                            lock.tiles.insert(idx, site);
+                        }
+                        None => {
+                            VIDEO.lock().unwrap().single = Some(site);
+                            self.reconnect(false);
+                        }
+                    }
                 }
             }
             BEHAVIOR_EVENTS::VIDEO_INITIALIZED => {
@@ -535,6 +590,7 @@ impl sciter::EventHandler for SciterSession {
         fn read_remote_dir(String, bool);
         fn send_chat(String);
         fn switch_display(i32);
+        fn set_view_all(String);
         fn remove_dir_all(i32, String, bool, bool);
         fn confirm_delete_files(i32, i32);
         fn set_no_confirm(i32);
@@ -692,6 +748,40 @@ impl SciterSession {
 
     fn set_selected_windows_session_id(&mut self, u_sid: String) {
         self.send_selected_session_id(u_sid);
+    }
+
+    /// Enter/exit the "view all displays" mode.
+    ///
+    /// `indices` is a comma-joined list of display indices to show tiled at once
+    /// (e.g. "0,1,2"); an empty/blank string turns the mode off. Turning it on
+    /// requests the peer to capture every listed display concurrently and asks
+    /// for a refresh frame per display; the TIScript side is responsible for
+    /// creating the matching `<video display="N">` tiles. Turning it off only
+    /// clears the tile state here - the caller restores single-display capture
+    /// via `switch_display`.
+    fn set_view_all(&mut self, indices: String) {
+        let all: Vec<i32> = indices
+            .split(',')
+            .filter_map(|s| s.trim().parse::<i32>().ok())
+            .collect();
+        if all.is_empty() {
+            let mut lock = VIDEO.lock().unwrap();
+            lock.view_all = false;
+            lock.tiles.clear();
+            lock.tile_dims.clear();
+            return;
+        }
+        {
+            let mut lock = VIDEO.lock().unwrap();
+            lock.view_all = true;
+            lock.tile_dims.clear();
+        }
+        self.capture_displays(vec![], vec![], all.clone());
+        if crate::common::is_support_multi_ui_session_num(self.lc.read().unwrap().version) {
+            for d in all.iter() {
+                self.refresh_video(*d);
+            }
+        }
     }
 
     fn has_file_clipboard(&self) -> bool {

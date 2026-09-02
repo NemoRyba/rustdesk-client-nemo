@@ -8,6 +8,9 @@ var svg_action = <svg viewBox="-91 0 512 512"><path d="M315 211H191L298 22a15 15
 var svg_display = <svg viewBox="0 0 640 512">
     <path d="M592 0H48A48 48 0 0 0 0 48v320a48 48 0 0 0 48 48h240v32H112a16 16 0 0 0-16 16v32a16 16 0 0 0 16 16h416a16 16 0 0 0 16-16v-32a16 16 0 0 0-16-16H352v-32h240a48 48 0 0 0 48-48V48a48 48 0 0 0-48-48zm-16 352H64V64h512z"/>
 </svg>;
+var svg_grid = <svg viewBox="0 0 512 512">
+    <path d="M0 0h224v224H0zM288 0h224v224H288zM0 288h224v224H0zM288 288h224v224H288z"/>
+</svg>;
 var svg_secure = <svg viewBox="0 0 347.97 347.97">
 <path fill="#3F7D46" d="m317.31 54.367c-59.376 0-104.86-16.964-143.33-54.367-38.461 37.403-83.947 54.367-143.32 54.367 0 97.405-20.155 236.94 143.32 293.6 163.48-56.666 143.33-196.2 143.33-293.6zm-155.2 171.41-47.749-47.756 21.379-21.378 26.37 26.376 50.121-50.122 21.378 21.378-71.499 71.502z"/>
 </svg>;
@@ -149,6 +152,7 @@ class Header: Reactor.Component {
                 {this.renderGlobalScreens()}
             </div>
             {this.stream_type ? <span #conn-type class={this.direct_connection ? "direct" : "relay"} title={title_conn}>{conn_label}</span> : ""}
+            {viewAllSupported() ? <span #view-all class={view_all_mode ? "active" : ""} title={translate("View all displays")}>{svg_grid}</span> : ""}
             <span #chat title={translate("Chat")}>{svg_chat}</span>
             <span #action title={translate("Actions")}>{svg_action}</span>
             <span #display title={translate("Display")}>{svg_display}</span>
@@ -323,13 +327,27 @@ class Header: Reactor.Component {
     }
 
     event click $(#screen) (_, me) {
+        // In "view all" mode, clicking a display chip returns to single view of
+        // that display; otherwise it behaves exactly as before.
+        if (view_all_mode) {
+            exitViewAll();
+            if (pi.current_display != me.index) handler.switch_display(me.index);
+            header.update();
+            return;
+        }
         if (pi.current_display == me.index) return;
         handler.switch_display(me.index);
     }
+
+    event click $(#view-all) (_, me) {
+        toggleViewAll();
+        header.update();
+    }
     
     event keyup (evt) {
+        if (view_all_mode) return;
         if((pi.displays || []).length > 0 && evt.keyCode == 220)
-        { 
+        {
             if (pi.displays.length > pi.current_display) 
                 handler.switch_display(pi.current_display + 1);
             else
@@ -535,6 +553,7 @@ handler.updatePi = function(v) {
 handler.updateDisplays = function(v) {
     pi.displays = v;
     header.update();
+    if (view_all_mode) self.timer(1ms, layoutViewAll);
     if (is_port_forward) {
         view.windowState = View.WINDOW_MINIMIZED;
     }
@@ -553,7 +572,8 @@ handler.setMultipleWindowsSession = function(sessions) {
 
 handler.setCurrentDisplay = function(v) {
     pi.current_display = v;
-    handler.switch_display(v);
+    // Don't collapse "view all" back to a single display on a peer-driven switch.
+    if (!view_all_mode) handler.switch_display(v);
     header.update();
     if (is_port_forward) {
         view.windowState = View.WINDOW_MINIMIZED;
@@ -667,6 +687,7 @@ view.on("size", function() {
     self.timer(1ms, function() {
         updateWindowToolbarPosition();
         adaptDisplay();
+        if (view_all_mode) layoutViewAll();
     });
 });
 

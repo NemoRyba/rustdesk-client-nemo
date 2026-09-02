@@ -6,6 +6,29 @@
         @import url(remote.css);
         @import url(file_transfer.css);
         @import url(header.css);
+
+        /* "View all displays" tiled overlay (additive; hidden by default). */
+        div#video-all-wrapper {
+            position: absolute;
+            left: 0;
+            top: 0;
+            size: *;
+            background: #181818;
+        }
+        div.tiles-holder {
+            size: *;
+            position: relative;
+        }
+        video.remote-tile {
+            behavior: native-remote video;
+            foreground-size: contain;
+            position: absolute;
+            background: #212121;
+        }
+        header span#view-all.active {
+            background: #d9d9d9;
+            border-radius: 4px;
+        }
     </style>
     <script type="text/tiscript">
             include "common.tis";
@@ -36,6 +59,7 @@
             </div>
         </video>
     </div>
+    <div #video-all-wrapper style="display: none"></div>
     <div #file-transfer-wrapper>
     </div>
     <div #msgbox />

@@ -102,6 +102,162 @@ function adaptDisplay() {
     };
 }
 
+// ============================================================================
+// "View all displays" mode (additive, OFF by default).
+// Shows every remote display tiled in one window using one native <video> tile
+// per display. Toggled from the header button. When off, nothing below runs and
+// the legacy single-surface path (above) is fully unchanged.
+// ============================================================================
+var view_all_mode = false;
+var view_all_wrapper = null;
+// Per-display layout used to map tile-local mouse coords back to remote coords.
+// view_all_layout[i] = { x: <virtual origin x>, y: <virtual origin y>, fit: <device-px per remote-px> }
+var view_all_layout = {};
+
+function viewAllSupported() {
+    // Gate on >1 display AND peer version >= 1.2.4 (multi-UI-session support).
+    return (pi.displays || []).length > 1 && handler.version_cmp(pi.version, "1.2.4") >= 0;
+}
+
+function computeDisplaysBBox() {
+    var x0 = 9999999, y0 = 9999999, x1 = -9999999, y1 = -9999999;
+    for (var d in pi.displays) {
+        if (d.x < x0) x0 = d.x;
+        if (d.y < y0) y0 = d.y;
+        if (d.x + d.width > x1) x1 = d.x + d.width;
+        if (d.y + d.height > y1) y1 = d.y + d.height;
+    }
+    return { x0: x0, y0: y0, w: x1 - x0, h: y1 - y0 };
+}
+
+function layoutViewAll() {
+    if (!view_all_mode || !view_all_wrapper) return;
+    var holder = view_all_wrapper.$(div.tiles-holder);
+    if (!holder) return;
+    var bbox = computeDisplaysBBox();
+    if (bbox.w <= 0 || bbox.h <= 0) return;
+    var availW = $(body).box(#width, #border);
+    var availH = $(body).box(#height, #border);
+    if (availW <= 0 || availH <= 0) return;
+    var fit = availW / bbox.w;
+    var fit_y = availH / bbox.h;
+    if (fit_y < fit) fit = fit_y;
+    var totalW = bbox.w * fit;
+    var totalH = bbox.h * fit;
+    var offX = (availW - totalW) / 2;
+    var offY = (availH - totalH) / 2;
+    var tiles = holder.$$(video.remote-tile);
+    for (var t in tiles) {
+        var i = t.attributes["dispidx"].toInteger();
+        var d = pi.displays[i];
+        if (!d) continue;
+        var left = (offX + (d.x - bbox.x0) * fit) / scaleFactor;
+        var top = (offY + (d.y - bbox.y0) * fit) / scaleFactor;
+        var w = (d.width * fit) / scaleFactor;
+        var h = (d.height * fit) / scaleFactor;
+        t.style.set {
+            left: left + "px",
+            top: top + "px",
+            width: w + "px",
+            height: h + "px",
+        };
+        view_all_layout[i] = { x: d.x, y: d.y, fit: fit };
+    }
+}
+
+function handleTileMouse(evt, dispIndex) {
+    if (is_file_transfer || is_port_forward) return false;
+    var L = view_all_layout[dispIndex];
+    var mask = 0;
+    var wheel_dx = 0;
+    var wheel_dy = 0;
+    switch (evt.type) {
+      case Event.MOUSE_DOWN: mask = 1; break;
+      case Event.MOUSE_UP: mask = 2; break;
+      case Event.MOUSE_MOVE: mask = 0; break;
+      case Event.MOUSE_DCLICK: mask = 1; break;
+      case Event.MOUSE_WHEEL:
+        mask = 3;
+        var (rdx, rdy) = evt.wheelDeltas;
+        wheel_dx = rdx > 0 ? 1 : (rdx < 0 ? -1 : 0);
+        wheel_dy = rdy > 0 ? 1 : (rdy < 0 ? -1 : 0);
+        if (Math.abs(rdx) > Math.abs(rdy)) wheel_dy = 0; else wheel_dx = 0;
+        if (wheel_dx == 0 && wheel_dy == 0) return keyboard_enabled;
+        break;
+      case Event.MOUSE_ENTER:
+        entered = true;
+        handler.enter(handler.get_keyboard_mode());
+        return keyboard_enabled;
+      case Event.MOUSE_LEAVE:
+        entered = false;
+        handler.leave(handler.get_keyboard_mode());
+        return keyboard_enabled;
+      default:
+        return false;
+    }
+    if (!keyboard_enabled) return false;
+    var rx = 0;
+    var ry = 0;
+    if (mask == 0 && L) {
+        rx = (L.x + evt.x / L.fit).toInteger();
+        ry = (L.y + evt.y / L.fit).toInteger();
+    }
+    handler.send_mouse((evt.buttons << 3) | mask,
+        mask == 3 ? wheel_dx : rx,
+        mask == 3 ? wheel_dy : ry,
+        evt.altKey, evt.ctrlKey, evt.shiftKey, evt.commandKey);
+    return true;
+}
+
+function attachTileMouse(tile, dispIndex) {
+    tile.onMouse = function(evt) {
+        return handleTileMouse(evt, dispIndex);
+    };
+}
+
+function enterViewAll() {
+    if (view_all_mode) return;
+    if (!viewAllSupported()) return;
+    view_all_wrapper = $(#video-all-wrapper);
+    if (!view_all_wrapper) return;
+    view_all_mode = true;
+    view_all_layout = {};
+    // Build one <video dispidx="i"> tile per display inside a relative holder.
+    var vnodes = pi.displays.map(function(d, i) {
+        return <video class="remote-tile" dispidx={i.toString()} />;
+    });
+    view_all_wrapper.content(<div class="tiles-holder">{vnodes}</div>);
+    view_all_wrapper.style.set { display: "block" };
+    var tiles = view_all_wrapper.$$(video.remote-tile);
+    for (var t in tiles) {
+        attachTileMouse(t, t.attributes["dispidx"].toInteger());
+    }
+    layoutViewAll();
+    // Ask the peer (and Rust routing) to stream every display at once.
+    var idx = [];
+    for (var i = 0; i < pi.displays.length; ++i) idx.push(i.toString());
+    handler.set_view_all(idx.join(","));
+}
+
+function exitViewAll() {
+    if (!view_all_mode) return;
+    view_all_mode = false;
+    handler.set_view_all("");
+    if (view_all_wrapper) {
+        // Hide first, then drop the tile elements (unbinds their video surfaces).
+        view_all_wrapper.style.set { display: "none" };
+        view_all_wrapper.content("");
+    }
+    view_all_layout = {};
+    // Restore single-display capture for the current display.
+    handler.switch_display(pi.current_display);
+}
+
+function toggleViewAll() {
+    if (view_all_mode) exitViewAll();
+    else enterViewAll();
+}
+
 // https://sciter.com/event-handling/
 // https://sciter.com/docs/content/sciter/Event.htm
 
