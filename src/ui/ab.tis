@@ -1,9 +1,8 @@
 var selectTags = [];
 var ab = { tags: [], peers: [] };
-// Reload icon — STROKED (fill:none) like the working svg_refresh_password; Sciter
-// renders stroked arc paths but not filled ones. Stroke color set via CSS
-// (.ab-reload-btn svg). Rendered as {svg_reload}.
-var svg_reload = <svg viewBox="0 0 24 24" fill="none" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 2v6h6M2.66 15.57a10 10 0 1 0 .57-8.38"/></svg>;
+// Reload icon — copied from the app's WORKING svg_refresh_password: width/height
+// ATTRIBUTES (not CSS size) + fill:none + stroke via a LITERAL CSS color.
+var svg_reload = <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 2v6h6M2.66 15.57a10 10 0 1 0 .57-8.38"/></svg>;
 var abLoading;
 var abError;
 var current_menu_peer_id = '';

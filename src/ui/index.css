@@ -487,9 +487,9 @@ html.darktheme .nemo-account-name {
     cursor: pointer;
     vertical-align: middle;
 }
-.ab-reload-btn:hover { opacity: 1; color: color(text); }
-.ab-reload-btn svg { size: 16px; vertical-align: middle; fill: none; stroke: color(light-text); }
-.ab-reload-btn:hover svg { stroke: color(text); }
+.ab-reload-btn:hover { opacity: 1; }
+.ab-reload-btn svg { vertical-align: middle; fill: none; stroke: #808080; }
+.ab-reload-btn:hover svg { stroke: #b8b8b8; }
 /* TBFDesk: modal Settings dialog (replaces the native "..." context menu) */
 .nemo-settings-hidden { display: none; }
 
