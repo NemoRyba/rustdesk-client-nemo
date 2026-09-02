@@ -167,6 +167,7 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("Refresh", "Aktualisieren"),
         ("Search ID or hostname", "ID oder Hostname suchen"),
         ("Import device key", "Geräteschlüssel importieren"),
+        ("Reload address book from server", "Adressbuch neu laden – die Liste der verfügbaren Computer vom Server aktualisieren"),
         ("Device key", "Geräteschlüssel"),
         ("Paste the private key generated on your TBFDesk server. Leave empty to remove.", "Fügen Sie den auf Ihrem TBFDesk-Server erzeugten privaten Schlüssel ein. Leer lassen, um ihn zu entfernen."),
         ("ID does not exist", "Diese ID existiert nicht."),

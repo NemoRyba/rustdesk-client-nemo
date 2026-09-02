@@ -1456,7 +1456,7 @@ class App: Reactor.Component
                     {!system_error && handler.current_is_wayland() ? <ModifyDefaultLogin /> : ""}
                     {incoming_only ? <ConnectStatus @{this.connect_status} /> : ""}
                     {!outgoing_only && nemoIsLoggedIn() && <div .nemo-refresh-bottom>
-                        <button .button .outline #nemo-refresh-ab>{translate('Refresh')}</button>
+                        <button .button .outline #nemo-refresh-ab title={translate('Reload address book from server')}>{translate('Refresh')}</button>
                     </div>}
                 </div>
                 {!incoming_only && <div .right-pane>

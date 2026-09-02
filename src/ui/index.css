@@ -481,14 +481,16 @@ textarea.grey-text {
     position: absolute;
     size: *;
     background: rgba(0,0,0,0.45);
-    flow: horizontal;
 }
 
+/* Fill the whole main window (minus a small inset) via absolute edges — this
+   gives the panel a DEFINITE height, which is what lets the body scroll. */
 .nemo-settings-panel {
-    width: 680px;
-    max-width: 94%;
-    max-height: 90%;
-    margin: *;
+    position: absolute;
+    left: 14px;
+    top: 14px;
+    right: 14px;
+    bottom: 14px;
     background: color(bg);
     color: color(text);
     border: color(border) solid 1px;
@@ -525,6 +527,8 @@ textarea.grey-text {
 .nemo-settings-body {
     flow: horizontal-wrap;
     padding: 10px;
+    height: *;
+    overflow-y: scroll;
     overflow-x: hidden;
 }
 
