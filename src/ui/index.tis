@@ -1282,7 +1282,7 @@ class NemoSettingsDialog: Reactor.Component {
         return <div class={cls} data-toggle={id} data-kind={kind} data-fixed={fixed ? "1" : "0"}>
             <span .nemo-set-box>{on ? svg_checkmark : ""}</span>
             <span .nemo-set-label>{label}</span>
-            {extra}
+            {extra ? extra : ""}
         </div>;
     }
 
@@ -1394,6 +1394,18 @@ class NemoSettingsDialog: Reactor.Component {
         // Account (Login/Logout) intentionally NOT here — it lives in the
         // account bar at the top of the left pane.
 
+        // Order sections by entry count (most first), so the biggest subsection
+        // leads and a person sees all of its entries at a glance.
+        var sections = [
+            { title: translate('Permissions'), rows: perm },
+            { title: translate('Security') + " & " + translate('Network'), rows: sec },
+            { title: translate('General'), rows: gen },
+            { title: translate('Password'), rows: pw },
+        ];
+        sections.sort(function(a, b) { return b.rows.length - a.rows.length; });
+        var sectionNodes = [];
+        for (var s in sections) sectionNodes.push(this.section(s.title, s.rows));
+
         return <div .nemo-settings-overlay>
             <div .nemo-settings-panel>
                 <div .nemo-settings-head>
@@ -1401,10 +1413,7 @@ class NemoSettingsDialog: Reactor.Component {
                     <div .nemo-settings-close #nemo-settings-close><svg style="size:13px" viewBox="0 0 100 100"><path fill="#888" d="M20 12 L50 42 L80 12 L88 20 L58 50 L88 80 L80 88 L50 58 L20 88 L12 80 L42 50 L12 20 Z"/></svg></div>
                 </div>
                 <div .nemo-settings-body>
-                    {this.section(translate('Permissions'), perm)}
-                    {this.section(translate('Security') + " & " + translate('Network'), sec)}
-                    {this.section(translate('General'), gen)}
-                    {this.section(translate('Password'), pw)}
+                    {sectionNodes}
                 </div>
             </div>
         </div>;

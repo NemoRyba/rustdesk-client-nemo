@@ -470,6 +470,15 @@ textarea.grey-text {
     padding: 4px 14px;
     font-size: 0.85em;
 }
+/* Dark-theme variants — the account bar's light colors are hardcoded, so they
+   must be overridden explicitly (they don't read the html.darktheme vars). */
+html.darktheme .nemo-account-bar {
+    background: #1b2a2f;
+    border-color: #33474d;
+}
+html.darktheme .nemo-account-name {
+    color: #57bcd1;
+}
 /* Address-book Refresh button, moved to the bottom-left of the left pane. */
 .nemo-refresh-bottom {
     position: absolute;
