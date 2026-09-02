@@ -474,6 +474,131 @@ textarea.grey-text {
     left: 12px;
     bottom: 12px;
 }
+/* TBFDesk: modal Settings dialog (replaces the native "..." context menu) */
+.nemo-settings-hidden { display: none; }
+
+.nemo-settings-overlay {
+    position: absolute;
+    size: *;
+    background: rgba(0,0,0,0.45);
+    flow: horizontal;
+}
+
+.nemo-settings-panel {
+    width: 680px;
+    max-width: 94%;
+    max-height: 90%;
+    margin: *;
+    background: color(bg);
+    color: color(text);
+    border: color(border) solid 1px;
+    border-radius: 10px;
+    flow: vertical;
+    box-shadow: 0 10dip 40dip rgba(0,0,0,0.35);
+}
+
+.nemo-settings-head {
+    flow: horizontal;
+    padding: 14px 18px;
+    border-bottom: color(border) solid 1px;
+}
+.nemo-settings-title {
+    font-size: 1.3em;
+    font-weight: bold;
+    width: *;
+    vertical-align: middle;
+}
+.nemo-settings-close {
+    width: 26px;
+    height: 26px;
+    text-align: center;
+    line-height: 26px;
+    border-radius: 6px;
+    color: color(light-text);
+    cursor: pointer;
+}
+.nemo-settings-close:hover {
+    background: color(menu-hover);
+    color: color(text);
+}
+
+.nemo-settings-body {
+    flow: horizontal-wrap;
+    padding: 10px;
+    overflow-x: hidden;
+}
+
+.nemo-set-section {
+    width: 316px;
+    margin: 6px;
+    padding: 10px 12px;
+    background: color(gray-bg);
+    border: color(border) solid 1px;
+    border-radius: 8px;
+    flow: vertical;
+}
+.nemo-set-section-title {
+    font-weight: bold;
+    font-size: 0.92em;
+    color: color(light-text);
+    margin-bottom: 6px;
+    padding-bottom: 4px;
+    border-bottom: color(border) solid 1px;
+}
+.nemo-set-rows { flow: vertical; }
+
+.nemo-set-row {
+    flow: horizontal;
+    padding: 6px;
+    border-radius: 6px;
+    cursor: pointer;
+}
+.nemo-set-row:hover { background: color(menu-hover); }
+
+.nemo-set-label {
+    width: *;
+    vertical-align: middle;
+}
+
+.nemo-set-box {
+    width: 18px;
+    height: 18px;
+    margin-right: 8px;
+    border: color(border) solid 1.5px;
+    border-radius: 4px;
+    background: color(bg);
+    flow: horizontal;
+    vertical-align: middle;
+}
+.nemo-set-box > svg {
+    margin: *;
+    width: 12px;
+    height: 12px;
+    fill: #ffffff;
+}
+.nemo-set-toggle.on .nemo-set-box {
+    background: color(accent);
+    border-color: color(accent);
+}
+.nemo-set-toggle.off .nemo-set-label {
+    color: color(lighter-text);
+}
+
+.nemo-set-row.fixed {
+    opacity: 0.5;
+    cursor: default;
+}
+.nemo-set-row.fixed:hover { background: transparent; }
+
+.nemo-set-action .nemo-set-label {
+    color: color(accent);
+}
+.nemo-set-arrow {
+    color: color(lighter-text);
+    margin-left: 8px;
+    vertical-align: middle;
+}
+
 .nemo-refresh-bottom button#nemo-refresh-ab {
     padding: 4px 16px;
     font-size: 0.85em;

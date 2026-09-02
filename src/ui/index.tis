@@ -758,7 +758,8 @@ class MyIdMenu: Reactor.Component {
     }
 
     event click $(svg#menu) (_, me) {
-        this.showSettingMenu();
+        // TBFDesk: open the new modal Settings dialog instead of the native popup.
+        nemoOpenSettingsDialog();
     }
 
     function showSettingMenu() {
@@ -1146,6 +1147,245 @@ function nemoCertBoxVnode() {
     </div>;
 }
 
+// ============================================================================
+// TBFDesk: modal Settings dialog. Replaces the cramped native <menu#config-options>
+// context-menu popup opened from the "..." (svg#menu) button with a centered,
+// dismissable modal that lays the SAME options out in sectioned cards / columns.
+//
+// The original <menu#config-options> is KEPT in MyIdMenu's <popup> (hidden) and
+// is used ONLY as the live SOURCE for the three real sub-menus (Audio Input,
+// Enhancements, Language): those are popped as fly-outs anchored to their rows in
+// this dialog (popupSub). Every other option (permission/allow toggles + action
+// buttons + Direct-IP + RDP sharing) is rendered directly in this grid, so its
+// live state and clicks are handled by THIS component. Defined ABOVE class App
+// because App.render() mounts <NemoSettingsDialog/> (no hoisting in TIScript).
+// ============================================================================
+var nemoSettingsDialog;
+
+// Change-ID modal, factored out of MyIdMenu's native click handler so the new
+// dialog can reuse the exact same flow.
+function nemoChangeIdDialog() {
+    var id_label_width = incoming_only ? "50px" : "100px";
+    var input_width = incoming_only ? (incoming_only_width - 20) + "px" : "250px";
+    msgbox("custom-id", translate("Change ID"), "<div .form .set-password> \
+    <div>" + translate('id_change_tip') + " </div> \
+    <div><span style='width: " + id_label_width + "; display:inline-block'>ID: </span><input|text .outline-focus style='width: " + input_width + "' name='id' /></div> \
+    </div> \
+    ", "", function(res=null, show_progress) {
+        if (!res) return;
+        show_progress();
+        var id = (res.id || "").trim();
+        if (!id) return;
+        if (id == my_id) return;
+        handler.change_id(id);
+        function check_status() {
+            var status = handler.get_async_job_status();
+            if (status == " ") self.timer(0.1s, check_status);
+            else {
+                if (status) show_progress(false, translate(status));
+                else show_progress(-1);
+            }
+        }
+        check_status();
+        return " ";
+    }, msgbox_default_height, get_msgbox_width());
+}
+
+// Entry point used by both the main-window "..." button (MyIdMenu) and the
+// outgoing-only #open-settings link.
+function nemoOpenSettingsDialog() {
+    if (!nemoSettingsDialog) return;
+    nemoSettingsDialog.open();
+}
+
+class NemoSettingsDialog: Reactor.Component {
+    function this() {
+        nemoSettingsDialog = this;
+    }
+
+    function open(v = true) {
+        // Populate the sub-menu sources so Audio/Enhancements/Language can pop
+        // (AudioInputs only renders its <menu> once show=true).
+        if (audioInputMenu) audioInputMenu.update({ show: true });
+        if (direct_server) direct_server.update();
+        this.update({ shown: true });
+    }
+
+    function close(v = false) {
+        this.update({ shown: false });
+    }
+
+    // ---- pure vnode builders (safe to call from render) ---------------------
+    function tRow(id, label, on, fixed, kind, extra = null) {
+        var cls = "nemo-set-row nemo-set-toggle " + (on ? "on" : "off");
+        if (fixed) cls += " fixed";
+        return <div class={cls} data-toggle={id} data-kind={kind} data-fixed={fixed ? "1" : "0"}>
+            <span .nemo-set-box>{on ? svg_checkmark : ""}</span>
+            <span .nemo-set-label>{label}</span>
+            {extra}
+        </div>;
+    }
+
+    function aRow(action, label) {
+        return <div class="nemo-set-row nemo-set-action" data-action={action}>
+            <span .nemo-set-label>{label}</span>
+            <span .nemo-set-arrow>{">"}</span>
+        </div>;
+    }
+
+    function pEnable(arr, id, label) {
+        arr.push(this.tRow(id, label, handler.get_option(id) != "N", handler.is_option_fixed(id), "enable"));
+    }
+    function pAllow(arr, id, label) {
+        arr.push(this.tRow(id, label, handler.get_option(id) == "Y", handler.is_option_fixed(id), "allow"));
+    }
+
+    function section(title, rows) {
+        if (!rows.length) return "";
+        return <div .nemo-set-section>
+            <div .nemo-set-section-title>{title}</div>
+            <div .nemo-set-rows>{rows}</div>
+        </div>;
+    }
+
+    function render() {
+        if (!this.shown) return <div .nemo-settings-hidden />;
+
+        // ---- Permissions ---------------------------------------------------
+        var perm = [];
+        if (!disable_settings) {
+            this.pEnable(perm, "enable-keyboard", translate('Enable keyboard/mouse'));
+            this.pEnable(perm, "enable-clipboard", translate('Enable clipboard'));
+            this.pEnable(perm, "enable-file-transfer", translate('Enable file transfer'));
+            this.pEnable(perm, "enable-camera", translate('Enable camera'));
+            this.pEnable(perm, "enable-terminal", translate('Enable terminal'));
+            this.pEnable(perm, "enable-remote-restart", translate('Enable remote restart'));
+            this.pEnable(perm, "enable-tunnel", translate('Enable TCP tunneling'));
+            if (is_win) this.pEnable(perm, "enable-block-input", translate('Enable blocking user input'));
+            if (handler.get_supported_privacy_mode_impls() != '[]') this.pEnable(perm, "enable-privacy-mode", translate('Enable privacy mode'));
+            this.pEnable(perm, "enable-lan-discovery", translate('Enable LAN discovery'));
+            this.pAllow(perm, "allow-remote-config-modification", translate('Enable remote configuration modification'));
+        }
+
+        // ---- Security & Network -------------------------------------------
+        var sec = [];
+        if (!disable_settings) {
+            if (!hide_server_settings) sec.push(this.aRow("custom-server", translate('ID/Relay Server') + ((nemoExeServerSettingsLocked() || nemoManagementServerSettingsLocked()) ? " (locked)" : "")));
+            if (!hide_server_settings && nemo_management_settings) sec.push(this.aRow("nemo-management", "Management"));
+            if (nemo_management_settings) sec.push(this.aRow("nemo-alias", translate('Alias')));
+            sec.push(this.aRow("import-device-key", translate('Import device key')));
+            sec.push(this.aRow("whitelist", translate('IP Whitelisting')));
+            if (!hide_proxy_settings) sec.push(this.aRow("socks5-server", translate('Socks5/Http(s) Proxy')));
+            if (!hide_websocket_settings) this.pAllow(sec, "allow-websocket", translate('Use WebSocket'));
+            if (!using_public_server && !outgoing_only) sec.push(this.tRow("disable-udp", translate('Disable UDP'), handler.get_option("disable-udp") == "Y", handler.is_option_fixed("disable-udp"), "udp"));
+            if (!using_public_server) this.pAllow(sec, "allow-insecure-tls-fallback", translate('Allow insecure TLS fallback'));
+        }
+
+        // ---- General -------------------------------------------------------
+        var gen = [];
+        if (!hide_stop_service || service_stopped) {
+            var svc_stopped = handler.get_option("stop-service") == "Y";
+            gen.push(this.tRow("stop-service", translate('Enable service'), !svc_stopped, handler.is_option_fixed("stop-service"), "service"));
+        }
+        if (!disable_settings) {
+            var direct_on = handler.get_option("direct-server") == "Y";
+            gen.push(this.tRow("direct-server", translate('Enable direct IP access'), direct_on, handler.is_option_fixed("direct-server"), "direct"));
+            if (direct_on) gen.push(this.aRow("edit-direct-port", translate('Port')));
+            if (is_win && handler.is_installed()) gen.push(this.tRow("share-rdp", translate('Enable RDP session sharing'), handler.is_share_rdp(), false, "rdp"));
+        }
+        gen.push(this.tRow("allow-darktheme", translate('Dark Theme'), handler.get_option("allow-darktheme") == "Y", handler.is_option_fixed("allow-darktheme"), "theme"));
+        if (!disable_installation) this.pAllow(gen, "allow-auto-update", translate('Auto update'));
+        gen.push(this.aRow("audio", translate('Audio Input')));
+        gen.push(this.aRow("enhancements", translate('Enhancements')));
+        gen.push(this.aRow("language", translate('Language')));
+        gen.push(this.aRow("about", translate('About') + " TBFDesk"));
+        if (!disable_change_id && !disable_settings && handler.is_ok_change_id() && key_confirmed && connect_status > 0) gen.push(this.aRow("change-id", translate('Change ID')));
+
+        // ---- Account -------------------------------------------------------
+        var acct = [];
+        if (!disable_account) {
+            var accountLabel = handler.get_local_option("access_token") ? getAccountLabelWithHandle() : '';
+            if (accountLabel) acct.push(this.aRow("logout", translate('Logout') + " (" + accountLabel + ")"));
+            else acct.push(this.aRow("login", translate('Login')));
+        }
+
+        return <div .nemo-settings-overlay>
+            <div .nemo-settings-panel>
+                <div .nemo-settings-head>
+                    <div .nemo-settings-title>{translate('Settings')}</div>
+                    <div .nemo-settings-close #nemo-settings-close><svg style="size:13px" viewBox="0 0 100 100"><path fill="#888" d="M20 12 L50 42 L80 12 L88 20 L58 50 L88 80 L80 88 L50 58 L20 88 L12 80 L42 50 L12 20 Z"/></svg></div>
+                </div>
+                <div .nemo-settings-body>
+                    {this.section(translate('Permissions'), perm)}
+                    {this.section(translate('Security') + " & " + translate('Network'), sec)}
+                    {this.section(translate('General'), gen)}
+                    {this.section(translate('Account'), acct)}
+                </div>
+            </div>
+        </div>;
+    }
+
+    event click $(#nemo-settings-close) {
+        this.close();
+    }
+
+    // Click on the dimmed backdrop (but not the panel) closes the dialog.
+    event click $(div.nemo-settings-overlay) (evt, me) {
+        if (evt.target === me) this.close();
+    }
+
+    event click $(div.nemo-set-toggle) (evt, me) {
+        if (me.attributes["data-fixed"] == "1") return;
+        var id = me.attributes["data-toggle"];
+        var kind = me.attributes["data-kind"];
+        if (kind == "enable") {
+            handler.set_option(id, handler.get_option(id) == "N" ? default_option_yes : "N");
+        } else if (kind == "allow") {
+            handler.set_option(id, handler.get_option(id) == "Y" ? default_option_no : "Y");
+        } else if (kind == "udp") {
+            handler.set_option("disable-udp", handler.get_option("disable-udp") == "Y" ? "N" : "Y");
+        } else if (kind == "service") {
+            handler.set_option("stop-service", service_stopped ? default_option_no : "Y");
+            service_stopped = handler.get_option("stop-service") == "Y";
+            if (app) app.update();
+        } else if (kind == "theme") {
+            handler.set_option("allow-darktheme", handler.get_option("allow-darktheme") == "Y" ? default_option_no : "Y");
+            updateTheme();
+        } else if (kind == "rdp") {
+            handler.set_share_rdp(!handler.is_share_rdp());
+        } else if (kind == "direct") {
+            handler.set_option("direct-server", handler.get_option("direct-server") == "Y" ? default_option_no : "Y");
+        }
+        this.update();
+    }
+
+    event click $(div.nemo-set-action) (evt, me) {
+        var act = me.attributes["data-action"];
+        if (act == "custom-server") open_custom_server_dialog();
+        else if (act == "nemo-management") open_nemo_management_dialog();
+        else if (act == "nemo-alias") open_nemo_alias_dialog();
+        else if (act == "import-device-key") open_import_device_key_dialog();
+        else if (act == "whitelist") open_whitelist_dialog();
+        else if (act == "socks5-server") open_proxy_dialog();
+        else if (act == "edit-direct-port") editDirectAccessPort();
+        else if (act == "about") { if (myIdMenu) myIdMenu.showAbout(); }
+        else if (act == "change-id") nemoChangeIdDialog();
+        else if (act == "login") { this.close(); login(); }
+        else if (act == "logout") { this.close(); logout(); }
+        else if (act == "audio") this.popupSub("menu#audio-input", me);
+        else if (act == "enhancements") this.popupSub("menu#enhancements-menu", me);
+        else if (act == "language") this.popupSub("menu#languages", me);
+    }
+
+    // Pop one of the original sub-menus (kept alive inside MyIdMenu's popup) as a
+    // fly-out anchored to the clicked row.
+    function popupSub(sel, anchorEl) {
+        var m = myIdMenu ? myIdMenu.$(sel) : null;
+        if (!m) m = $(sel);
+        if (m) anchorEl.popup(m);
+    }
+}
+
 class App: Reactor.Component
 {
     function this() {
@@ -1234,7 +1474,8 @@ class App: Reactor.Component
                     {!outgoing_only ? <ConnectStatus @{this.connect_status} /> : ""}
                 </div>}
                 <div #overlay style="position: absolute;size:*;background:black;opacity:0.5;display:none" />
-            </div>; 
+                <NemoSettingsDialog />
+            </div>;
     }
 
     event click $(button#connect) {
@@ -1966,17 +2207,8 @@ function showAbout() {
 }
 
 function showSettings() {
-    if ($(#overlay) && $(#overlay).style#display == 'block') return;
-    var menu = myIdMenu.$(menu#config-options);
-    var anchor = $(#open-settings);
-    if (!anchor) anchor = myIdMenu.$(svg#menu);
-    // show immediately at button, then update menu state asynchronously
-    anchor.popup(menu);
-    self.timer(1ms, function() {
-        audioInputMenu.update({ show: true });
-        myIdMenu.toggleMenuState();
-        if (direct_server) direct_server.update();
-    });
+    // TBFDesk: outgoing-only #open-settings now opens the modal Settings dialog.
+    nemoOpenSettingsDialog();
 }
 
 function checkConnectStatus() {
