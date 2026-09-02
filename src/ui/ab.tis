@@ -552,6 +552,7 @@ class MultipleSessions: Reactor.Component {
                         <span #fav class={type == "fav" ? 'active' : 'inactive'}>{translate('Favorites')}</span>
                         {handler.is_installed() && <span #lan class={type == "lan" ? 'active' : 'inactive'}>{translate('Discovered')}</span>}
                         {!disable_account && !disable_ab && <span #ab class={type == "ab" ? 'active' : 'inactive'}>{translate('Address book')}</span>}
+                        {!disable_account && !disable_ab && <span #nemo-refresh-ab .link title={translate('Reload address book from server')} style="padding:6px 6px; opacity:0.7; cursor:pointer"><svg viewBox="0 0 24 24" style="size:15px; vertical-align:middle" fill="none" stroke="#8a8a8a" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 2v6h6M2.66 15.57a10 10 0 1 0 .57-8.38"/></svg></span>}
                     </div>
                     {!this.hidden && !(disable_account && type == "ab") && <SearchBar type={type} />}
                     {!this.hidden && !(disable_account && type == "ab") && <SessionStyle type={type} />}

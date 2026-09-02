@@ -1564,9 +1564,6 @@ class App: Reactor.Component
                     {!system_error && handler.is_login_wayland() && !handler.current_is_wayland() ? <FixWayland /> : ""}
                     {!system_error && handler.current_is_wayland() ? <ModifyDefaultLogin /> : ""}
                     {incoming_only ? <ConnectStatus @{this.connect_status} /> : ""}
-                    {!outgoing_only && nemoIsLoggedIn() && <div .nemo-refresh-bottom>
-                        <button .button .outline #nemo-refresh-ab title={translate('Reload address book from server')}>{translate('Refresh')}</button>
-                    </div>}
                 </div>
                 {!incoming_only && <div .right-pane>
                     <div .right-content>
@@ -2681,7 +2678,7 @@ event click $(button#nemo-logoff) {
 
 // Manual address-book refresh: re-fetch the server-curated peer list so ACL
 // changes (added/removed targets) show without waiting for a re-login.
-event click $(button#nemo-refresh-ab) {
+event click $(#nemo-refresh-ab) {
     getAb();
 }
 
