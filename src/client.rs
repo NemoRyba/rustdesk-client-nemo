@@ -849,7 +849,7 @@ impl Client {
                 // (signed) in `nemo-peer-keys` for the id it claims -> anchored, with no
                 // TOFU/MITM window, no connect-time round-trip, and no plaintext.
                 if signed_id_pk.is_empty() {
-                    if let Some(pk) = Self::secure_connection_direct(conn).await? {
+                    if let Some(pk) = Self::secure_connection_direct(peer_id, conn).await? {
                         return Ok(Some(pk));
                     }
                 }
@@ -926,7 +926,7 @@ impl Client {
     // the peer claims (the caller then fails closed under policy, or may fall back to
     // plaintext). Bails on a signature-verify failure under a required-encryption policy
     // so the channel is never silently downgraded by a MITM.
-    async fn secure_connection_direct(conn: &mut Stream) -> ResultType<Option<Vec<u8>>> {
+    async fn secure_connection_direct(peer_id: &str, conn: &mut Stream) -> ResultType<Option<Vec<u8>>> {
         let bytes = match timeout(READ_TIMEOUT, conn.next()).await? {
             Some(res) => res?,
             None => bail!("Reset by the peer"),
@@ -951,6 +951,19 @@ impl Client {
                 return Ok(None);
             }
         };
+        // A5: the SignedId proves the peer holds the key for the id it CLAIMS, but the
+        // anchored key was selected by that claimed id — so a valid signature only proves
+        // "some fleet member", not "the peer the user asked for". Bind to the intended
+        // target: refuse a session whose proven id != peer_id (identity substitution — a
+        // redirected connection landing on a different, still-anchored fleet host). Mirror
+        // the brokered path's `id == peer_id` check.
+        if id != peer_id {
+            if crate::common::nemo_require_encrypted_session() {
+                bail!("Encrypted session required by TBF policy: direct peer id {id} != requested {peer_id} (possible redirect/MITM)");
+            }
+            log::warn!("direct-IP peer proved id {id} but {peer_id} was requested; refusing anchored session");
+            return Ok(None);
+        }
         let (asymmetric_value, symmetric_value, secret) = create_symmetric_key_msg(their_pk_b);
         let mut msg_out = Message::new();
         msg_out.set_public_key(PublicKey {
@@ -1532,6 +1545,13 @@ impl AudioHandler {
 
     /// Handle audio format and create an audio decoder.
     pub fn handle_format(&mut self, f: AudioFormat) {
+        // Upstream security port (5882346ca): a malicious controlled peer can send a huge
+        // `channels` value; `vec![0.; sample_rate * channels]` would then allocate
+        // unbounded / panic on the controlling side. Only mono/stereo are supported.
+        if !is_supported_audio_channel_count(f.channels) {
+            log::error!("Unsupported audio channel count: {}", f.channels);
+            return;
+        }
         match AudioDecoder::new(f.sample_rate, if f.channels > 1 { Stereo } else { Mono }) {
             Ok(d) => {
                 let buffer = vec![0.; f.sample_rate as usize * f.channels as usize];
@@ -1668,6 +1688,25 @@ impl AudioHandler {
         stream.play()?;
         self.audio_stream = Some(Box::new(stream));
         Ok(())
+    }
+}
+
+// Upstream security port (5882346ca): only mono/stereo audio is supported; reject any
+// other (peer-controlled) channel count before it drives an allocation.
+fn is_supported_audio_channel_count(channels: u32) -> bool {
+    (1..=2).contains(&channels)
+}
+
+#[cfg(test)]
+mod audio_format_tests {
+    use super::is_supported_audio_channel_count;
+
+    #[test]
+    fn only_mono_and_stereo_are_supported() {
+        assert!(is_supported_audio_channel_count(1));
+        assert!(is_supported_audio_channel_count(2));
+        assert!(!is_supported_audio_channel_count(0));
+        assert!(!is_supported_audio_channel_count(u32::MAX));
     }
 }
 

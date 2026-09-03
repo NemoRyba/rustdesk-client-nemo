@@ -705,6 +705,35 @@ impl UI {
         crate::common::nemo_seal_login(&key, &sig, &username, &password)
     }
 
+    // S-B (P0): device-key fields to add to an /api/ab/get request so the server
+    // can seal the address book to this client. Returns a JSON object string
+    // {"sealed":"v1","id":..,"device_key_pub":..,"device_key_sig":..}, or "{}" when
+    // no device key is imported (the server then returns the plaintext list).
+    fn nemo_ab_seal_fields(&self, id: String) -> String {
+        let (pubk, sig) = crate::common::nemo_device_sign("nemo-ab", &id);
+        if pubk.is_empty() {
+            return "{}".to_owned();
+        }
+        serde_json::json!({
+            "sealed": "v1",
+            "id": id,
+            "device_key_pub": pubk,
+            "device_key_sig": sig,
+        })
+        .to_string()
+    }
+
+    // S-B (P0) / A6: unseal an address book the server SIGN-then-SEALED to our device
+    // key, verifying the inner server signature (a bare seal has no sender auth, so an
+    // unverified list would be forgeable). Returns the verified plaintext JSON, or "" on
+    // any failure (caller keeps the error path).
+    fn nemo_unseal_ab(&self, sealed_b64: String) -> String {
+        match crate::common::nemo_open_sealed_signed(&sealed_b64) {
+            Some(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+            None => String::new(),
+        }
+    }
+
     // Login-gate certificate probe (accept-invalid; diagnostic only).
     fn nemo_cert_info_start(&self, url: String) {
         crate::common::nemo_cert_info_start(url);
@@ -858,6 +887,8 @@ impl sciter::EventHandler for UI {
         fn check_hwcodec();
         fn verify_login(String, String);
         fn nemo_seal_login(String, String, String, String);
+        fn nemo_ab_seal_fields(String);
+        fn nemo_unseal_ab(String);
         fn nemo_cert_info_start(String);
         fn nemo_cert_info_result();
         fn nemo_save_text_file(String, String);

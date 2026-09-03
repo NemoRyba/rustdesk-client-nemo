@@ -664,20 +664,35 @@ function getAb() {
     abLoading = true;
     abError = "";
     app.update();
-    httpRequest(handler.get_api_server() + "/api/ab/get", #post, {}, function(data) {
+    var myid = handler.get_id();
+    // S-B (P0): ask the server to SEAL the address book to our device key when one
+    // is imported, so the peer list is confidential regardless of TLS. Empty {}
+    // (no device key) -> server returns the plaintext list as before.
+    var reqParams = {};
+    try { reqParams = JSON.parse(handler.nemo_ab_seal_fields(myid || "") || "{}"); } catch (e) { reqParams = {}; }
+    httpRequest(handler.get_api_server() + "/api/ab/get", #post, reqParams, function(data) {
         if (data) {
             if (data.error) {
                 handleAbError(data.error);
                 return;
             }
             var tm = data.updated_at;
-            ab = JSON.parse(data.data);
+            var abJson = data.data;
+            if (data.sealed_data) {
+                // Unseal in Rust (TIScript has no NaCl). Empty result = failure;
+                // fail closed rather than showing a stale/empty book silently.
+                abJson = handler.nemo_unseal_ab(data.sealed_data);
+                if (!abJson) {
+                    handleAbError("could not unseal the address book (device key mismatch?)");
+                    return;
+                }
+            }
+            ab = JSON.parse(abJson);
             if (!ab.tags) ab.tags = [];
             if (!ab.peers) ab.peers = [];
             // Filter this client itself out of the address book: the server may
             // include the local machine in the curated list, but a client should
             // never list/connect to itself.
-            var myid = handler.get_id();
             if (myid) {
                 var kept = [];
                 for (var p in ab.peers) { if (p.id != myid) kept.push(p); }

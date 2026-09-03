@@ -34,6 +34,34 @@ const CLIPBOARD_GET_MAX_RETRY: usize = 3;
 #[cfg(not(target_os = "android"))]
 const CLIPBOARD_GET_RETRY_INTERVAL_DUR: Duration = Duration::from_millis(33);
 
+// Upstream security port (b1fad7bbe): a peer-supplied RGBA image must have
+// width*height*4 == data_len (and non-zero, in-range dimensions), else reject it before
+// handing it to arboard.
+#[cfg(not(target_os = "android"))]
+fn valid_rgba_dimensions(width: i32, height: i32, data_len: usize) -> Option<(usize, usize)> {
+    let width = usize::try_from(width).ok()?;
+    let height = usize::try_from(height).ok()?;
+    if width == 0 || height == 0 {
+        return None;
+    }
+    let expected_len = width.checked_mul(height)?.checked_mul(4)?;
+    (data_len == expected_len).then_some((width, height))
+}
+
+#[cfg(all(test, not(target_os = "android")))]
+mod rgba_tests {
+    use super::valid_rgba_dimensions;
+
+    #[test]
+    fn validates_dimensions_against_content_length() {
+        assert_eq!(valid_rgba_dimensions(1, 1, 4), Some((1, 1)));
+        assert_eq!(valid_rgba_dimensions(1, 1, 3), None);
+        assert_eq!(valid_rgba_dimensions(-1, 1, 4), None);
+        assert_eq!(valid_rgba_dimensions(0, 1, 0), None);
+        assert_eq!(valid_rgba_dimensions(i32::MAX, i32::MAX, 4), None);
+    }
+}
+
 #[cfg(not(target_os = "android"))]
 const SUPPORTED_FORMATS: &[ClipboardFormat] = &[
     ClipboardFormat::Text,
@@ -653,11 +681,18 @@ mod proto {
             Ok(ClipboardFormat::Text) => String::from_utf8(data).ok().map(ClipboardData::Text),
             Ok(ClipboardFormat::Rtf) => String::from_utf8(data).ok().map(ClipboardData::Rtf),
             Ok(ClipboardFormat::Html) => String::from_utf8(data).ok().map(ClipboardData::Html),
-            Ok(ClipboardFormat::ImageRgba) => Some(ClipboardData::Image(arboard::ImageData::rgba(
-                clipboard.width as _,
-                clipboard.height as _,
-                data.into(),
-            ))),
+            Ok(ClipboardFormat::ImageRgba) => {
+                // Upstream security port (b1fad7bbe): validate width*height*4 == data_len
+                // so a malformed peer image can't be passed to arboard with bad dimensions
+                // (panic / out-of-bounds).
+                let (width, height) =
+                    super::valid_rgba_dimensions(clipboard.width, clipboard.height, data.len())?;
+                Some(ClipboardData::Image(arboard::ImageData::rgba(
+                    width,
+                    height,
+                    data.into(),
+                )))
+            }
             Ok(ClipboardFormat::ImagePng) => {
                 Some(ClipboardData::Image(arboard::ImageData::png(data.into())))
             }

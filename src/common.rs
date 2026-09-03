@@ -38,7 +38,7 @@ use hbb_common::{
 };
 
 use crate::{
-    hbbs_http::{create_http_client_async, get_url_for_tls},
+    hbbs_http::{create_http_client_async, create_http_client_async_pinned, get_url_for_tls},
     ui_interface::{get_api_server as ui_get_api_server, get_option, is_installed, set_option},
 };
 
@@ -854,6 +854,21 @@ pub fn hostname() -> String {
     return DEVICE_NAME.lock().unwrap().clone();
 }
 
+// Upstream security port (rustdesk bdb38c473): validate peer/connect ids that cross an
+// untrusted boundary before they are stored or written into command/script contexts
+// (e.g. Windows shortcut creation, LAN discovery), preventing injection via a crafted id
+// like `1" & oWS.Run("cmd.exe /k ...`. Max length aligned with the server's peer-id cap.
+const MAX_UNTRUSTED_PEER_ID_LEN: usize = 253;
+const UNTRUSTED_PEER_ID_FORBIDDEN_CHARS: &[char] = &['"', '<', '>', '/', '\\', '|', '?', '*'];
+
+pub fn is_valid_untrusted_peer_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= MAX_UNTRUSTED_PEER_ID_LEN
+        && !id.chars().any(|ch| {
+            ch.is_control() || ch.is_whitespace() || UNTRUSTED_PEER_ID_FORBIDDEN_CHARS.contains(&ch)
+        })
+}
+
 #[inline]
 pub fn get_sysinfo() -> serde_json::Value {
     use hbb_common::sysinfo::System;
@@ -1366,7 +1381,11 @@ where
     HttpFut: Future<Output = ResultType<(u16, String)>>,
     TcpFut: Future<Output = ResultType<String>>,
 {
-    if should_use_raw_tcp_for_api(url) {
+    // A4: a pinned nemo-api URL must never use the raw-TCP path (it does its own,
+    // unpinned TLS). The pinned HTTP result is authoritative — a cert-mismatch error
+    // propagates instead of being retried unpinned.
+    let pinned = nemo_pin_for_url(url).is_some();
+    if !pinned && should_use_raw_tcp_for_api(url) {
         return tcp_fn.await;
     }
 
@@ -1376,7 +1395,7 @@ where
         Ok((status, _)) => *status >= 500,
     };
 
-    if should_fallback && can_fallback_to_raw_tcp(url) {
+    if should_fallback && !pinned && can_fallback_to_raw_tcp(url) {
         log::warn!(
             "HTTP {} to {} failed or 5xx (result: {:?}), trying TCP proxy fallback",
             method,
@@ -1413,6 +1432,89 @@ pub async fn post_request(url: String, body: String, header: &str) -> ResultType
     .await
 }
 
+// A4: the host of a URL, lower-cased, or None.
+fn url_host(url: &str) -> Option<String> {
+    url::Url::parse(url.trim())
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.to_ascii_lowercase()))
+}
+
+// A4: parse a SHA-256 fingerprint (any punctuation/case, e.g. "AA:BB:.." or "aabb..")
+// into 32 raw bytes. None if it is not exactly 32 bytes of hex.
+fn parse_fingerprint_hex(s: &str) -> Option<[u8; 32]> {
+    let hex: String = s.chars().filter(|c| c.is_ascii_hexdigit()).collect();
+    if hex.len() != 64 {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    for i in 0..32 {
+        out[i] = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).ok()?;
+    }
+    Some(out)
+}
+
+// A4: if a nemo-api cert-fingerprint PIN is configured AND `url` targets the nemo-api
+// host (the api-server or the management-server), return the 32-byte pin. Callers then
+// use a pinning TLS client and refuse the accept-invalid/native-tls fallback for that
+// URL, so a MITM cert is rejected instead of silently accepted. None => unchanged
+// behavior (the pin is opt-in; empty by default).
+pub fn nemo_pin_for_url(url: &str) -> Option<[u8; 32]> {
+    let pin = Config::get_option("nemo-api-cert-fingerprint");
+    let pin = pin.trim();
+    if pin.is_empty() {
+        return None;
+    }
+    let host = url_host(url)?;
+    let api_host = url_host(&Config::get_option("api-server"));
+    let mgmt_host = url_host(&Config::get_option("nemo-management-server"));
+    if Some(&host) != api_host.as_ref() && Some(&host) != mgmt_host.as_ref() {
+        return None;
+    }
+    match parse_fingerprint_hex(pin) {
+        Some(fp) => Some(fp),
+        None => {
+            log::warn!("nemo-api-cert-fingerprint is set but not a 32-byte SHA-256 hex; ignoring");
+            None
+        }
+    }
+}
+
+// A4: perform a single request with the pinned TLS client — no accept-invalid / native-tls
+// fallback (that would defeat the pin), and no tls-cache write.
+async fn pinned_request(
+    fp: [u8; 32],
+    url: &str,
+    method: &str,
+    body: Option<String>,
+    header: &str,
+) -> ResultType<reqwest::Response> {
+    let client = create_http_client_async_pinned(fp);
+    let mut req = match method.to_ascii_lowercase().as_str() {
+        "get" => client.get(url),
+        "post" => client.post(url),
+        "put" => client.put(url),
+        "delete" => client.delete(url),
+        _ => return Err(anyhow!("The HTTP request method is not supported!")),
+    };
+    for entry in parse_json_header_entries(header)? {
+        req = req.header(entry.name, entry.value);
+    }
+    if method.eq_ignore_ascii_case("post") {
+        req = req.header("Content-Type", "application/json");
+    }
+    if let Some(b) = body {
+        req = req.body(b);
+    }
+    match req.timeout(std::time::Duration::from_secs(12)).send().await {
+        Ok(resp) => Ok(resp),
+        Err(e) => Err(anyhow!(
+            "pinned request to {} failed (cert not matching the pinned fingerprint?): {:?}",
+            url,
+            e
+        )),
+    }
+}
+
 #[async_recursion]
 async fn post_request_(
     url: &str,
@@ -1423,6 +1525,11 @@ async fn post_request_(
     danger_accept_invalid_cert: Option<bool>,
     original_danger_accept_invalid_cert: Option<bool>,
 ) -> ResultType<reqwest::Response> {
+    // A4: a pinned nemo-api URL uses the pinning client and NEVER the accept-invalid /
+    // native-tls fallback ladder (that would defeat the pin). Opt-in; None = unchanged.
+    if let Some(fp) = nemo_pin_for_url(url) {
+        return pinned_request(fp, url, "post", Some(body), header).await;
+    }
     let mut req = create_http_client_async(
         tls_type.unwrap_or(TlsType::Rustls),
         danger_accept_invalid_cert.unwrap_or(false),
@@ -1561,6 +1668,10 @@ async fn get_http_response_async(
     danger_accept_invalid_cert: Option<bool>,
     original_danger_accept_invalid_cert: Option<bool>,
 ) -> ResultType<reqwest::Response> {
+    // A4: pinned nemo-api URL -> pinning client, no accept-invalid/native-tls fallback.
+    if let Some(fp) = nemo_pin_for_url(url) {
+        return pinned_request(fp, url, method, body, header).await;
+    }
     let http_client = create_http_client_async(
         tls_type.unwrap_or(TlsType::Rustls),
         danger_accept_invalid_cert.unwrap_or(false),
@@ -2217,8 +2328,102 @@ pub fn nemo_seal_login(_key_b64: &str, signed_key_b64: &str, username: &str, pas
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let payload = serde_json::json!({ "username": username, "password": password, "ts": ts }).to_string();
+    // A8: include a random per-request nonce so the server's at-most-once replay guard
+    // (sealed_login_guard) actually engages — without it the server's empty-nonce branch
+    // accepts, leaving a captured sealed blob replayable within the ts window.
+    let nonce = encode64(&hbb_common::sodiumoxide::randombytes::randombytes(16));
+    let payload = serde_json::json!({
+        "username": username,
+        "password": password,
+        "ts": ts,
+        "nonce": nonce,
+    })
+    .to_string();
     encode64(sealedbox::seal(payload.as_bytes(), &server_pk))
+}
+
+// S-DUALKEY: the imported device key (config `nemo-device-key`, base64 of the
+// 64-byte Ed25519 secret key laid out seed(32)||public(32)). None when it is
+// absent or malformed. Lives here (always compiled) so both the management poll
+// and the Sciter UI bridge can reach it regardless of feature gating.
+pub fn nemo_device_ed25519() -> Option<(
+    hbb_common::sodiumoxide::crypto::sign::PublicKey,
+    hbb_common::sodiumoxide::crypto::sign::SecretKey,
+)> {
+    use hbb_common::sodiumoxide::crypto::sign;
+    let sk_b64 = Config::get_option("nemo-device-key");
+    let sk_b64 = sk_b64.trim();
+    if sk_b64.is_empty() {
+        return None;
+    }
+    let sk_bytes = decode64(sk_b64).ok()?;
+    // from_slice requires exactly 64 bytes; the public half is bytes[32..64].
+    let sk = sign::SecretKey::from_slice(&sk_bytes)?;
+    let pk = sign::PublicKey::from_slice(&sk_bytes[32..64])?;
+    Some((pk, sk))
+}
+
+// S-DUALKEY: sign "{domain}:{id}:{ts}" with the imported device key. The domain
+// separates endpoints ("nemo-poll" for the policy poll, "nemo-ab" for the address
+// book) so a captured signature for one cannot be replayed against the other.
+// Returns (device_key_pub_b64, device_key_sig_b64), or ("","") with no device key.
+pub fn nemo_device_sign(domain: &str, id: &str) -> (String, String) {
+    use hbb_common::sodiumoxide::crypto::sign;
+    let Some((pk, sk)) = nemo_device_ed25519() else {
+        return (String::new(), String::new());
+    };
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let signed = sign::sign(format!("{}:{}:{}", domain, id, ts).as_bytes(), &sk);
+    (encode64(pk.as_ref()), encode64(&signed))
+}
+
+// S-B/S-DUALKEY step 3: open a server response sealed to our device key with a NaCl
+// sealedbox (Ed25519 -> Curve25519). Returns the plaintext, or None on any failure.
+pub fn nemo_unseal_with_device_key(sealed_b64: &str) -> Option<Vec<u8>> {
+    let (pk, sk) = nemo_device_ed25519()?;
+    nemo_unseal_with_device_keys(sealed_b64, &pk, &sk)
+}
+
+// Pure helper (keys passed in) so the crypto is unit-testable without config.
+pub fn nemo_unseal_with_device_keys(
+    sealed_b64: &str,
+    pk: &hbb_common::sodiumoxide::crypto::sign::PublicKey,
+    sk: &hbb_common::sodiumoxide::crypto::sign::SecretKey,
+) -> Option<Vec<u8>> {
+    use hbb_common::sodiumoxide::crypto::{sealedbox, sign};
+    let ciphertext = decode64(sealed_b64.trim()).ok()?;
+    let curve_pk = sign::to_curve25519_pk(pk).ok()?;
+    let curve_sk = sign::to_curve25519_sk(sk).ok()?;
+    sealedbox::open(&ciphertext, &curve_pk, &curve_sk).ok()
+}
+
+// A6: open a SIGN-then-SEAL blob from the server (used for the sealed address book):
+// unseal to our device key, THEN verify the inner Ed25519 signature against the trusted
+// management public key. Returns the recovered plaintext only if BOTH succeed, so a
+// forged sealed list (sealedbox has no sender auth) is rejected. None on any failure.
+pub fn nemo_open_sealed_signed(sealed_b64: &str) -> Option<Vec<u8>> {
+    use hbb_common::sodiumoxide::crypto::sign;
+    let opened = nemo_unseal_with_device_key(sealed_b64)?;
+    let mgmt_pk_b64 = Config::get_option("nemo-management-public-key");
+    let pk = get_rs_pk(mgmt_pk_b64.trim())?;
+    sign::verify(&opened, &pk).ok()
+}
+
+// A1: seal a client->server request secret (the poll's session access_token) to the
+// server's MANAGEMENT key so a MITM cannot read it — independent of TLS. Reuses the
+// Ed25519 `nemo-management-public-key` the client already trusts/pins (convert to
+// Curve25519, then sealedbox), so it needs no extra round-trip and no ephemeral key.
+// Returns base64 ciphertext, or None when no mgmt key is configured (caller then sends
+// the plaintext field for backward compatibility, protected only by TLS).
+pub fn nemo_seal_to_mgmt_key(plaintext: &[u8]) -> Option<String> {
+    use hbb_common::sodiumoxide::crypto::{sealedbox, sign};
+    let mgmt_pk_b64 = Config::get_option("nemo-management-public-key");
+    let pk = get_rs_pk(mgmt_pk_b64.trim())?;
+    let curve_pk = sign::to_curve25519_pk(&pk).ok()?;
+    Some(encode64(&sealedbox::seal(plaintext, &curve_pk)))
 }
 
 pub struct ThrottledInterval {
@@ -2814,6 +3019,48 @@ mod tests {
         time::{interval, interval_at, sleep, Duration, Instant, Interval},
     };
     use std::collections::HashSet;
+
+    // A4: fingerprint parsing accepts colon/upper/lower and rejects wrong lengths.
+    #[test]
+    fn parse_fingerprint_hex_forms() {
+        let colon = "7F:58:FD:D6:0F:75:A6:05:22:42:FA:66:87:18:13:88:93:60:04:0D:0B:07:F5:87:6F:72:9B:B2:CD:9E:9F:F4";
+        let plain = "7f58fdd60f75a605224 2fa668718138893 60040d0b07f5876f729bb2cd9e9ff4"; // spaces + case
+        let a = parse_fingerprint_hex(colon).expect("colon form");
+        let b = parse_fingerprint_hex(plain).expect("plain form");
+        assert_eq!(a, b);
+        assert_eq!(a[0], 0x7f);
+        assert_eq!(a[31], 0xf4);
+        // Wrong length -> None (never a partial/padded pin).
+        assert!(parse_fingerprint_hex("aa:bb:cc").is_none());
+        assert!(parse_fingerprint_hex("").is_none());
+    }
+
+    #[test]
+    fn url_host_extraction() {
+        assert_eq!(url_host("https://192.168.0.176:21120/nemo/api/client/policy").as_deref(), Some("192.168.0.176"));
+        assert_eq!(url_host("https://TBFDesk.example.com/api/ab/get").as_deref(), Some("tbfdesk.example.com"));
+        assert_eq!(url_host("not a url"), None);
+    }
+
+    // Upstream security port (bdb38c473): peer-id validation for injection prevention.
+    #[test]
+    fn untrusted_peer_id_validation() {
+        let cases = [
+            ("123456789", true),
+            ("m\u{00FC}nchen-pc", true),
+            ("192.168.1.10:21118", true),
+            ("9123456234@public", true),
+            (r#"1" & oWS.Run("cmd.exe /k whoami /priv",1,False) & ""#, false),
+            ("", false),
+            ("peer id", false),
+            ("peer\nid", false),
+            ("peer/id", false),
+            ("peer?id", false),
+        ];
+        for (id, expected) in cases {
+            assert_eq!(is_valid_untrusted_peer_id(id), expected, "{id:?}");
+        }
+    }
 
     #[inline]
     fn get_timestamp_secs() -> u128 {

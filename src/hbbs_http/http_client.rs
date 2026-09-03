@@ -10,6 +10,80 @@ use hbb_common::{
 };
 use reqwest::{blocking::Client as SyncClient, Client as AsyncClient};
 
+// Shared tail: apply the SOCKS proxy config (if any) and build the client. Split out so
+// the pinned-TLS builder (A4) reuses the exact proxy handling instead of duplicating it.
+macro_rules! finish_http_client {
+    ($builder:expr, $Client: ty) => {{
+        let mut builder = $builder;
+        let client = if let Some(conf) = Config::get_socks() {
+            let proxy_result = Proxy::from_conf(&conf, None);
+
+            match proxy_result {
+                Ok(proxy) => {
+                    let proxy_setup = match &proxy.intercept {
+                        ProxyScheme::Http { host, .. } => {
+                            reqwest::Proxy::all(format!("http://{}", host))
+                        }
+                        ProxyScheme::Https { host, .. } => {
+                            reqwest::Proxy::all(format!("https://{}", host))
+                        }
+                        ProxyScheme::Socks5 { addr, .. } => {
+                            reqwest::Proxy::all(&format!("socks5://{}", addr))
+                        }
+                    };
+
+                    match proxy_setup {
+                        Ok(mut p) => {
+                            if let Some(auth) = proxy.intercept.maybe_auth() {
+                                if !auth.username().is_empty() && !auth.password().is_empty() {
+                                    p = p.basic_auth(auth.username(), auth.password());
+                                }
+                            }
+                            builder = builder.proxy(p);
+                            builder.build().unwrap_or_else(|e| {
+                                info!("Failed to create a proxied client: {}", e);
+                                <$Client>::new()
+                            })
+                        }
+                        Err(e) => {
+                            info!("Failed to set up proxy: {}", e);
+                            <$Client>::new()
+                        }
+                    }
+                }
+                Err(e) => {
+                    info!("Failed to configure proxy: {}", e);
+                    <$Client>::new()
+                }
+            }
+        } else {
+            builder.build().unwrap_or_else(|e| {
+                info!("Failed to create a client: {}", e);
+                <$Client>::new()
+            })
+        };
+
+        client
+    }};
+}
+
+// A4: build an async client that PINS the nemo-api server certificate by SHA-256. Used
+// only when a fingerprint pin is configured and the URL targets the api-server; every
+// other certificate is rejected, and the caller does NOT run the accept-invalid/native-tls
+// fallback ladder for a pinned URL (so the fallback cannot silently defeat the pin).
+pub fn create_http_client_async_pinned(fingerprint: [u8; 32]) -> AsyncClient {
+    let mut builder = AsyncClient::builder().no_proxy();
+    match hbb_common::verifier::client_config_pinned(fingerprint) {
+        Ok(client_config) => {
+            builder = builder.use_preconfigured_tls(client_config);
+        }
+        Err(e) => {
+            hbb_common::log::error!("Failed to build pinned client config: {}", e);
+        }
+    }
+    finish_http_client!(builder, AsyncClient)
+}
+
 macro_rules! configure_http_client {
     ($builder:expr, $tls_type:expr, $danger_accept_invalid_cert:expr, $Client: ty) => {{
         // https://github.com/rustdesk/rustdesk/issues/11569
