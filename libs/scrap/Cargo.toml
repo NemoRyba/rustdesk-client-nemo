@@ -48,7 +48,15 @@ quest = "0.3"
 
 [build-dependencies]
 target_build_utils = "0.3"
-bindgen = "0.65"
+# Nemo: bumped from 0.65. LLVM 22 changed the clang AST, which broke bindgen's handling
+# of a struct that is forward-declared before it is defined — exactly what libaom/libvpx
+# do (the config union in aom_codec.h references aom_codec_dec_cfg/enc_cfg, which are only
+# defined later in aom_decoder.h/aom_encoder.h). Every bindgen up to and including 0.72.0
+# emits those as OPAQUE (`aom_codec_dec_cfg { _address: u8 }`), so the crate fails with
+# `error[E0560]: struct aom_codec_dec_cfg has no field named threads` on any distro
+# shipping clang 22 (Arch, Fedora 44). Ubuntu 24.04's clang 18 was unaffected, which is why
+# this only ever broke locally. Fixed upstream in bindgen 0.72.1.
+bindgen = "0.72.1"
 pkg-config = { version = "0.3.27", optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]

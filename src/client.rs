@@ -482,8 +482,17 @@ impl Client {
         // Nemo authorizes connections via signed management policy, not this
         // account token, so drop it for the rendezvous punch rather than securing
         // it. (The token is still used for the address-book HTTP API separately.)
+        // S-C: the server half of that handshake now exists behind the hbbs
+        // `--key-exchange` arg, so an operator can opt this socket back in with
+        // nemo-require-secure-rendezvous. That option must NOT be enabled before the
+        // rendezvous actually runs at least `--key-exchange=offer`, or every punch
+        // burns the 18s READ_TIMEOUT and then fails closed. With the flag off the
+        // condition below evaluates exactly as it does today (token is always empty),
+        // so the workaround is preserved byte for byte.
         let token = String::new();
-        if !key.is_empty() && !token.is_empty() {
+        if !key.is_empty()
+            && (!token.is_empty() || crate::common::nemo_require_secure_rendezvous())
+        {
             // mainly for the security of token
             secure_tcp(&mut socket, &key)
                 .await
@@ -1000,7 +1009,15 @@ impl Client {
                 .await
                 .with_context(|| "Failed to connect to rendezvous server")?;
 
-            if !key.is_empty() && !token.is_empty() {
+            // S-C: same opt-in as the punch socket above. Without an account token
+            // this relay request reached the Nemo hbbs unsecured, because the fork's
+            // rendezvous answers no KeyExchange. The server half now exists behind
+            // `--key-exchange`; nemo-require-secure-rendezvous must not be enabled
+            // before the rendezvous runs at least `--key-exchange=offer`. Flag off =>
+            // the condition is byte-for-byte today's.
+            if !key.is_empty()
+                && (!token.is_empty() || crate::common::nemo_require_secure_rendezvous())
+            {
                 // mainly for the security of token
                 secure_tcp(&mut socket, key).await?;
             }
@@ -1060,6 +1077,8 @@ impl Client {
         )
         .await
         .with_context(|| "Failed to connect to relay server")?;
+        // Encrypt the control frame: it carries the server licence key and the peer id.
+        crate::secure_relay_tcp(&mut conn, key).await?;
         let mut msg_out = RendezvousMessage::new();
         msg_out.set_request_relay(RequestRelay {
             licence_key: key.to_owned(),
@@ -1069,6 +1088,9 @@ impl Client {
             ..Default::default()
         });
         conn.send(&msg_out).await?;
+        // From here the stream carries the peer-to-peer session, which has its own
+        // end-to-end encryption; the relay stops decrypting at the same point.
+        conn.clear_key();
         Ok(conn)
     }
 
@@ -4141,7 +4163,15 @@ async fn hc_connection_(
     let host = check_port(&rendezvous_server, RENDEZVOUS_PORT);
     let mut conn = connect_tcp(host.clone(), CONNECT_TIMEOUT).await?;
     let key = crate::get_key(true).await;
-    crate::secure_tcp(&mut conn, &key).await?;
+    // S-C: this call was unconditional, and against a rendezvous that answers no
+    // KeyExchange it could only ever burn the 18s READ_TIMEOUT and then `?`-bail, so
+    // the health check never got as far as sending HealthCheck. Attempt it only when
+    // the operator has opted in with nemo-require-secure-rendezvous; with the flag
+    // off the handshake (and its stall) is skipped and nothing else about the health
+    // check changes.
+    if crate::common::nemo_require_secure_rendezvous() {
+        crate::secure_tcp(&mut conn, &key).await?;
+    }
     let mut msg_out = RendezvousMessage::new();
     msg_out.set_hc(HealthCheck {
         token,

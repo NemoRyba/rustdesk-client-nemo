@@ -207,6 +207,7 @@ pub async fn create_tcp_connection(
     {
         bail!("Encrypted session required by TBF policy; refusing an unencryptable incoming connection");
     }
+    let mut secured = false;
     if secure && pk.len() == sign::PUBLICKEYBYTES && sk.len() == sign::SECRETKEYBYTES {
         let mut sk_ = [0u8; sign::SECRETKEYBYTES];
         sk_[..].copy_from_slice(&sk);
@@ -239,6 +240,7 @@ pub async fn create_tcp_connection(
                                 &pk.asymmetric_value,
                                 &our_sk_b,
                             )?);
+                            secured = true;
                         } else if pk.asymmetric_value.is_empty() {
                             // S-A: refuse an unencrypted session when policy requires
                             // encryption, instead of silently proceeding in plaintext.
@@ -263,6 +265,14 @@ pub async fn create_tcp_connection(
         }
     }
 
+    // Review finding (HIGH): the per-branch checks above missed the ones that only
+    // log — an "invalid message type" reply (anything that is not a PublicKey) fell
+    // through with no key set, so a modified controller got exactly the plaintext
+    // session the H3 comment says is refused. Enforce ONCE here instead, so every path
+    // out of the handshake is covered, including future ones.
+    if crate::common::nemo_require_encrypted_session() && !secured {
+        bail!("Encrypted session required by TBF policy; refusing a connection that completed no key exchange");
+    }
     #[cfg(target_os = "macos")]
     {
         use std::process::Command;
@@ -343,12 +353,18 @@ async fn create_relay_connection_(
     .await?;
     let mut msg_out = RendezvousMessage::new();
     let licence_key = crate::get_key(true).await;
+    // Encrypt the control frame (licence key + uuid) on this side too -- both halves
+    // of a relayed pair dial hbbr, so securing only the controller would leave the
+    // responder's frame in the clear.
+    crate::secure_relay_tcp(&mut stream, &licence_key).await?;
     msg_out.set_request_relay(RequestRelay {
         licence_key,
         uuid,
         ..Default::default()
     });
     stream.send(&msg_out).await?;
+    // Peer-to-peer payload follows; it is already end-to-end encrypted.
+    stream.clear_key();
     create_tcp_connection(server, stream, peer_addr, secure, control_permissions).await?;
     Ok(())
 }

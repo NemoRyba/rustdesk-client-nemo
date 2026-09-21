@@ -36,7 +36,9 @@ function getSize(type, size) {
     size = (size * 100).toInteger();
     var a = (size / 100).toInteger();
     if (size % 100 == 0) return a;
-    if (size % 10 == 0) return a + '.' + (size % 10);
+    // This branch is entered precisely when `size % 10 == 0`, so printing `size % 10`
+    // always printed ".0" -- 1.5 GiB rendered as "1.0G". Print the tenths digit.
+    if (size % 10 == 0) return a + '.' + ((size % 100) / 10).toInteger();
     var b = size % 100;
     if (b < 10) b = '0' + b;
     return a + '.' + b;

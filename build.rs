@@ -4,6 +4,18 @@ fn build_windows() {
     let file2 = "src/platform/windows_delete_test_cert.cc";
     cc::Build::new().file(file).file(file2).compile("windows");
     println!("cargo:rustc-link-lib=WtsApi32");
+    // Nemo: with the hwcodec feature, hwcodec's own build.rs links only
+    // avcodec/avutil/avformat, but its opus decode path pulls libswresample
+    // (swr_*) and its Media Foundation encoder pulls the MF GUID libs
+    // (IID_ICodecAPI/IID_IMFTransform/...). Link them here for the from-source
+    // Windows build (vcpkg x64-windows-static search path is emitted by hwcodec).
+    if std::env::var("CARGO_FEATURE_HWCODEC").is_ok() {
+        println!("cargo:rustc-link-lib=static=swresample");
+        println!("cargo:rustc-link-lib=static=swscale");
+        println!("cargo:rustc-link-lib=mfuuid");
+        println!("cargo:rustc-link-lib=strmiids");
+        println!("cargo:rustc-link-lib=mfplat");
+    }
     println!("cargo:rerun-if-changed={}", file);
     println!("cargo:rerun-if-changed={}", file2);
 }

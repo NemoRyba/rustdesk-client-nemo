@@ -523,22 +523,20 @@ function open_custom_server_dialog() {
                 var key = (res.key || "").trim();
                 var company_only = res.company_only ? true : false;
                 if (company_only && !id) {
-                    if (typeof show_progress === 'function') show_progress(false, "Company network only requires an ID server");
-                    return;
+                    return "Company network only requires an ID server";
                 }
                 if (id == old_id && relay == old_relay && key == old_key && api == old_api && company_only == old_company_only) return;
                 if (id) {
                     var err = handler.test_if_valid_server(id, true);
-                    if (err) { if (typeof show_progress === 'function') show_progress(false, translate("ID Server") + ": " + err); return; }
+                    if (err) { return translate("ID Server") + ": " + err; }
                 }
                 if (relay) {
                     var err = handler.test_if_valid_server(relay, true);
-                    if (err) { if (typeof show_progress === 'function') show_progress(false, translate("Relay Server") + ": " + err); return; }
+                    if (err) { return translate("Relay Server") + ": " + err; }
                 }
                 if (api) {
                     if (0 != api.indexOf("https://") && 0 != api.indexOf("http://")) {
-                        if (typeof show_progress === 'function') show_progress(false, translate("API Server") + ": " + translate("invalid_http"));
-                        return;
+                        return translate("API Server") + ": " + translate("invalid_http");
                     }
                 }
                 configOptions["custom-rendezvous-server"] = id;
@@ -570,12 +568,10 @@ function open_nemo_management_dialog() {
                 var server = (res.server || "").trim();
                 var public_key = (res.public_key || "").trim();
                 if (enabled && !server) {
-                    if (typeof show_progress === 'function') show_progress(false, "Management Server is required");
-                    return;
+                    return "Management Server is required";
                 }
                 if (server && 0 != server.indexOf("https://") && 0 != server.indexOf("http://")) {
-                    if (typeof show_progress === 'function') show_progress(false, "Management Server: " + translate("invalid_http"));
-                    return;
+                    return "Management Server: " + translate("invalid_http");
                 }
                 if (enabled == old_enabled && server == old_server && public_key == old_public_key) return;
                 configOptions[nemo_management_enabled_option] = enabled ? "Y" : "";
@@ -643,8 +639,7 @@ function open_whitelist_dialog() {
                     for (var ip in values) {
                         if (!ip.match(/^(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]?|0)\.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]?|0)\.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]?|0)\.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]?|0)(\/([1-9]|[1-2][0-9]|3[0-2])){0,1}$/)
                             && !ip.match(/^(((?:[0-9A-Fa-f]{1,4}))*((?::[0-9A-Fa-f]{1,4}))*::((?:[0-9A-Fa-f]{1,4}))*((?::[0-9A-Fa-f]{1,4}))*|((?:[0-9A-Fa-f]{1,4}))((?::[0-9A-Fa-f]{1,4})){7})(\/([1-9]|[1-9][0-9]|1[0-1][0-9]|12[0-8])){0,1}$/)) {
-                            if (typeof show_progress === 'function') show_progress(false, translate("Invalid IP") + ": " + ip);
-                            return;
+                            return translate("Invalid IP") + ": " + ip;
                         }
                     }
                     value = values.join("\n");
@@ -683,7 +678,7 @@ function open_proxy_dialog() {
                         domain_port = domain_port.substring(protocol_index + 3);
                     }
                     var err = handler.test_if_valid_server(domain_port, false);
-                    if (err) { if (typeof show_progress === 'function') show_progress(false, translate("Server") + ": " + err); return; }
+                    if (err) { return translate("Server") + ": " + err; }
                 }
                 handler.set_socks(proxy, username, password);
                 if (typeof show_progress === 'function') show_progress(-1);
@@ -915,7 +910,9 @@ function editDirectAccessPort() {
         var p = (res.port || '').trim();
         if (p) {
             p = p.toInteger();
-            if (!(p > 0)) {
+            // Upper bound matters: the check used to be `p > 0` only, so 99999 was
+            // accepted and written to direct-access-port, where it can never bind.
+            if (!(p > 0) || p > 65535) {
                 return translate("Invalid port");
             }
             p = p + '';
@@ -1855,41 +1852,23 @@ class UpdateMe: Reactor.Component {
         return <div .install-me>
             <div>{translate('Status')}</div>
             <div>There is a newer version of TBFDesk ({handler.get_new_version()}) available.</div>
-            {is_custom_client
-                ? <div style="font-size: 1em; font-weight: normal; text-align: left; padding-top: 1em;">{translate('Enable \"Auto update\" or contact your administrator for the latest version.')}</div>
-                : <div #install-me.link>{translate('Click to ' + update_or_download)}</div>}
+            {// TBFDesk: never offer the upstream download. Upstream showed a
+             // "Click to download" link here whenever is_custom_client was false --
+             // and it IS false in this build, because APP_NAME is only overridden by a
+             // custom.txt that does not exist in this tree. That link opened
+             // rustdesk.com/download, i.e. a one-click route for a user to install
+             // stock RustDesk over the hardened build. Updates come from the TBFDesk
+             // server alone, so the only thing shown here is where to get one.
+             <div style="font-size: 1em; font-weight: normal; text-align: left; padding-top: 1em;">{translate('Enable \"Auto update\" or contact your administrator for the latest version.')}</div>}
             <div #download-percent style="display:hidden; padding-top: 1em;" />
         </div>;
     }
 
-    event click $(#install-me) {
-        handler.open_url("https://rustdesk.com/download");
-        return;
-        if (!is_win) {
-            handler.open_url("https://rustdesk.com");
-            return;
-        }
-        var url = software_update_url + '.' + handler.get_software_ext();
-        var path = handler.get_software_store_path();
-        var onsuccess = function(md5) {
-            $(#download-percent).content(translate("Installing ..."));
-            handler.update_me(path);
-        };
-        var onerror = function(err) {
-            msgbox("custom-error", "Download Error", "Failed to download"); 
-        };
-        var onprogress = function(loaded, total) {
-            if (!total) total = 5 * 1024 * 1024;
-            var el = $(#download-percent);
-            el.style.set{display: "block"};
-            el.content("Downloading %" + (loaded * 100 / total));
-        };
-        stdout.println("Downloading " + url + " to " + path);
-        download(
-            url,
-            self.url(path),
-            onsuccess, onerror, onprogress);
-    }
+    // TBFDesk: the upstream handler here opened https://rustdesk.com/download (and
+    // https://rustdesk.com on non-Windows) before falling through to downloading the
+    // upstream artifact. Both are gone: this component no longer renders a clickable
+    // link, and updates are delivered only by the TBFDesk server through the signed +
+    // origin-pinned + sha256-checked manifest path.
 }
 
 class SystemError: Reactor.Component {

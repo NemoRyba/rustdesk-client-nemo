@@ -337,6 +337,15 @@ impl RendezvousMediator {
                         Config::set_key_confirmed(false);
                         Config::set_host_key_confirmed(&self.host_prefix, false);
                     }
+                    Ok(register_pk_response::Result::NOT_SUPPORT) => {
+                        // S-C: this rendezvous refuses to register a peer over TCP/WS.
+                        // Without this arm an operator who flips disable-udp=Y only saw
+                        // "unknown RegisterPkResponse" and had no way to connect the
+                        // failure back to the option that caused it.
+                        log::error!(
+                            "This rendezvous server does not support registering over TCP/WS; disable-udp must stay N"
+                        );
+                    }
                     _ => {
                         log::error!("unknown RegisterPkResponse");
                     }
@@ -429,10 +438,21 @@ impl RendezvousMediator {
                     if last_recv_msg.elapsed().as_millis() as u64 > rz.keep_alive as u64 * 3 / 2 {
                         bail!("Rendezvous connection is timeout");
                     }
-                    if (!Config::get_key_confirmed() ||
-                        !Config::get_host_key_confirmed(&rz.host_prefix)) &&
-                        last_register_sent.map(|x| x.elapsed().as_millis() as i64).unwrap_or(REG_INTERVAL) >= REG_INTERVAL {
-                        rz.register_pk(Sink::Stream(&mut conn)).await?;
+                    // TBFDesk: send the presence heartbeat, not just the key. Upstream's
+                    // TCP path only ever sent RegisterPk, and only while the key was
+                    // still unconfirmed -- so a client running with disable-udp=Y
+                    // connected, completed the KeyExchange and then went silent: it never
+                    // announced presence, never showed up online, and the server closed
+                    // the idle connection after 30 s. register_peer() already falls back
+                    // to register_pk() by itself when the key is not yet confirmed
+                    // (see its first branch), so this one call covers both cases and
+                    // mirrors what start_udp does.
+                    if last_register_sent
+                        .map(|x| x.elapsed().as_millis() as i64)
+                        .unwrap_or(REG_INTERVAL)
+                        >= REG_INTERVAL
+                    {
+                        rz.register_peer(Sink::Stream(&mut conn)).await?;
                         last_register_sent = Some(Instant::now());
                     }
                 }
@@ -498,6 +518,19 @@ impl RendezvousMediator {
         );
 
         let mut socket = connect_tcp(&*self.host, CONNECT_TIMEOUT).await?;
+        // S-C: this is a fresh rendezvous socket, so the secure_tcp done in start_tcp
+        // never covered it and the RelayResponse below went out in clear text. Only
+        // attempt the handshake when the operator opted in with
+        // nemo-require-secure-rendezvous: with the flag off we must make no call at
+        // all, because a rendezvous running --key-exchange=off never answers and the
+        // call would cost this connection the full 18s READ_TIMEOUT. With the flag on
+        // we deliberately fail closed: secure_tcp bails at the single enforcement
+        // point in common.rs when no key ended up set, and `?` propagates that rather
+        // than falling back to clear text.
+        // (secure_tcp_silent would fit better here but is private to common.rs.)
+        if crate::common::nemo_require_secure_rendezvous() {
+            crate::secure_tcp(&mut socket, &crate::get_key(true).await).await?;
+        }
 
         let mut msg_out = Message::new();
         let mut rr = RelayResponse {
@@ -586,6 +619,12 @@ impl RendezvousMediator {
         let peer_addr = AddrMangle::decode(&fla.socket_addr);
         log::debug!("Handle intranet from {:?}", peer_addr);
         let mut socket = connect_tcp(&*self.host, CONNECT_TIMEOUT).await?;
+        // S-C: fresh rendezvous socket again, and the LocalAddr below carries this
+        // workstation's internal IP in clear text. send_raw() encrypts once the
+        // handshake has set a key (hbb_common tcp.rs:158). Flag off => no call.
+        if crate::common::nemo_require_secure_rendezvous() {
+            crate::secure_tcp(&mut socket, &crate::get_key(true).await).await?;
+        }
         let local_addr = socket.local_addr();
         // we saw invalid local_addr while using proxy, local_addr.ip() == "::1"
         let local_addr: SocketAddr =
@@ -666,7 +705,11 @@ impl RendezvousMediator {
             socket_addr_v6,
             ..Default::default()
         };
-        if ph.udp_port > 0 {
+        // S-C: the UDP punch puts PunchHoleSent on the wire as a plain datagram even
+        // in TCP mode, and there is no key exchange for a datagram socket. When the
+        // operator requires a secured rendezvous, fall through to the TCP punch /
+        // relay path below, which can be secured.
+        if ph.udp_port > 0 && !crate::common::nemo_require_secure_rendezvous() {
             peer_addr.set_port(ph.udp_port as u16);
             self.punch_udp_hole(peer_addr, server, msg_punch, control_permissions)
                 .await?;
@@ -681,6 +724,15 @@ impl RendezvousMediator {
             allow_err!(socket_client::connect_tcp_local(peer_addr, Some(local_addr), 30).await);
             socket
         };
+        // S-C: secure this fresh rendezvous socket before PunchHoleSent goes out.
+        // Deliberately placed *after* the block above: the connect / local_addr /
+        // connect_tcp_local sequence depends on that port being reused immediately,
+        // so no handshake may sit between the connect and the punch SYN. The server's
+        // KeyExchange waits in the receive buffer until we read it here. Flag off =>
+        // no call, so the fleet never pays the 18s READ_TIMEOUT.
+        if crate::common::nemo_require_secure_rendezvous() {
+            crate::secure_tcp(&mut socket, &crate::get_key(true).await).await?;
+        }
         let mut msg_out = Message::new();
         msg_out.set_punch_hole_sent(msg_punch);
         let bytes = msg_out.write_to_bytes()?;

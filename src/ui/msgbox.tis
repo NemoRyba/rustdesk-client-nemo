@@ -162,6 +162,13 @@ class MsgboxComponent: Reactor.Component {
                 me.$(#content).content(content);
         };
         self.timer(3ms, msgboxTimerFunc);
+        // #error gets its own row above the buttons. It used to sit inside the button
+        // row as a 250px inline-block, so any message longer than that pushed OK onto a
+        // second line and overlapped Cancel. Now that the validation callbacks actually
+        // return their message (they used to set it and then return undefined, which
+        // closed the box and destroyed the text), these messages show often enough for
+        // the collision to matter. NB: TIScript markup does not accept HTML comments --
+        // putting one inside the element literal is a parse error and blanks the window.
         return (<div><div style="position: absolute; size:*; background:black; opacity:0.5;" />
         <div style="size: *; position: absolute;">
             <div style={"border: " + color + " solid 1px; background: color(bg); margin: *; width:" + (this.width) + "px; min-height:" + (this.height) + "px"}>
@@ -173,8 +180,8 @@ class MsgboxComponent: Reactor.Component {
                     {icon && <div style="height: *; margin: * 0; padding-right: 2em;" .msgbox-icon>{icon}</div>}
                     <div style={this.contentStyle || "size: *; margin: * 0;"} #content />
                 </div>
+                <div #error style="text-align: left; font-size: 12px; margin-bottom: 6px;" />
                 <div style="text-align: right;">
-                    <span style="display:inline-block; max-width: 250px; font-size:12px;" #error />
                     <progress #progress style={"color:" + color + "; display: " + (show_progress ? "inline-block" : "none")} />
                     {hasCancel || this.hasRetry ? <button .button #cancel .outline>{translate(this.hasRetry ? "OK" : "Cancel")}</button> : ""}
                     {this.hasSkip() ? <button .button #skip .outline>{translate('Skip')}</button> : ""}

@@ -7,7 +7,11 @@ use hbb_common::{
     ResultType,
 };
 use serde_derive::{Deserialize, Serialize};
-use std::{collections::HashMap, sync::Once, time::Duration};
+use std::{
+    collections::HashMap,
+    sync::{Mutex, Once},
+    time::{Duration, Instant},
+};
 
 const POLL_INITIAL_DELAY_SECS: u64 = 10;
 const POLL_INTERVAL_SECS: u64 = 30;
@@ -19,6 +23,17 @@ const OPTION_NEMO_COMPANY_NETWORK_ONLY: &str = "nemo-company-network-only";
 const OPTION_NEMO_PERMANENT_PASSWORD: &str = "nemo-permanent-password";
 const OPTION_NEMO_OUTBOUND_ENABLED: &str = "nemo-outbound-enabled";
 const OPTION_NEMO_OUTBOUND_TARGETS: &str = "nemo-outbound-targets";
+// Scope (b): "v1" => wrap the whole poll body in one sealedbox to the management
+// key (see poll_request_body). "" (the default) = today's plaintext body.
+const OPTION_NEMO_SEALED_REQUEST: &str = "nemo-sealed-request";
+// Scope (c): "Y" => fail closed on an unsecured rendezvous connection. "" (the
+// default) = today's behaviour. Only plumbed here; read by the rendezvous side.
+const OPTION_NEMO_REQUIRE_SECURE_RENDEZVOUS: &str = "nemo-require-secure-rendezvous";
+// Auto-update: "Y" => OUR updater (signed manifest from the management server,
+// verified against the pinned management key) may run. Enabled only by this Nemo
+// policy key — the stock `allow-auto-update` stays in POLICY_DENIED_KEYS, so the
+// upstream updater has no way in. "" (the default) = no updater at all.
+const OPTION_NEMO_AUTO_UPDATE: &str = "nemo-auto-update";
 const MANAGED_SECRET_PLACEHOLDER: &str = "<managed-secret>";
 const NEMO_MANAGEMENT_SETTINGS: &[&str] = &[
     OPTION_NEMO_MANAGEMENT_ENABLED,
@@ -44,6 +59,14 @@ const NEMO_MANAGEMENT_SETTINGS: &[&str] = &[
     // whole fleet can be pinned centrally; persisted durably by apply_policy (like
     // api-server) so it is available at the very first request before any poll.
     "nemo-api-cert-fingerprint",
+    // Scope (b)/(c) kill switches. Both default to "" = exactly today's behaviour.
+    // They MUST be listed here: option_scope() drops any key that is not, so without
+    // these two entries the server could push them and every client would silently
+    // discard them.
+    OPTION_NEMO_SEALED_REQUEST,
+    OPTION_NEMO_REQUIRE_SECURE_RENDEZVOUS,
+    // Auto-update: same reason — an unlisted key is dropped by option_scope().
+    OPTION_NEMO_AUTO_UPDATE,
 ];
 
 #[derive(Clone, Copy)]
@@ -116,6 +139,13 @@ struct ClientPolicyPayload {
     /// that does not stamp it (accepted for backward compat, logged).
     #[serde(default)]
     issued_ts: u64,
+    /// Server-issued session revocation: terminate any session that is open when a
+    /// value NEWER than the one we last acted on arrives. Carried inside the signed
+    /// (and, when sealed, encrypted) payload, so it inherits the poll's authenticity
+    /// — a MITM cannot forge or strip it without breaking the signature.
+    /// 0 / absent = nothing to do (older server, or no revocation issued).
+    #[serde(default)]
+    terminate_sessions_before: u64,
     policy: ManagementPolicy,
 }
 
@@ -164,6 +194,43 @@ fn policy_issued_ts_high_water() -> u64 {
 
 // A2: reject a replayed/rolled-back policy. `now` is the client clock (epoch secs).
 // Pure so it is unit-testable. Returns Ok(()) to accept, Err(reason) to refuse.
+/// Persisted high-water mark of the last revocation we honoured, so the directive is
+/// idempotent: the server keeps sending the same timestamp until it issues a new one,
+/// and we must not re-kill sessions that were opened legitimately after we acted.
+const OPTION_NEMO_TERMINATE_ACKED: &str = "nemo-terminate-acked";
+
+fn terminate_acked() -> u64 {
+    Config::get_option(OPTION_NEMO_TERMINATE_ACKED)
+        .parse::<u64>()
+        .unwrap_or(0)
+}
+
+fn apply_session_revocation(terminate_sessions_before: u64) {
+    if terminate_sessions_before == 0 {
+        return;
+    }
+    let acked = terminate_acked();
+    if terminate_sessions_before <= acked {
+        return; // already honoured this one
+    }
+    // Record BEFORE acting. If the process dies mid-teardown the sessions are gone
+    // with it anyway, whereas recording afterwards could re-fire the kill on every
+    // poll if the write failed.
+    Config::set_option(
+        OPTION_NEMO_TERMINATE_ACKED.to_owned(),
+        terminate_sessions_before.to_string(),
+    );
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        let n = crate::server::terminate_all_authed_sessions(&format!(
+            "server revoked sessions (terminate_sessions_before={terminate_sessions_before})"
+        ));
+        if n > 0 {
+            log::warn!("Server-issued revocation closed {n} session(s)");
+        }
+    }
+}
+
 fn check_policy_freshness(issued_ts: u64, high_water: u64, now: u64) -> Result<(), String> {
     if issued_ts == 0 {
         // Older server that does not stamp issued_ts — no rollback protection possible;
@@ -213,6 +280,81 @@ fn management_enabled() -> bool {
         && !Config::get_option(OPTION_NEMO_MANAGEMENT_SERVER).trim().is_empty()
 }
 
+/// Scope (b) / Layer 1: turn the plain poll body into `{"sealed_request": "<b64>"}`
+/// and nothing else. The sealed plaintext is the body we would have posted today, so
+/// A1's `sealed_token` and everything else rides inside the envelope unchanged.
+///
+/// Layer 1 makes the envelope MANDATORY whenever a management public key is
+/// configured (`mgmt_key_configured`), independent of the `nemo-sealed-request`
+/// flag: the body carries the device signature and the session token, and a
+/// plaintext fallback would hand both to a TLS-stripping MITM. So with a key present
+/// a failed seal yields `None` — the caller skips this poll and retries next tick —
+/// and never the plaintext body. This adds no brick surface: the only way sealing
+/// fails with a key present is a key that get_rs_pk rejects, and that same key
+/// already fails verified_payload, so policy sync was dead regardless.
+///
+/// Without a management key today's behaviour stands: the plain body; and if the
+/// flag is set anyway, the B1 brick lesson applies — post the plain body and warn,
+/// because losing policy sync forever is worse than a readable poll. (The flag still
+/// gates /api/ab/get, see common::nemo_sealed_request_enabled.)
+///
+/// `seal` is injected rather than called directly so every branch is testable
+/// without a management key in Config.
+fn poll_request_body(
+    plain: String,
+    seal_enabled: bool,
+    mgmt_key_configured: bool,
+    seal: impl Fn(&str) -> Option<String>,
+) -> Option<String> {
+    if !seal_enabled && !mgmt_key_configured {
+        return Some(plain);
+    }
+    match seal(&plain) {
+        Some(sealed) => Some(serde_json::json!({ "sealed_request": sealed }).to_string()),
+        None if mgmt_key_configured => None,
+        None => {
+            log::warn!("Nemo management: nemo-sealed-request is set but this client cannot seal the poll (no management public key?); posting the unsealed body");
+            Some(plain)
+        }
+    }
+}
+
+// Layer 1: an unprovisioned machine is refused on every poll (every 30s); the line
+// that says what to do is printed at most once per DEVICE_KEY_REJECTION_LOG_INTERVAL
+// so the log stays readable. std Mutex, not tokio: the poll loop is a plain thread.
+const DEVICE_KEY_REJECTION_LOG_INTERVAL: Duration = Duration::from_secs(60);
+static LAST_DEVICE_KEY_REJECTION_LOG: Mutex<Option<Instant>> = Mutex::new(None);
+
+fn device_key_rejection_log_due() -> bool {
+    // A poisoned lock means a panic elsewhere, not a throttling decision: log anyway.
+    let Ok(mut last) = LAST_DEVICE_KEY_REJECTION_LOG.lock() else {
+        return true;
+    };
+    rejection_log_due(&mut last, Instant::now(), DEVICE_KEY_REJECTION_LOG_INTERVAL)
+}
+
+// Pure so the throttle is unit-testable: true (and records `now`) when no line has
+// been printed within `interval`.
+fn rejection_log_due(last: &mut Option<Instant>, now: Instant, interval: Duration) -> bool {
+    if let Some(t) = *last {
+        if now.duration_since(t) < interval {
+            return false;
+        }
+    }
+    *last = Some(now);
+    true
+}
+
+// The server's ApiError shape is `{"error": "<message>"}`; surface that verbatim so
+// the operator reads the server's own reason. Anything else (an intermediary's HTML
+// page, an empty body) is bounded so it cannot flood the log.
+fn http_error_message(body: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| v.get("error")?.as_str().map(str::to_owned))
+        .unwrap_or_else(|| body.chars().take(200).collect())
+}
+
 fn sync_policy() -> ResultType<()> {
     let server = Config::get_option(OPTION_NEMO_MANAGEMENT_SERVER);
     let public_key = Config::get_option(OPTION_NEMO_MANAGEMENT_PUBLIC_KEY);
@@ -252,6 +394,11 @@ fn sync_policy() -> ResultType<()> {
         sealed: String::new(),
     };
     let (device_key_pub, device_key_sig) = nemo_sign_poll(&id);
+    // Layer 1: remembered so the server's refusal can be explained below. The poll
+    // still goes out WITHOUT a device key — the server records this peer's auth mode
+    // ("default") for the Peers dashboard before it refuses, and that column is the
+    // rollout instrument.
+    let has_device_key = !device_key_pub.is_empty();
     // Only advertise seal support when we actually hold a device key to unseal with.
     let sealed = if device_key_pub.is_empty() {
         String::new()
@@ -264,7 +411,27 @@ fn sync_policy() -> ResultType<()> {
         sealed,
         ..request
     };
-    let body = serde_json::to_string(&request)?;
+    let mgmt_key_configured = !public_key.trim().is_empty();
+    let Some(body) = poll_request_body(
+        serde_json::to_string(&request)?,
+        crate::common::nemo_sealed_request_enabled(),
+        mgmt_key_configured,
+        crate::common::nemo_seal_envelope,
+    ) else {
+        // Layer 1: a management key is configured, so the envelope is mandatory and
+        // the plaintext body must not go out. The body is always a serialized struct,
+        // so the only cause left is the key itself.
+        let cause = if crate::common::get_rs_pk(public_key.trim()).is_none() {
+            "nemo-management-public-key is not a valid Ed25519 public key"
+        } else {
+            "sealing to the management public key failed"
+        };
+        log::error!(
+            "Nemo management: Layer 1 requires the poll to be sealed while a management public key is configured, but {}; skipping this poll (not posting plaintext), retrying next tick",
+            cause
+        );
+        bail!("poll skipped: sealed envelope required but could not be built ({cause})");
+    };
     let headers = serde_json::json!({
         "Accept": "application/json",
         "Content-Type": "application/json"
@@ -278,7 +445,36 @@ fn sync_policy() -> ResultType<()> {
     )?;
     let http: HttpResponse = serde_json::from_str(&raw)?;
     if http.status_code != 200 {
-        bail!("management server returned HTTP {}", http.status_code);
+        let server_msg = http_error_message(&http.body);
+        // Layer 1: the server refuses (403) a poll without a valid, PINNED device
+        // signature. Keyed off the status + our own key presence, not the server's
+        // wording, so a reworded message cannot silence it; the wording is echoed.
+        if http.status_code == 403 && !has_device_key {
+            if device_key_rejection_log_due() {
+                log::error!(
+                    "Nemo management: the server REFUSED this client's poll (HTTP 403: {}) and NO DEVICE KEY is provisioned on this machine. Layer 1 requires one: import the device key issued for this machine (main window -> Import device key, or the licence-name bootstrap). Policy sync is blocked until then. (repeats at most once per minute)",
+                    server_msg
+                );
+            }
+            // Ok, not bail!: the throttled line above IS the report. An Err here
+            // would make start() print an unthrottled warn every 30s on top of it
+            // and defeat the once-per-minute rule.
+            return Ok(());
+        }
+        if http.status_code == 403 && server_msg.to_ascii_lowercase().contains("device key") {
+            // We DO hold a device key and the server still refused it: it is not the
+            // one pinned for this id (rotated, re-provisioned, or never pinned).
+            bail!(
+                "management server refused this client's device key (HTTP 403: {}). The key on this machine is not the one pinned for id {} — re-pin it in the dashboard's Device keys panel or import the currently pinned key",
+                server_msg,
+                id
+            );
+        }
+        bail!(
+            "management server returned HTTP {} ({})",
+            http.status_code,
+            server_msg
+        );
     }
     let response: ClientPolicyResponse = serde_json::from_str(&http.body)?;
     let was_sealed = response.sealed_payload.is_some();
@@ -328,6 +524,11 @@ fn sync_policy() -> ResultType<()> {
     // inserts `nemo-logged-in-user` iff it resolved our token to a live session,
     // and inserts `nemo-require-login=Y` only on the no-user path. So "require
     // login, but the server saw no user" means our token was NOT recognised.
+    // Session revocation. Deliberately acted on BEFORE apply_policy: if an operator
+    // cut this device, the sessions should drop even if applying the rest of the
+    // policy were to fail. Idempotent via a persisted high-water mark, so a repeated
+    // poll carrying the same value does not keep killing freshly-opened sessions.
+    apply_session_revocation(payload.terminate_sessions_before);
     let server_saw_user = payload.policy.options.contains_key("nemo-logged-in-user");
     let server_requires_login = payload
         .policy
@@ -425,8 +626,6 @@ fn apply_policy(policy: ManagementPolicy) -> ResultType<()> {
     for k in [
         "api-server",
         "allow-insecure-tls-fallback",
-        // Durable so the pin is enforced from the first request at next startup.
-        "nemo-api-cert-fingerprint",
     ] {
         if let Some(v) = policy.options.get(k) {
             if !v.trim().is_empty() {
@@ -434,9 +633,58 @@ fn apply_policy(policy: ManagementPolicy) -> ResultType<()> {
             }
         }
     }
+    // Scope (b)/(c) flags — same startup-critical reason as the block above (the
+    // rendezvous mediator comes up ~10s before the first poll, so an OVERWRITE-only
+    // value is off on every boot) and the same placement constraint, only more
+    // sharply: unlike "nemo-require-login" these two ARE in NEMO_MANAGEMENT_SETTINGS,
+    // so once the loop below has put them into OVERWRITE_SETTINGS, is_option_can_save()
+    // would refuse the write and set_option would DELETE the persisted copy instead.
+    // Hence here, between the clear and the re-apply.
+    // unwrap_or_default() is deliberate and must stay: a policy that STOPS sending the
+    // key CLEARS it, which is the un-brick path for a fleet locked out by its own flag.
+    for k in [
+        OPTION_NEMO_SEALED_REQUEST,
+        OPTION_NEMO_REQUIRE_SECURE_RENDEZVOUS,
+        // Auto-update: the updater must know at startup whether it may run, and a
+        // policy that stops sending the key must switch it OFF — same clear-on-omit.
+        OPTION_NEMO_AUTO_UPDATE,
+    ] {
+        Config::set_option(
+            k.to_owned(),
+            policy.options.get(k).cloned().unwrap_or_default(),
+        );
+    }
+    // Review finding: the cert pin used to be write-once — set only when non-empty, with
+    // no way to clear it. One malformed or hostile value permanently killed the only
+    // channel that could deliver a correction (policy arrives over the pinned URL), and
+    // it survived reboots. Now it has the same clear-on-omit semantics as the flags
+    // above, and a value that is not a SHA-256 fingerprint is refused rather than stored.
+    {
+        let k = "nemo-api-cert-fingerprint";
+        let v = policy.options.get(k).cloned().unwrap_or_default();
+        let v = if v.trim().is_empty() {
+            String::new()
+        } else if crate::common::parse_fingerprint_hex(v.trim()).is_some() {
+            v
+        } else {
+            log::warn!(
+                "Nemo management: ignoring malformed {} (expected 64 hex digits); leaving the pin unset",
+                k
+            );
+            String::new()
+        };
+        Config::set_option(k.to_owned(), v);
+    }
     apply_permanent_password(&policy);
     for (key, value) in &policy.options {
         if key == OPTION_NEMO_PERMANENT_PASSWORD {
+            continue;
+        }
+        if policy_key_denied(key) {
+            log::warn!(
+                "Nemo management: refusing policy key '{}' — it is not applicable to a managed client (see POLICY_DENIED_KEYS)",
+                key
+            );
             continue;
         }
         if let Some(scope) = option_scope(key) {
@@ -510,6 +758,26 @@ fn previous_policy() -> ManagementPolicy {
         OPTION_NEMO_MANAGEMENT_LAST_POLICY,
     ))
     .unwrap_or_default()
+}
+
+// Review finding (CRITICAL): apply_policy forwards any key that `option_scope` accepts,
+// which is every member of hbb_common's KEYS_SETTINGS — including `allow-auto-update`.
+// The updater it enables does NOT update this fork: the version URL is hardcoded to
+// upstream (`hbb_common/src/lib.rs`, api.rustdesk.com), so a single pushed policy makes
+// every Windows workstation silently install stock RustDesk over the hardened build with
+// a privileged installer. That removes the login gate, sealed login, signed policy,
+// blocked-ids, the cert pin and the licence-named-exe provisioning in one step, and it
+// survives the compromise — no key rotation or server rebuild undoes it.
+//
+// A managed fleet is updated by the operator's own deployment tooling, never by a key a
+// policy can set, so these keys are refused here. This is the security boundary: it must
+// live on the client, because a compromised server cannot be trusted to omit the key.
+// NOTE: the dashboard still offers an "Auto update" checkbox; it is now inert for managed
+// clients and should be removed server-side too.
+const POLICY_DENIED_KEYS: &[&str] = &["allow-auto-update", "auto-update-check-interval"];
+
+fn policy_key_denied(key: &str) -> bool {
+    POLICY_DENIED_KEYS.contains(&key)
 }
 
 fn apply_permanent_password(policy: &ManagementPolicy) {
@@ -680,5 +948,93 @@ mod tests {
         assert!(check_policy_freshness(now + 601, 0, now).is_err());
         // issued_ts == 0 (older server, no stamp): accepted for backward compat.
         assert!(check_policy_freshness(0, now, now).is_ok());
+    }
+
+    // Scope (b): the poll body is today's plain shape while nemo-sealed-request is
+    // unset, and exactly {"sealed_request": ...} with no other key once it is set.
+    #[test]
+    fn poll_body_is_plain_until_sealing_is_enabled() {
+        use super::poll_request_body;
+        let plain = r#"{"id":"123","sealed_token":"AAAA","hostname":"pc"}"#.to_owned();
+        // Option unset (today's fleet): byte-for-byte the body we post today, and the
+        // injected sealer is never consulted.
+        assert_eq!(
+            poll_request_body(plain.clone(), false, false, |_| -> Option<String> {
+                panic!("must not seal while the option is unset")
+            }),
+            Some(plain.clone())
+        );
+        // Opted in: one key and one key only, and nothing else reaches the wire.
+        let sealed = poll_request_body(plain.clone(), true, false, |_| Some("c2VhbGVk".to_owned()))
+            .expect("sealed body");
+        let v: serde_json::Value = serde_json::from_str(&sealed).expect("json object");
+        let obj = v.as_object().expect("object");
+        assert_eq!(obj.len(), 1);
+        assert_eq!(obj["sealed_request"], "c2VhbGVk");
+        assert!(!sealed.contains("sealed_token"));
+        assert!(!sealed.contains("hostname"));
+        // B1 (no management key): opted in but unable to seal -> keep syncing in the
+        // clear, never go dark.
+        assert_eq!(
+            poll_request_body(plain.clone(), true, false, |_| None),
+            Some(plain.clone())
+        );
+    }
+
+    // Layer 1: with a management public key configured the envelope is mandatory —
+    // a sealer that fails means NO body (skip this poll), never the plaintext, and
+    // the `nemo-sealed-request` flag no longer matters either way.
+    #[test]
+    fn poll_body_is_never_plaintext_while_a_management_key_is_configured() {
+        use super::poll_request_body;
+        let plain = r#"{"id":"123","sealed_token":"AAAA","hostname":"pc"}"#.to_owned();
+        // Sealer fails, flag set or unset: skip, never plaintext.
+        assert!(poll_request_body(plain.clone(), true, true, |_| None).is_none());
+        assert!(poll_request_body(plain.clone(), false, true, |_| None).is_none());
+        // Sealer works with the flag UNSET: still sealed (mandatory, not opt-in).
+        let sealed = poll_request_body(plain.clone(), false, true, |_| Some("c2VhbGVk".to_owned()))
+            .expect("sealed body");
+        let v: serde_json::Value = serde_json::from_str(&sealed).expect("json object");
+        let obj = v.as_object().expect("object");
+        assert_eq!(obj.len(), 1);
+        assert_eq!(obj["sealed_request"], "c2VhbGVk");
+        assert!(!sealed.contains("sealed_token"));
+        assert!(!sealed.contains("hostname"));
+        assert!(!sealed.contains("123"));
+    }
+
+    // Layer 1: the "import a device key" line is printed at most once per interval.
+    #[test]
+    fn device_key_rejection_log_is_rate_limited() {
+        use super::rejection_log_due;
+        use std::time::{Duration, Instant};
+        let interval = Duration::from_secs(60);
+        let t0 = Instant::now();
+        let at = |secs: u64| t0 + Duration::from_secs(secs);
+        let mut last = None;
+        assert!(rejection_log_due(&mut last, at(0), interval));
+        // Every 30s poll inside the window stays quiet...
+        assert!(!rejection_log_due(&mut last, at(30), interval));
+        assert!(!rejection_log_due(&mut last, at(59), interval));
+        // ...and the window restarts from the line that was printed, not from a
+        // suppressed one.
+        assert!(rejection_log_due(&mut last, at(60), interval));
+        assert!(!rejection_log_due(&mut last, at(90), interval));
+        assert!(rejection_log_due(&mut last, at(121), interval));
+    }
+
+    // Layer 1: the server's `{"error": ...}` is surfaced verbatim; anything else is
+    // bounded so an intermediary's HTML page cannot flood the log.
+    #[test]
+    fn http_error_message_prefers_the_api_error_field() {
+        use super::http_error_message;
+        assert_eq!(
+            http_error_message(r#"{"error":"a provisioned device key is required"}"#),
+            "a provisioned device key is required"
+        );
+        assert_eq!(http_error_message(r#"{"other":"x"}"#), r#"{"other":"x"}"#);
+        assert_eq!(http_error_message("plain text"), "plain text");
+        assert_eq!(http_error_message(""), "");
+        assert_eq!(http_error_message(&"x".repeat(1000)).len(), 200);
     }
 }

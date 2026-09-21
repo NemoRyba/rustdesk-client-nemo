@@ -670,6 +670,29 @@ function getAb() {
     // (no device key) -> server returns the plaintext list as before.
     var reqParams = {};
     try { reqParams = JSON.parse(handler.nemo_ab_seal_fields(myid || "") || "{}"); } catch (e) { reqParams = {}; }
+    // S-B: with "nemo-sealed-request" = v1 the ENTIRE body is sealed to the
+    // management key, so nothing we ask for is readable on the wire; the envelope also
+    // carries ts + nonce, which the server uses for its replay window. The helper
+    // returns "" when there is no management key (or the body will not parse) — then we
+    // send today's plaintext body, so a client without the option set is unaffected.
+    // Review finding: sealing the login response was pointless while this request put
+    // the same session token straight back on the wire in a cleartext Authorization
+    // header. When we seal, the token travels INSIDE the envelope and we send no
+    // header at all; the server prefers the envelope token and falls back to the
+    // header for older clients, so an un-upgraded server still works.
+    var abHeaders = getHttpHeaders();
+    if (handler.nemo_sealed_request_enabled()) {
+        reqParams.access_token = handler.get_local_option("access_token");
+        var sealedReq = handler.nemo_seal_envelope(JSON.stringify(reqParams));
+        if (sealedReq) {
+            reqParams = { sealed_request: sealedReq };
+            abHeaders = "";
+        } else {
+            // Sealing failed (no management key): fall back to today's shape, and do
+            // NOT leave the token in the plaintext body where it never used to be.
+            delete reqParams.access_token;
+        }
+    }
     httpRequest(handler.get_api_server() + "/api/ab/get", #post, reqParams, function(data) {
         if (data) {
             if (data.error) {
@@ -703,7 +726,7 @@ function getAb() {
         app.update();
     }, function(err, status) {
         handleAbError(err);
-    }, getHttpHeaders());
+    }, abHeaders);
 }
 
 function updateAb() {

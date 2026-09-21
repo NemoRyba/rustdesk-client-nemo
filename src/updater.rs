@@ -143,7 +143,11 @@ fn start_auto_update_check_(rx_msg: Receiver<UpdateMsg>) {
 fn check_update(manually: bool) -> ResultType<()> {
     #[cfg(target_os = "windows")]
     let update_msi = crate::platform::is_msi_installed()? && !crate::is_custom_client();
-    if !(manually || config::Config::get_bool_option(config::keys::OPTION_ALLOW_AUTO_UPDATE)) {
+    // Auto-update: the ONLY switch for our updater is the Nemo policy key
+    // "nemo-auto-update" == "Y" (or a manual check). The stock `allow-auto-update`
+    // is refused from policy (nemo_management_client POLICY_DENIED_KEYS) and must
+    // never reach this gate, or a pushed policy could re-enable the upstream path.
+    if !(manually || config::Config::get_option("nemo-auto-update") == "Y") {
         return Ok(());
     }
     if do_check_software_update().is_err() {
@@ -151,23 +155,30 @@ fn check_update(manually: bool) -> ResultType<()> {
         return Ok(());
     }
 
-    let update_url = crate::common::SOFTWARE_UPDATE_URL.lock().unwrap().clone();
-    if update_url.is_empty() {
+    // Auto-update: SOFTWARE_UPDATE_URL is the `url` of a manifest that
+    // do_check_software_update has already verified (management-key signature over
+    // "version|url|sha256", url on the management-server origin) and
+    // NEMO_UPDATE_SHA256 is that manifest's `sha256`. The upstream "tag"->"download"
+    // rewrite and the rustdesk-<v>-x86-sciter.exe naming are gone: they pointed at
+    // github.com/rustdesk, which our server cannot sign for.
+    let download_url = crate::common::SOFTWARE_UPDATE_URL.lock().unwrap().clone();
+    if download_url.is_empty() {
         log::debug!("No update available.");
     } else {
-        let download_url = update_url.replace("tag", "download");
+        let expected_sha256 = crate::common::NEMO_UPDATE_SHA256
+            .lock()
+            .unwrap()
+            .trim()
+            .to_owned();
+        if expected_sha256.is_empty() {
+            // Never fetch, let alone install, an artifact we cannot verify.
+            bail!(
+                "Update manifest carries no sha256, refusing to download {}",
+                download_url
+            );
+        }
+        // Log-only: the artifact's file name stands in for the version string.
         let version = download_url.split('/').last().unwrap_or_default();
-        #[cfg(target_os = "windows")]
-        let download_url = if cfg!(feature = "flutter") {
-            format!(
-                "{}/rustdesk-{}-x86_64.{}",
-                download_url,
-                version,
-                if update_msi { "msi" } else { "exe" }
-            )
-        } else {
-            format!("{}/rustdesk-{}-x86-sciter.exe", download_url, version)
-        };
         log::debug!("New version available: {}", &version);
         let client = create_http_client_with_url(&download_url);
         let Some(file_path) = get_download_file_from_url(&download_url) else {
@@ -207,6 +218,27 @@ fn check_update(manually: bool) -> ResultType<()> {
             let file_data = response.bytes()?;
             let mut file = std::fs::File::create(&file_path)?;
             file.write_all(&file_data)?;
+        }
+        // Auto-update: verify the on-disk artifact against the manifest's SHA-256
+        // before the privileged installer ever sees it. Hashing the file (not the
+        // response body) also covers the same-size short-circuit above, where a stale
+        // or replaced temp file is reused without a download. A mismatch deletes the
+        // file so the retry loop re-downloads instead of re-trying a poisoned one.
+        let actual_sha256 = sha256_hex_of_file(&file_path)?;
+        if !actual_sha256.eq_ignore_ascii_case(&expected_sha256) {
+            if let Err(e) = std::fs::remove_file(&file_path) {
+                log::error!(
+                    "Failed to remove update file with bad hash {:?}: {}",
+                    file_path,
+                    e
+                );
+            }
+            bail!(
+                "SHA-256 mismatch for {}: manifest {}, downloaded {}",
+                download_url,
+                expected_sha256,
+                actual_sha256
+            );
         }
         // We have checked if the `conns` is empty before, but we need to check again.
         // No need to care about the downloaded file here, because it's rare case that the `conns` are empty
@@ -305,6 +337,17 @@ fn update_new_version(update_msi: bool, version: &str, file_path: &PathBuf) {
             file_path.display()
         );
     }
+}
+
+// Auto-update: lowercase hex SHA-256 of a file, streamed so a large installer is
+// not read into memory twice.
+fn sha256_hex_of_file(path: &PathBuf) -> ResultType<String> {
+    use hbb_common::sha2::{Digest, Sha256};
+
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    std::io::copy(&mut file, &mut hasher)?;
+    Ok(hex::encode(hasher.finalize()))
 }
 
 pub fn get_download_file_from_url(url: &str) -> Option<PathBuf> {

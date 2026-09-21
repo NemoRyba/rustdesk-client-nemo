@@ -167,6 +167,8 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("Refresh", "Aktualisieren"),
         ("Search ID or hostname", "ID oder Hostname suchen"),
         ("Import device key", "Geräteschlüssel importieren"),
+        ("This device is not set up yet", "Dieses Gerät ist noch nicht eingerichtet"),
+        ("A device key issued by your TBFDesk server is required before this client can be used.", "Ein vom TBFDesk-Server ausgestellter Geräteschlüssel ist erforderlich, bevor dieser Client verwendet werden kann."),
         ("Reload address book from server", "Adressbuch neu laden – die Liste der verfügbaren Computer vom Server aktualisieren"),
         ("Auto update check interval", "Intervall für Update-Prüfung"),
         ("How often the app checks for a new version.", "Wie oft die App nach einer neuen Version sucht."),

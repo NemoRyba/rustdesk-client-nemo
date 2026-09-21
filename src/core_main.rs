@@ -22,6 +22,56 @@ macro_rules! my_println{
     };
 }
 
+// TBFDesk: the only help the shipped client has. main.rs has a clap block, but it is
+// behind the `cli` feature which release builds do not enable, so without this the
+// binary had no `--help` at all and asking for one crashed in the Sciter shutdown path.
+// Printed before any UI is created, so it is safe on every platform.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn print_help() {
+    println!(
+        r#"TBFDesk {} (built {})
+
+USAGE:
+    tbfdesk [FLAG] [ARGS]
+    tbfdesk                       start the graphical client
+
+CONNECT
+    --connect <id> [password]     open a remote-control session
+    --file-transfer <id> [pw]     open a file-transfer session
+    --port-forward <id> [pw]      open a port-forward session
+    --view-camera <id> [pw]       open the remote camera
+    --terminal <id> [pw]          open a remote terminal
+
+INFORMATION
+    --version                     print the version and exit
+    --build-date                  print the build date and exit
+    --get-id                      print this machine's TBFDesk id
+    --help, -h                    show this help
+
+CONFIGURATION
+    --set-id <id>                 change this machine's id
+    --password <pw>               set the permanent password
+    --set-unlock-pin <pin>        set the settings unlock pin
+    --option <key> [value]        read or write a single config option
+    --config <path|host=..,key=..>  import a configuration
+    --import-config <path>        import a configuration file
+
+SERVICE / INSTALLATION (platform dependent, may need privileges)
+    --install, --silent-install, --uninstall
+    --install-service, --uninstall-service
+    --server, --service, --tray, --cm
+    --elevate, --run-as-system
+
+SECURITY NOTE
+    Passing a peer password or an API token on the command line makes it visible to
+    every other process on the machine (it appears in `ps` and in shell history).
+    Prefer the graphical client, or a configuration file with restrictive permissions.
+"#,
+        crate::VERSION,
+        crate::BUILD_DATE
+    );
+}
+
 /// shared by flutter and sciter main function
 ///
 /// [Note]
@@ -133,6 +183,15 @@ pub fn core_main() -> Option<Vec<String>> {
             return None;
         } else if args[0] == "--build-date" {
             println!("{}", crate::BUILD_DATE);
+            return None;
+        } else if args[0] == "--help" || args[0] == "-h" || args[0] == "-?" {
+            // TBFDesk: `--help` used to fall through to ui::start(), which builds the
+            // Sciter window *before* dispatching the command, logs "Wrong command" and
+            // then aborts inside libsciter's atexit handler -- exit 134 + a coredump on
+            // Linux, 0xC0000409 on Windows, and not one byte of output. Handle it here,
+            // before any UI exists. The clap help in main.rs is behind the `cli` feature,
+            // which shipped builds do not enable, so this is the only help users get.
+            print_help();
             return None;
         }
     }

@@ -734,6 +734,33 @@ impl UI {
         }
     }
 
+    // S-B (scope b): open the "sealed_access_token" the server returns when our login
+    // carried a reply_pk, so a MITM that recorded the response cannot reuse the session
+    // token ("MITM still gets a valid session"). "" on failure (caller keeps its error path).
+    fn nemo_open_login_reply(&self, sealed: String) -> String {
+        crate::common::nemo_open_login_reply(&sealed)
+    }
+
+    // S-B (scope b): wrap a request body in a sealed envelope so no client->server packet
+    // carries readable credentials. Option -> String on purpose: "" means sealing was not
+    // possible (no management key / bad json) and the caller keeps today's plaintext body.
+    fn nemo_seal_envelope(&self, body_json: String) -> String {
+        crate::common::nemo_seal_envelope(&body_json).unwrap_or_default()
+    }
+
+    // S-B (scope b): gate for the sealed-envelope path, option "nemo-sealed-request" == "v1".
+    // Default "" = off = today's plaintext requests.
+    fn nemo_sealed_request_enabled(&self) -> bool {
+        crate::common::nemo_sealed_request_enabled()
+    }
+
+    // Layer 1: the device key is mandatory. App.render asks this FIRST, before the login
+    // gate, and renders the provisioning gate only (import dialog + licence-name hint)
+    // when it is false — no ID panel, connect field, address book or menu without a key.
+    fn nemo_device_key_present(&self) -> bool {
+        crate::common::nemo_device_key_present()
+    }
+
     // Login-gate certificate probe (accept-invalid; diagnostic only).
     fn nemo_cert_info_start(&self, url: String) {
         crate::common::nemo_cert_info_start(url);
@@ -889,6 +916,10 @@ impl sciter::EventHandler for UI {
         fn nemo_seal_login(String, String, String, String);
         fn nemo_ab_seal_fields(String);
         fn nemo_unseal_ab(String);
+        fn nemo_open_login_reply(String);
+        fn nemo_seal_envelope(String);
+        fn nemo_sealed_request_enabled();
+        fn nemo_device_key_present();
         fn nemo_cert_info_start(String);
         fn nemo_cert_info_result();
         fn nemo_save_text_file(String, String);

@@ -94,6 +94,11 @@ pub mod input {
 
 lazy_static::lazy_static! {
     pub static ref SOFTWARE_UPDATE_URL: Arc<Mutex<String>> = Default::default();
+    // Auto-update: lowercase-hex SHA-256 of the artifact SOFTWARE_UPDATE_URL points at, taken
+    // from the verified management manifest (see do_check_software_update). Written and
+    // cleared together with SOFTWARE_UPDATE_URL; updater.rs must compare the downloaded file
+    // against it before handing anything to the installer. "" = no verified offer pending.
+    pub static ref NEMO_UPDATE_SHA256: Mutex<String> = Mutex::new(String::new());
     pub static ref DEVICE_ID: Arc<Mutex<String>> = Default::default();
     pub static ref DEVICE_NAME: Arc<Mutex<String>> = Default::default();
     static ref PUBLIC_IPV6_ADDR: Arc<Mutex<(Option<SocketAddr>, Option<Instant>)>> = Default::default();
@@ -964,55 +969,92 @@ pub fn check_software_update() {
     }
 }
 
-// No need to check `danger_accept_invalid_cert` for now.
-// Because the url is always `https://api.rustdesk.com/version/latest`.
-#[tokio::main(flavor = "current_thread")]
-pub async fn do_check_software_update() -> hbb_common::ResultType<()> {
-    let (request, url) =
-        hbb_common::version_check_request(hbb_common::VER_TYPE_RUSTDESK_CLIENT.to_string());
-    let proxy_conf = Config::get_socks();
-    let tls_url = get_url_for_tls(&url, &proxy_conf);
-    let tls_type = get_cached_tls_type(tls_url);
-    let is_tls_not_cached = tls_type.is_none();
-    let tls_type = tls_type.unwrap_or(TlsType::Rustls);
-    let client = create_http_client_async(tls_type, false);
-    let latest_release_response = match client.post(&url).json(&request).send().await {
-        Ok(resp) => {
-            upsert_tls_cache(tls_url, tls_type, false);
-            resp
-        }
-        Err(err) => {
-            if is_tls_not_cached && err.is_request() {
-                let tls_type = TlsType::NativeTls;
-                let client = create_http_client_async(tls_type, false);
-                let resp = client.post(&url).json(&request).send().await?;
-                upsert_tls_cache(tls_url, tls_type, false);
-                resp
-            } else {
-                return Err(err.into());
-            }
-        }
+// Auto-update: the stock check (hbb_common::version_check_request, hardcoded to
+// api.rustdesk.com) is no longer called anywhere in this fork, so nothing here can reach
+// upstream. Updates come ONLY from the management server: GET
+// <nemo-management-server>/nemo/api/update/latest answers {version,url,sha256,sig}, where
+// `sig` is the management Ed25519 key over "version|url|sha256". The manifest is accepted
+// only when nemo_verify_update_manifest passes (signature by the pinned
+// `nemo-management-public-key`, artifact url on the management server's own origin);
+// then, and only for a version newer than this build, SOFTWARE_UPDATE_URL becomes the
+// artifact url and NEMO_UPDATE_SHA256 the digest updater.rs must check before installing.
+// Unmanaged (no management server) => nothing is contacted and a stale offer is cleared.
+// A 404 means the operator has published nothing: that is Ok(()), not an error — the
+// daily updater and the UI notice would otherwise log it forever.
+// Plain fn on purpose: http_request_sync owns its own tokio runtime, and nesting that in
+// a `#[tokio::main]` fn panics at runtime ("Cannot start a runtime from within a runtime").
+pub fn do_check_software_update() -> hbb_common::ResultType<()> {
+    let server = nemo_management_server_url();
+    if server.is_empty() {
+        nemo_set_update_offer("", "");
+        return Ok(());
+    }
+    let mgmt_pk_b64 = Config::get_option("nemo-management-public-key");
+    if mgmt_pk_b64.trim().is_empty() {
+        nemo_set_update_offer("", "");
+        bail!("nemo-management-public-key is not configured; cannot verify an update manifest");
+    }
+    let Some(server_origin) = nemo_url_origin(&server) else {
+        nemo_set_update_offer("", "");
+        bail!("nemo-management-server is not an http(s) URL: {}", server);
     };
-    let bytes = latest_release_response.bytes().await?;
-    let resp: hbb_common::VersionCheckResponse = serde_json::from_slice(&bytes)?;
-    let response_url = resp.url;
-    let latest_release_version = response_url.rsplit('/').next().unwrap_or_default();
-
-    if get_version_number(&latest_release_version) > get_version_number(crate::VERSION) {
+    let headers = json!({ "Accept": "application/json" }).to_string();
+    let raw = http_request_sync(
+        format!("{server}/nemo/api/update/latest"),
+        "get".to_owned(),
+        None,
+        headers,
+    )?;
+    // http_request_sync yields {"status_code","headers","body"} (see http_request_http).
+    let http: Value = serde_json::from_str(&raw)?;
+    let status = http["status_code"].as_u64().unwrap_or(0);
+    if status == 404 {
+        nemo_set_update_offer("", "");
+        return Ok(());
+    }
+    if status != 200 {
+        nemo_set_update_offer("", "");
+        bail!(
+            "management server returned HTTP {} for the update manifest",
+            status
+        );
+    }
+    let body = http["body"].as_str().unwrap_or_default();
+    let Some(manifest) = nemo_verify_update_manifest(body, mgmt_pk_b64.trim(), &server_origin)
+    else {
+        nemo_set_update_offer("", "");
+        bail!(
+            "update manifest from {} rejected (signature, shape or origin)",
+            server
+        );
+    };
+    if get_version_number(&manifest.version) > get_version_number(crate::VERSION) {
         #[cfg(feature = "flutter")]
         {
             let mut m = HashMap::new();
             m.insert("name", "check_software_update_finish");
-            m.insert("url", &response_url);
+            m.insert("url", &manifest.url);
             if let Ok(data) = serde_json::to_string(&m) {
                 let _ = crate::flutter::push_global_event(crate::flutter::APP_TYPE_MAIN, data);
             }
         }
-        *SOFTWARE_UPDATE_URL.lock().unwrap() = response_url;
+        log::info!(
+            "Nemo update {} offered by the management server (this build: {})",
+            manifest.version,
+            crate::VERSION
+        );
+        nemo_set_update_offer(&manifest.url, &manifest.sha256);
     } else {
-        *SOFTWARE_UPDATE_URL.lock().unwrap() = "".to_string();
+        nemo_set_update_offer("", "");
     }
     Ok(())
+}
+
+// Auto-update: the offer is one unit — url and digest are always written together, so
+// updater.rs can never pair a fresh url with a stale digest (or the other way round).
+fn nemo_set_update_offer(url: &str, sha256: &str) {
+    *SOFTWARE_UPDATE_URL.lock().unwrap() = url.to_owned();
+    *NEMO_UPDATE_SHA256.lock().unwrap() = sha256.to_owned();
 }
 
 #[inline]
@@ -1441,7 +1483,7 @@ fn url_host(url: &str) -> Option<String> {
 
 // A4: parse a SHA-256 fingerprint (any punctuation/case, e.g. "AA:BB:.." or "aabb..")
 // into 32 raw bytes. None if it is not exactly 32 bytes of hex.
-fn parse_fingerprint_hex(s: &str) -> Option<[u8; 32]> {
+pub fn parse_fingerprint_hex(s: &str) -> Option<[u8; 32]> {
     let hex: String = s.chars().filter(|c| c.is_ascii_hexdigit()).collect();
     if hex.len() != 64 {
         return None;
@@ -2101,18 +2143,21 @@ pub fn check_process(arg: &str, mut same_uid: bool) -> bool {
     false
 }
 
-async fn secure_tcp_impl(conn: &mut Stream, key: &str, log_on_success: bool) -> ResultType<()> {
-    // Skip additional encryption when using WebSocket connections (wss://)
-    // as WebSocket Secure (wss://) already provides transport layer encryption.
-    // This doesn't affect the end-to-end encryption between clients,
-    // it only avoids redundant encryption between client and server.
-    if use_ws() {
-        return Ok(());
-    }
+// S-C: upstream's rendezvous key exchange, unchanged, moved into its own fn so
+// `secure_tcp_impl` can keep exactly ONE fail-closed check that neither the websocket
+// skip nor an early return can step around.
+async fn nemo_rendezvous_key_exchange(
+    conn: &mut Stream,
+    key: &str,
+    log_on_success: bool,
+) -> ResultType<()> {
     let rs_pk = get_rs_pk(key);
     let Some(rs_pk) = rs_pk else {
         bail!("Handshake failed: invalid public key from rendezvous server");
     };
+    // S-C: the `?` on this 18s READ_TIMEOUT already fails closed — an Elapsed error
+    // propagates to the caller and the connection is dropped. Do NOT "fix" it into a
+    // silent continue: that would hand back an unsecured link.
     match timeout(READ_TIMEOUT, conn.next()).await? {
         Some(Ok(bytes)) => {
             if let Ok(msg_in) = RendezvousMessage::parse_from_bytes(&bytes) {
@@ -2134,16 +2179,104 @@ async fn secure_tcp_impl(conn: &mut Stream, key: &str, log_on_success: bool) -> 
                         });
                         timeout(CONNECT_TIMEOUT, conn.send(&msg_out)).await??;
                         conn.set_key(key);
+                        // Review finding (fleet-offline foot-gun): remember that this
+                        // rendezvous CAN do a key exchange. Enforcement below refuses to
+                        // fail closed until it has seen this at least once, so pushing
+                        // `nemo-require-secure-rendezvous=Y` at a server still running
+                        // `--key-exchange=off` cannot take the fleet offline durably.
+                        if !nemo_rendezvous_kx_seen() {
+                            Config::set_option(
+                                OPTION_NEMO_RENDEZVOUS_KX_SEEN.to_owned(),
+                                "Y".to_owned(),
+                            );
+                        }
                         if log_on_success {
                             log::info!("Connection secured");
                         }
                     }
-                    _ => {}
+                    // S-C: upstream silently left the link in the clear here. Name the
+                    // discarded variant (`None` = a message with no oneof set) so an
+                    // operator can see WHY a connection came up unsecured.
+                    other => {
+                        log::warn!(
+                            "Rendezvous connection left UNSECURED: expected KeyExchange, got {:?}",
+                            other
+                        );
+                    }
                 }
             }
         }
         _ => {}
     }
+    Ok(())
+}
+
+async fn secure_tcp_impl(conn: &mut Stream, key: &str, log_on_success: bool) -> ResultType<()> {
+    // Skip additional encryption when using WebSocket connections (wss://)
+    // as WebSocket Secure (wss://) already provides transport layer encryption.
+    // This doesn't affect the end-to-end encryption between clients,
+    // it only avoids redundant encryption between client and server.
+    // S-C: this used to be an early `return Ok(())`; it is a plain branch now, so the
+    // single enforcement point below cannot be skipped by turning websockets on.
+    let skipped_for_ws = use_ws();
+    if !skipped_for_ws {
+        nemo_rendezvous_key_exchange(conn, key, log_on_success).await?;
+    }
+    // S-C: fail closed, at ONE point. With `nemo-require-secure-rendezvous=Y` an
+    // unsecured rendezvous connection is an error instead of upstream's silent
+    // plaintext fallback. The websocket skip counts as secure only when the endpoint
+    // we are configured to dial really is wss:// — plain ws:// carries the handshake
+    // in the clear. Default off (option empty) short-circuits on the first condition,
+    // so a deployed fleet behaves exactly as it does today.
+    if nemo_require_secure_rendezvous()
+        && nemo_rendezvous_kx_seen()
+        && !conn.is_secured()
+        && !(skipped_for_ws && nemo_rendezvous_ws_is_tls())
+    {
+        bail!("nemo-require-secure-rendezvous=Y: refusing an unencrypted rendezvous connection (no KeyExchange completed and the endpoint is not wss://). Clear the option `nemo-require-secure-rendezvous` to allow the unsecured fallback.");
+    }
+    Ok(())
+}
+
+/// Encrypt the RequestRelay control frame on a connection to hbbr.
+///
+/// Same signed KeyExchange as the rendezvous handshake, but deliberately separate:
+/// it does NOT touch the rendezvous kx-seen ratchet (that records something about the
+/// *rendezvous* server), and it is hardcoded fail-closed rather than gated on an
+/// option. Without it the server licence key and both peer ids crossed the wire in
+/// the clear on every relayed session.
+///
+/// Only the control frame is covered. The caller must call `conn.clear_key()` right
+/// after sending it, because everything after belongs to the two peers and is already
+/// end-to-end encrypted -- re-encrypting it would cost throughput for nothing, and the
+/// relay stops decrypting at exactly the same point.
+pub async fn secure_relay_tcp(conn: &mut Stream, key: &str) -> ResultType<()> {
+    let Some(rs_pk) = get_rs_pk(key) else {
+        bail!("Relay handshake failed: invalid server public key");
+    };
+    let bytes = match timeout(READ_TIMEOUT, conn.next()).await? {
+        Some(Ok(bytes)) => bytes,
+        _ => bail!("Relay handshake failed: no key exchange offer from the relay"),
+    };
+    let msg_in = RendezvousMessage::parse_from_bytes(&bytes)?;
+    let Some(rendezvous_message::Union::KeyExchange(ex)) = msg_in.union else {
+        bail!("Relay handshake failed: expected a KeyExchange offer");
+    };
+    if ex.keys.len() != 1 {
+        bail!("Relay handshake failed: invalid key exchange message");
+    }
+    let their_pk_b = sign::verify(&ex.keys[0], &rs_pk)
+        .map_err(|_| anyhow!("Relay handshake failed: signature mismatch"))?;
+    let (asymmetric_value, symmetric_value, key) = create_symmetric_key_msg(
+        get_pk(&their_pk_b).context("Relay handshake failed: wrong public key length")?,
+    );
+    let mut msg_out = RendezvousMessage::new();
+    msg_out.set_key_exchange(KeyExchange {
+        keys: vec![asymmetric_value, symmetric_value],
+        ..Default::default()
+    });
+    timeout(CONNECT_TIMEOUT, conn.send(&msg_out)).await??;
+    conn.set_key(key);
     Ok(())
 }
 
@@ -2291,6 +2424,17 @@ pub fn nemo_id_is_blocked(id: &str) -> bool {
         .any(|b| !b.trim().is_empty() && b.trim() == id)
 }
 
+lazy_static::lazy_static! {
+    // S-B scope b: the ephemeral sealedbox keypair for ONE login attempt. Its public
+    // half travels inside the sealed login payload as `reply_pk`; the secret half
+    // never leaves this process, so the server's `sealed_access_token` is readable
+    // only by the client that actually asked for it — closing "a MITM who replays the
+    // exchange still ends up with a valid session". Overwritten on every
+    // nemo_seal_login call: one login attempt is in flight at a time.
+    static ref NEMO_LOGIN_REPLY_KEYPAIR: std::sync::Mutex<Option<(box_::PublicKey, box_::SecretKey)>> =
+        std::sync::Mutex::new(None);
+}
+
 // Nemo S-B: seal the login credential to the server's login-encryption key so the
 // domain password is confidential regardless of TLS. `key_b64`/`sig_b64` come from
 // GET /api/login-key; the key is authenticated against the management signing key
@@ -2332,11 +2476,30 @@ pub fn nemo_seal_login(_key_b64: &str, signed_key_b64: &str, username: &str, pas
     // (sealed_login_guard) actually engages — without it the server's empty-nonce branch
     // accepts, leaving a captured sealed blob replayable within the ts window.
     let nonce = encode64(&hbb_common::sodiumoxide::randombytes::randombytes(16));
+    // S-B scope b: mint this attempt's reply keypair and stash the secret half, so
+    // nemo_open_login_reply() can open the `sealed_access_token` the server returns.
+    // Stashed only here, AFTER every validation above has passed, so a refused seal
+    // never clobbers a keypair a previous attempt is still waiting on. A server that
+    // does not know this extension simply ignores reply_pk and answers with today's
+    // cleartext access_token, so an un-upgraded server keeps working.
+    let (reply_pk, reply_sk) = box_::gen_keypair();
+    let reply_pk_b64 = encode64(reply_pk.as_ref());
+    if let Ok(mut slot) = NEMO_LOGIN_REPLY_KEYPAIR.lock() {
+        *slot = Some((reply_pk, reply_sk));
+    }
+    // Layer 1: the login is a management-plane request, so it carries the device
+    // signature exactly like the poll ("nemo-poll") and the address book ("nemo-ab") —
+    // INSIDE the sealed payload, bound to the credential it authorises. Empty strings
+    // when no device key is imported: the server decides (require_device_key).
+    let (device_key_pub, device_key_sig) = nemo_device_sign("nemo-login", &Config::get_id());
     let payload = serde_json::json!({
         "username": username,
         "password": password,
         "ts": ts,
         "nonce": nonce,
+        "reply_pk": reply_pk_b64,
+        "device_key_pub": device_key_pub,
+        "device_key_sig": device_key_sig,
     })
     .to_string();
     encode64(sealedbox::seal(payload.as_bytes(), &server_pk))
@@ -2361,6 +2524,13 @@ pub fn nemo_device_ed25519() -> Option<(
     let sk = sign::SecretKey::from_slice(&sk_bytes)?;
     let pk = sign::PublicKey::from_slice(&sk_bytes[32..64])?;
     Some((pk, sk))
+}
+
+// Layer 1: is a usable device key imported? The same test the signing paths apply
+// (present AND well-formed), so a malformed key gates exactly like a missing one. The
+// provisioning gate in App.render and the Sciter binding of the same name key off this.
+pub fn nemo_device_key_present() -> bool {
+    nemo_device_ed25519().is_some()
 }
 
 // S-DUALKEY: sign "{domain}:{id}:{ts}" with the imported device key. The domain
@@ -2424,6 +2594,180 @@ pub fn nemo_seal_to_mgmt_key(plaintext: &[u8]) -> Option<String> {
     let pk = get_rs_pk(mgmt_pk_b64.trim())?;
     let curve_pk = sign::to_curve25519_pk(&pk).ok()?;
     Some(encode64(&sealedbox::seal(plaintext, &curve_pk)))
+}
+
+// S-B scope b: wrap a whole client->server request body in a sealed envelope, so no
+// readable credential leaves this process even if TLS is stripped. The sealed
+// plaintext is the JSON body we would have POSTed today plus a fresh `ts`/`nonce`;
+// the envelope is sealed to the management key this client already trusts (see
+// nemo_seal_to_mgmt_key). The caller then POSTs exactly {"sealed_request":"<base64>"}.
+// None when no mgmt key is configured or the body is not a JSON object — the caller
+// then falls back to today's plaintext body (nemo_sealed_request_enabled gates that).
+pub fn nemo_seal_envelope(body_json: &str) -> Option<String> {
+    let payload = nemo_envelope_payload(body_json)?;
+    nemo_seal_to_mgmt_key(payload.as_bytes())
+}
+
+// Pure half of nemo_seal_envelope (no config, no crypto) so the envelope shape stays
+// unit-testable. The inserts deliberately OVERWRITE any caller-supplied ts/nonce: a
+// stale or caller-chosen value must never reach the server's 300s replay window or
+// its at-most-once nonce guard.
+fn nemo_envelope_payload(body_json: &str) -> Option<String> {
+    let value: Value = serde_json::from_str(body_json).ok()?;
+    let Value::Object(mut map) = value else {
+        return None;
+    };
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    map.insert("ts".to_owned(), Value::from(ts));
+    map.insert(
+        "nonce".to_owned(),
+        Value::from(encode64(
+            &hbb_common::sodiumoxide::randombytes::randombytes(16),
+        )),
+    );
+    Some(Value::Object(map).to_string())
+}
+
+// S-B scope b kill switch: "v1" => send sealed request envelopes (management poll and
+// /api/ab/get). Anything else — including the default "" — keeps today's plaintext
+// bodies, so neither a fleet that has not been flipped nor a server that cannot open
+// envelopes changes behaviour.
+pub fn nemo_sealed_request_enabled() -> bool {
+    Config::get_option("nemo-sealed-request") == "v1"
+}
+
+// S-C kill switch: "Y" => fail closed on an unsecured rendezvous connection (enforced
+// at the single check in secure_tcp_impl). Default empty = upstream's silent plaintext
+// fallback, unchanged.
+// Review finding: `nemo-require-secure-rendezvous` is managed, so a hostile or simply
+// mistaken policy could switch it on against a server that cannot answer a KeyExchange
+// and brick every client's rendezvous across reboots. This marker is set only after a
+// real handshake has succeeded, and enforcement requires it — so the flag can only ever
+// harden a path that has been observed to work. It is deliberately one-way (a ratchet),
+// and clearing the managed key still disables enforcement entirely.
+pub const OPTION_NEMO_RENDEZVOUS_KX_SEEN: &str = "nemo-rendezvous-kx-seen";
+
+pub fn nemo_rendezvous_kx_seen() -> bool {
+    Config::get_option(OPTION_NEMO_RENDEZVOUS_KX_SEEN) == "Y"
+}
+
+pub fn nemo_require_secure_rendezvous() -> bool {
+    Config::get_option("nemo-require-secure-rendezvous") == "Y"
+}
+
+// S-C helper: is the rendezvous endpoint we are configured to dial really wss://?
+// Asking hbb_common the same question the ws client asks keeps the answer identical to
+// the URL actually dialled, and keeps secure_tcp_impl's signature (shared by five call
+// sites) untouched. NOTE check_ws() only yields wss:// for a DOMAIN endpoint whose
+// api-server is https; a bare IP always gets plain ws://, so under
+// `nemo-require-secure-rendezvous=Y` an IP-based websocket rendezvous fails closed —
+// which is correct, a ws:// handshake is in the clear.
+fn nemo_rendezvous_ws_is_tls() -> bool {
+    hbb_common::websocket::check_ws(&Config::get_rendezvous_server()).starts_with("wss://")
+}
+
+// S-B scope b: open the login reply the server sealed to the ephemeral `reply_pk` this
+// process sent in its sealed login payload. The secret half never left
+// NEMO_LOGIN_REPLY_KEYPAIR, so an attacker holding the full transcript still cannot
+// read the session token. "" on any failure (no login in flight, bad base64, wrong
+// key) — the caller must treat that as a failed login, never as an empty token.
+pub fn nemo_open_login_reply(sealed_b64: &str) -> String {
+    use hbb_common::sodiumoxide::crypto::sealedbox;
+    // Never panic on the login path, not even on a poisoned lock.
+    let guard = match NEMO_LOGIN_REPLY_KEYPAIR.lock() {
+        Ok(g) => g,
+        Err(_) => return String::new(),
+    };
+    let Some((pk, sk)) = guard.as_ref() else {
+        return String::new(); // no login attempt in flight
+    };
+    let Ok(ciphertext) = decode64(sealed_b64.trim()) else {
+        return String::new();
+    };
+    match sealedbox::open(&ciphertext, pk, sk) {
+        Ok(plain) => String::from_utf8(plain).unwrap_or_default(),
+        Err(_) => String::new(),
+    }
+}
+
+// Auto-update / Layer 1: the management server base URL as the poll dials it — trimmed,
+// no trailing '/', "" when this client is unmanaged. Endpoints append "/nemo/api/...".
+pub fn nemo_management_server_url() -> String {
+    Config::get_option("nemo-management-server")
+        .trim()
+        .trim_end_matches('/')
+        .to_owned()
+}
+
+// Auto-update: the ASCII origin ("scheme://host[:port]", default port elided) of an
+// http(s)-style URL, or None for anything without a tuple origin (unparsable, file:,
+// data:, ...). Comparing PARSED origins — never string prefixes — is what makes "url is
+// on the management server" hold: "https://mgmt:21120@evil.example/x" starts with
+// "https://mgmt:21120" yet fetches from evil.example.
+fn nemo_url_origin(url: &str) -> Option<String> {
+    let origin = url::Url::parse(url.trim()).ok()?.origin();
+    if !origin.is_tuple() {
+        return None;
+    }
+    Some(origin.ascii_serialization())
+}
+
+// Auto-update: a verified update offer from the management server.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NemoUpdateManifest {
+    pub version: String,
+    pub url: String,
+    pub sha256: String,
+}
+
+// Auto-update: parse and verify a manifest {version,url,sha256,sig}. `sig` is base64 of
+// sign::sign_detached over the exact bytes "version|url|sha256" by the management
+// Ed25519 key (`mgmt_pk_b64`: the pinned `nemo-management-public-key`). Accepted only if
+// ALL hold: every field is a non-empty string; the signature verifies over the raw field
+// values (no trimming or case-folding before the check — the server signs what it
+// stores); `sha256` is exactly 64 hex digits and `version` contains no '|', so the signed
+// string splits back into exactly one (version,url,sha256) — otherwise a signed manifest
+// could be re-split into a different url with the same concatenation; and `url` is on
+// `server_origin` (parsed origins equal: scheme, host AND port). None on ANY failure.
+// Pure (no config) so the contract the server codes against is unit-testable.
+pub fn nemo_verify_update_manifest(
+    json: &str,
+    mgmt_pk_b64: &str,
+    server_origin: &str,
+) -> Option<NemoUpdateManifest> {
+    fn field<'a>(v: &'a Value, k: &str) -> Option<&'a str> {
+        v.get(k)?.as_str().filter(|s| !s.is_empty())
+    }
+    let v: Value = serde_json::from_str(json).ok()?;
+    let version = field(&v, "version")?;
+    let url = field(&v, "url")?;
+    let sha256 = field(&v, "sha256")?;
+    let sig_b64 = field(&v, "sig")?;
+    let mgmt_pk = get_rs_pk(mgmt_pk_b64.trim())?;
+    let sig = sign::Signature::from_bytes(&decode64(sig_b64.trim()).ok()?).ok()?;
+    let signed = format!("{}|{}|{}", version, url, sha256);
+    if !sign::verify_detached(&sig, signed.as_bytes(), &mgmt_pk) {
+        return None;
+    }
+    // Canonical split of the signed string (see above).
+    if version.contains('|') {
+        return None;
+    }
+    if sha256.len() != 64 || !sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    // Same origin as the management server, by parsed origin (never a prefix test).
+    if nemo_url_origin(url)? != nemo_url_origin(server_origin)? {
+        return None;
+    }
+    Some(NemoUpdateManifest {
+        version: version.to_owned(),
+        url: url.to_owned(),
+        sha256: sha256.to_ascii_lowercase(),
+    })
 }
 
 pub struct ThrottledInterval {
@@ -3436,5 +3780,234 @@ mod tests {
         let combined_mask = MOUSE_TYPE_DOWN | ((MOUSE_BUTTON_LEFT | MOUSE_BUTTON_RIGHT) << 3);
         assert_eq!(combined_mask & MOUSE_TYPE_MASK, MOUSE_TYPE_DOWN);
         assert_eq!(combined_mask >> 3, MOUSE_BUTTON_LEFT | MOUSE_BUTTON_RIGHT);
+    }
+
+    // S-B scope b: the contract the server side codes against — sealed request
+    // envelope, fresh nonce per call, and the sealed login reply. All of it needs the
+    // process-global `nemo-management-public-key`, and tests run in parallel, so it
+    // stays in ONE test fn with a Drop guard that restores the operator's real value
+    // even if an assert panics.
+    #[test]
+    fn nemo_sealed_envelope_and_login_reply_round_trip() {
+        use hbb_common::sodiumoxide::crypto::{box_, sealedbox, sign};
+
+        struct RestoreMgmtKey(String);
+        impl Drop for RestoreMgmtKey {
+            fn drop(&mut self) {
+                Config::set_option("nemo-management-public-key".to_string(), self.0.clone());
+            }
+        }
+        let _restore = RestoreMgmtKey(Config::get_option("nemo-management-public-key"));
+
+        // The Ed25519 management key this client trusts; sealing converts it to Curve25519.
+        let (mgmt_pk, mgmt_sk) = sign::gen_keypair();
+        Config::set_option(
+            "nemo-management-public-key".to_string(),
+            encode64(mgmt_pk.as_ref()),
+        );
+        let mgmt_curve_pk = sign::to_curve25519_pk(&mgmt_pk).unwrap();
+        let mgmt_curve_sk = sign::to_curve25519_sk(&mgmt_sk).unwrap();
+
+        // Envelope round trip: the server opens it with its management secret key and
+        // finds the original body plus the ts/nonce its replay guard needs.
+        let sealed =
+            nemo_seal_envelope(r#"{"id":"123456789","token":"secret"}"#).expect("envelope sealed");
+        let opened = sealedbox::open(&decode64(&sealed).unwrap(), &mgmt_curve_pk, &mgmt_curve_sk)
+            .expect("envelope opens with the management key");
+        let v: Value = serde_json::from_slice(&opened).unwrap();
+        assert_eq!(v["id"], "123456789");
+        assert_eq!(v["token"], "secret");
+        assert!(v["ts"].as_u64().unwrap_or(0) > 1_600_000_000);
+        assert!(!v["nonce"].as_str().unwrap_or_default().is_empty());
+        // A body that is not a JSON object is never sealed; the caller must fall back.
+        assert!(nemo_seal_envelope("not json").is_none());
+        assert!(nemo_seal_envelope("[1,2,3]").is_none());
+
+        // A8: a fresh nonce per call, or the server's at-most-once guard never engages.
+        let a: Value = serde_json::from_str(&nemo_envelope_payload("{}").unwrap()).unwrap();
+        let b: Value = serde_json::from_str(&nemo_envelope_payload("{}").unwrap()).unwrap();
+        assert_ne!(a["nonce"], b["nonce"]);
+
+        // Login round trip: the server opens the credential with its login key, seals
+        // the token to the reply_pk it finds inside, and only this process can read it.
+        let (login_pk, login_sk) = box_::gen_keypair();
+        let signed_key_b64 = encode64(&sign::sign(login_pk.as_ref(), &mgmt_sk));
+        let sealed_login = nemo_seal_login("", &signed_key_b64, "alice", "hunter2");
+        assert!(!sealed_login.is_empty());
+        let opened = sealedbox::open(&decode64(&sealed_login).unwrap(), &login_pk, &login_sk)
+            .expect("login opens with the server login key");
+        let v: Value = serde_json::from_slice(&opened).unwrap();
+        assert_eq!(v["username"], "alice");
+        assert_eq!(v["password"], "hunter2");
+        // Layer 1: the device signature travels INSIDE the sealed login. Only presence is
+        // asserted — a parallel test may hold a device key, so the values vary.
+        assert!(v["device_key_pub"].is_string());
+        assert!(v["device_key_sig"].is_string());
+        let reply_pk = box_::PublicKey::from_slice(
+            &decode64(v["reply_pk"].as_str().expect("reply_pk present")).unwrap(),
+        )
+        .expect("reply_pk is a box_ public key");
+        let sealed_token = encode64(&sealedbox::seal(b"session-token", &reply_pk));
+        assert_eq!(nemo_open_login_reply(&sealed_token), "session-token");
+    }
+
+    // Garbage in, "" out — a failed open must never look like an empty-but-valid token.
+    #[test]
+    fn nemo_open_login_reply_rejects_garbage() {
+        assert_eq!(nemo_open_login_reply("not base64 @@@"), "");
+        assert_eq!(nemo_open_login_reply(""), "");
+        assert_eq!(
+            nemo_open_login_reply(&encode64(b"too short to be a sealedbox")),
+            ""
+        );
+    }
+
+    // Auto-update: the manifest contract the server signs against (server-api computes
+    // `sig` at serve time over "version|url|sha256"). Pure — keys are passed in, no
+    // process-global config is touched.
+    #[test]
+    fn nemo_update_manifest_verification() {
+        use hbb_common::sodiumoxide::crypto::sign;
+        use serde_json::json;
+
+        let (mgmt_pk, mgmt_sk) = sign::gen_keypair();
+        let mgmt_pk_b64 = encode64(mgmt_pk.as_ref());
+        let origin = "https://mgmt.example.com:21120";
+        let sha = "ab".repeat(32);
+        let manifest = |version: &str, url: &str, sha256: &str, sk: &sign::SecretKey| {
+            let sig = sign::sign_detached(format!("{version}|{url}|{sha256}").as_bytes(), sk);
+            json!({
+                "version": version,
+                "url": url,
+                "sha256": sha256,
+                "sig": encode64(sig.as_ref()),
+            })
+            .to_string()
+        };
+        let good_url = "https://mgmt.example.com:21120/nemo/update/tbfdesk-9.9.9-x86-sciter.exe";
+        let good = manifest("9.9.9", good_url, &sha, &mgmt_sk);
+        let m = nemo_verify_update_manifest(&good, &mgmt_pk_b64, origin).expect("verifies");
+        assert_eq!(
+            m,
+            NemoUpdateManifest {
+                version: "9.9.9".to_owned(),
+                url: good_url.to_owned(),
+                sha256: sha.clone(),
+            }
+        );
+        // An upper-case digest still verifies (signed raw) and is normalised for the
+        // file check; a default port is normalised on both sides of the origin test.
+        let upper = manifest("9.9.9", good_url, &sha.to_ascii_uppercase(), &mgmt_sk);
+        assert_eq!(
+            nemo_verify_update_manifest(&upper, &mgmt_pk_b64, origin)
+                .unwrap()
+                .sha256,
+            sha
+        );
+        let default_port = manifest("9.9.9", "https://mgmt.example.com/x.exe", &sha, &mgmt_sk);
+        assert!(nemo_verify_update_manifest(
+            &default_port,
+            &mgmt_pk_b64,
+            "https://mgmt.example.com:443"
+        )
+        .is_some());
+
+        // Wrong key: signed by someone who is not the management server, or verified
+        // against a key that is not the pinned one.
+        let (other_pk, other_sk) = sign::gen_keypair();
+        let forged = manifest("9.9.9", good_url, &sha, &other_sk);
+        assert!(nemo_verify_update_manifest(&forged, &mgmt_pk_b64, origin).is_none());
+        assert!(nemo_verify_update_manifest(&good, &encode64(other_pk.as_ref()), origin).is_none());
+        assert!(nemo_verify_update_manifest(&good, "not base64 @@@", origin).is_none());
+
+        // Tampered field: the signature no longer covers what is presented.
+        let other_sha = "cd".repeat(32);
+        for (k, val) in [
+            (
+                "url",
+                "https://mgmt.example.com:21120/nemo/update/other.exe",
+            ),
+            ("sha256", other_sha.as_str()),
+            ("version", "9.9.10"),
+        ] {
+            let mut v: Value = serde_json::from_str(&good).unwrap();
+            v[k] = json!(val);
+            assert!(
+                nemo_verify_update_manifest(&v.to_string(), &mgmt_pk_b64, origin).is_none(),
+                "{k}"
+            );
+        }
+
+        // Signed by the real key, but the artifact is not on the management origin.
+        for url in [
+            "https://evil.example.com/tbfdesk.exe",       // other host
+            "http://mgmt.example.com:21120/tbfdesk.exe",  // scheme downgrade
+            "https://mgmt.example.com:21121/tbfdesk.exe", // other port
+            "https://mgmt.example.com:21120@evil.example.com/tbfdesk.exe", // userinfo prefix trick
+            "https://mgmt.example.com:21120.evil.example.com/tbfdesk.exe", // prefix trick (bad port)
+            "ftp://mgmt.example.com:21120/tbfdesk.exe",                    // other scheme
+            "file:///C:/tbfdesk.exe",                                      // opaque origin
+            "not a url",
+        ] {
+            let off = manifest("9.9.9", url, &sha, &mgmt_sk);
+            assert!(
+                nemo_verify_update_manifest(&off, &mgmt_pk_b64, origin).is_none(),
+                "{url}"
+            );
+        }
+
+        // Shape: not JSON, missing/empty fields, a digest that is not 64 hex, '|' in
+        // version (would make the signed string ambiguous).
+        assert!(nemo_verify_update_manifest("not json", &mgmt_pk_b64, origin).is_none());
+        assert!(nemo_verify_update_manifest("{}", &mgmt_pk_b64, origin).is_none());
+        let mut v: Value = serde_json::from_str(&good).unwrap();
+        v.as_object_mut().unwrap().remove("sig");
+        assert!(nemo_verify_update_manifest(&v.to_string(), &mgmt_pk_b64, origin).is_none());
+        let mut v: Value = serde_json::from_str(&good).unwrap();
+        v["sig"] = json!("");
+        assert!(nemo_verify_update_manifest(&v.to_string(), &mgmt_pk_b64, origin).is_none());
+        let short_sha = manifest("9.9.9", good_url, "deadbeef", &mgmt_sk);
+        assert!(nemo_verify_update_manifest(&short_sha, &mgmt_pk_b64, origin).is_none());
+        let piped = manifest("9.9|9", good_url, &sha, &mgmt_sk);
+        assert!(nemo_verify_update_manifest(&piped, &mgmt_pk_b64, origin).is_none());
+
+        // The origin helper itself: lower-cased host, default port elided, non-tuple => None.
+        assert_eq!(
+            nemo_url_origin("https://Mgmt.Example.com:443/a/b?c").as_deref(),
+            Some("https://mgmt.example.com")
+        );
+        assert_eq!(
+            nemo_url_origin(" http://192.168.0.176:21120/ ").as_deref(),
+            Some("http://192.168.0.176:21120")
+        );
+        assert!(nemo_url_origin("file:///etc/passwd").is_none());
+        assert!(nemo_url_origin("").is_none());
+    }
+
+    // Layer 1: the provisioning gate keys off this — no key (or a malformed one) must
+    // read as "not provisioned"; a real 64-byte key reads as present. The Drop guard
+    // restores the operator's value even if an assert panics.
+    #[test]
+    fn nemo_device_key_present_reflects_config() {
+        use hbb_common::sodiumoxide::crypto::sign;
+
+        struct RestoreDeviceKey(String);
+        impl Drop for RestoreDeviceKey {
+            fn drop(&mut self) {
+                Config::set_option("nemo-device-key".to_string(), self.0.clone());
+            }
+        }
+        let _restore = RestoreDeviceKey(Config::get_option("nemo-device-key"));
+
+        Config::set_option("nemo-device-key".to_string(), String::new());
+        assert!(!nemo_device_key_present());
+        Config::set_option(
+            "nemo-device-key".to_string(),
+            encode64(b"not a 64-byte key"),
+        );
+        assert!(!nemo_device_key_present());
+        let (_, sk) = sign::gen_keypair();
+        Config::set_option("nemo-device-key".to_string(), encode64(sk.as_ref()));
+        assert!(nemo_device_key_present());
     }
 }

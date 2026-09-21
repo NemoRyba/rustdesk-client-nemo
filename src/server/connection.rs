@@ -1001,6 +1001,20 @@ impl Connection {
                                 conn.send_remote_printing_disallowed().await;
                             }
                         }
+                        // Server-issued session revocation. This channel is the one held
+                        // in AUTHED_CONNS (`tx_from_authed`), so it is the only way to
+                        // reach an authorised session from outside its own task -- the
+                        // connection manager's Close arrives on `rx_from_cm` instead, and
+                        // the CM is a separate process that may not even be running on a
+                        // headless machine. Same teardown as that arm: a no-retry close
+                        // reason (so the controller does not immediately reconnect),
+                        // then on_close, then leave the loop.
+                        ipc::Data::Close => {
+                            log::info!("Closing session: revoked by the management server");
+                            conn.send_close_reason_no_retry("").await;
+                            conn.on_close("server revocation", true).await;
+                            break;
+                        }
                         _ => {}
                     }
                 }
@@ -5676,6 +5690,43 @@ fn start_wakelock_thread() -> std::sync::mpsc::Sender<(usize, usize)> {
         }
     });
     tx
+}
+
+/// Terminate every authorised inbound session on this machine.
+///
+/// Sends the same `ipc::Data::Close` the connection manager's "disconnect" button
+/// sends, so the teardown path is identical and already battle-tested:
+/// `send_close_reason_no_retry("")` -> `on_close(..)` -> `break`. The no-retry reason
+/// matters — it stops the controller from simply reconnecting a second later.
+///
+/// Used by the management poll to honour a server-issued session revocation. Until
+/// this existed the server could only block *future* connections: a session already
+/// in progress had, in the server's own words, "no server-side teardown signal" —
+/// which is the one real thing a direct (non-relayed) session used to cost you.
+pub fn terminate_all_authed_sessions(reason: &str) -> usize {
+    let senders: Vec<_> = crate::server::AUTHED_CONNS
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|c| (c.conn_id, c.sender.clone()))
+        .collect();
+    if senders.is_empty() {
+        return 0;
+    }
+    log::warn!(
+        "Terminating {} authorised session(s) on server request: {}",
+        senders.len(),
+        reason
+    );
+    let mut n = 0;
+    for (conn_id, sender) in senders {
+        if sender.send(ipc::Data::Close).is_ok() {
+            n += 1;
+        } else {
+            log::warn!("Session {} already gone while terminating", conn_id);
+        }
+    }
+    n
 }
 
 #[cfg(all(target_os = "windows", feature = "flutter"))]
