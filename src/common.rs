@@ -2683,7 +2683,7 @@ pub fn nemo_require_secure_rendezvous() -> bool {
 // api-server is https; a bare IP always gets plain ws://, so under
 // `nemo-require-secure-rendezvous=Y` an IP-based websocket rendezvous fails closed —
 // which is correct, a ws:// handshake is in the clear.
-fn nemo_rendezvous_ws_is_tls() -> bool {
+pub fn nemo_rendezvous_ws_is_tls() -> bool {
     hbb_common::websocket::check_ws(&Config::get_rendezvous_server()).starts_with("wss://")
 }
 

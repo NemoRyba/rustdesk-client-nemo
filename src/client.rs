@@ -207,26 +207,58 @@ fn check_nemo_outbound_policy(peer: &str) -> ResultType<()> {
     }
 }
 
-fn nemo_source_identity_header() -> String {
+/// Is this rendezvous socket confidential? Either the application-layer KeyExchange
+/// completed, or we are on wss:// where TLS already covers the frame. Same two
+/// conditions the fail-closed check in `secure_tcp_impl` uses -- kept identical on
+/// purpose, so "secure enough to carry the token" means one thing in this codebase.
+fn nemo_channel_is_confidential(conn: &Stream) -> bool {
+    conn.is_secured() || (hbb_common::config::use_ws() && crate::common::nemo_rendezvous_ws_is_tls())
+}
+
+/// H33: the controller identity marker that rides in `PunchHoleRequest.version` and
+/// `RequestRelay.licence_key`.
+///
+/// The logged-in user's session token is a bearer credential: anyone holding it can
+/// act as that user against the management API. It used to be appended
+/// unconditionally, so at the shipped defaults it crossed the rendezvous plane in the
+/// clear on every connect attempt.
+///
+/// It is now appended ONLY when the socket that will carry it is confidential. The
+/// invariant lives here rather than at the call sites, so no future caller can attach
+/// it to a plaintext frame by forgetting to check.
+fn nemo_source_marker(conn: &Stream) -> String {
     let base = format!(
         "nemo-source-v1:{}:{}",
         Config::get_id(),
         base64::encode(hbb_common::get_uuid(), base64::Variant::Original)
     );
-    // Append the logged-in user's session token (if any) so the server can
-    // enforce the per-user connection ACL and require-login at the punch.
-    // The token is written by the UI login via set_local_option, so it lives in
-    // LOCAL config (RustDesk_local.toml) -- NOT the main config.
+    // The token is written by the UI login via set_local_option, so it lives in LOCAL
+    // config (RustDesk_local.toml) -- NOT the main config.
     let token = LocalConfig::get_option("access_token");
-    if token.is_empty() {
-        base
-    } else {
-        format!("{}:{}", base, token)
-    }
+    nemo_source_marker_with(&base, &token, nemo_channel_is_confidential(conn))
 }
 
-fn nemo_version_with_source() -> String {
-    format!("{} {}", crate::VERSION, nemo_source_identity_header())
+/// The H33 decision itself, split out so it can be tested without a socket or a
+/// config directory. `base` is the identity half, which is not secret; `token` is.
+fn nemo_source_marker_with(base: &str, token: &str, confidential: bool) -> String {
+    if token.is_empty() {
+        return base.to_owned();
+    }
+    if !confidential {
+        // Dropping it means the server sees an anonymous controller, so require-login
+        // and the per-user ACL will refuse. Say why, or this looks like a policy bug.
+        log::warn!(
+            "not attaching the session token to the rendezvous request: this socket is \
+             not encrypted (no KeyExchange, and the endpoint is not wss://). The server \
+             will treat this connection as logged out."
+        );
+        return base.to_owned();
+    }
+    format!("{}:{}", base, token)
+}
+
+fn nemo_version_with_source(conn: &Stream) -> String {
+    format!("{} {}", crate::VERSION, nemo_source_marker(conn))
 }
 
 impl Client {
@@ -489,23 +521,34 @@ impl Client {
         // burns the 18s READ_TIMEOUT and then fails closed. With the flag off the
         // condition below evaluates exactly as it does today (token is always empty),
         // so the workaround is preserved byte for byte.
+        // `token` is upstream's account token, which this fork does not use. The Nemo
+        // session token rides in the source marker below and is attached only on a
+        // confidential socket -- see nemo_source_marker.
         let token = String::new();
-        if !key.is_empty()
-            && (!token.is_empty() || crate::common::nemo_require_secure_rendezvous())
-        {
-            // mainly for the security of token
-            secure_tcp(&mut socket, &key)
-                .await
-                .map_err(|e| anyhow!("Failed to secure tcp: {}", e))?;
-        } else if let Some(udp) = udp.1.as_ref() {
-            let tm = Instant::now();
+        // H33: securing this socket is no longer a policy option. It is
+        // client-initiated and client-mandated, the same way the relay control frame
+        // is (DECISIONS 2026-09-21 §2): the marker that follows carries the session
+        // token, and the punch itself reveals who is connecting to whom.
+        let punch_setup = Instant::now();
+        if key.is_empty() {
+            bail!("No server key is configured, so the rendezvous handshake cannot be verified and this punch would go out in the clear. Set the server key in the config (or use a host=..,key=.. licence name).");
+        }
+        secure_tcp(&mut socket, &key)
+            .await
+            .map_err(|e| anyhow!("Failed to secure tcp: {}", e))?;
+        // UDP punch: collect the NAT-test port if it has landed. The deadline starts
+        // BEFORE the handshake, so a handshake that already took longer than half an
+        // RTT costs nothing extra here. Previously this wait was the `else` of the
+        // secure branch, so securing the rendezvous silently suppressed the UDP punch;
+        // now the two coexist.
+        if let Some(udp) = udp.1.as_ref() {
             loop {
                 let port = *udp.lock().unwrap();
                 if port > 0 {
                     break;
                 }
                 // await for 0.5 RTT
-                if tm.elapsed() > rtt / 2 {
+                if punch_setup.elapsed() > rtt / 2 {
                     break;
                 }
                 hbb_common::sleep(0.001).await;
@@ -531,7 +574,7 @@ impl Client {
             nat_type: nat_type.into(),
             licence_key: key.to_owned(),
             conn_type: conn_type.into(),
-            version: nemo_version_with_source(),
+            version: nemo_version_with_source(&socket),
             udp_port: udp_nat_port as _,
             force_relay: interface.is_force_relay(),
             socket_addr_v6: ipv6.1.unwrap_or_default(),
@@ -1015,12 +1058,11 @@ impl Client {
             // `--key-exchange`; nemo-require-secure-rendezvous must not be enabled
             // before the rendezvous runs at least `--key-exchange=offer`. Flag off =>
             // the condition is byte-for-byte today's.
-            if !key.is_empty()
-                && (!token.is_empty() || crate::common::nemo_require_secure_rendezvous())
-            {
-                // mainly for the security of token
-                secure_tcp(&mut socket, key).await?;
+            // H33: same as the punch socket -- hardcoded, not a policy option.
+            if key.is_empty() {
+                bail!("No server key is configured, so the rendezvous handshake cannot be verified and this relay request would go out in the clear.");
             }
+            secure_tcp(&mut socket, key).await?;
 
             ipv4 = socket.local_addr().is_ipv4();
             let mut msg_out = RendezvousMessage::new();
@@ -1038,7 +1080,7 @@ impl Client {
                 token: token.to_owned(),
                 uuid: uuid.clone(),
                 relay_server: relay_server.clone(),
-                licence_key: nemo_source_identity_header(),
+                licence_key: nemo_source_marker(&socket),
                 secure,
                 ..Default::default()
             });
@@ -4465,4 +4507,35 @@ async fn udp_nat_connect(
             anyhow!(err)
         })?;
     Ok((res.1, Some(res.0), typ))
+}
+
+#[cfg(test)]
+mod nemo_h33_tests {
+    use super::nemo_source_marker_with;
+
+    /// H33: the session token is a bearer credential -- anyone holding it can act as
+    /// that user against the management API. It used to be appended to the rendezvous
+    /// source marker unconditionally, so at the shipped defaults it crossed the
+    /// rendezvous plane in the clear on every connect attempt.
+    #[test]
+    fn the_session_token_rides_only_a_confidential_socket() {
+        let base = "nemo-source-v1:123456789:dXVpZA==";
+        let token = "SENTINEL-TOKEN";
+
+        // The identity half is not secret and always travels.
+        assert_eq!(nemo_source_marker_with(base, "", true), base);
+        assert_eq!(nemo_source_marker_with(base, "", false), base);
+
+        // The token travels only when the channel is confidential.
+        assert_eq!(
+            nemo_source_marker_with(base, token, true),
+            format!("{}:{}", base, token)
+        );
+        let plaintext = nemo_source_marker_with(base, token, false);
+        assert_eq!(plaintext, base);
+        assert!(
+            !plaintext.contains(token),
+            "the token must never appear in a marker built for an unencrypted socket"
+        );
+    }
 }
