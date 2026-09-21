@@ -27,6 +27,7 @@ use hbb_common::{
     rendezvous_proto::*,
     socket_client,
     sodiumoxide::crypto::{box_, secretbox, sign},
+    tcp::{Role, SessionKey},
     timeout,
     tls::{get_cached_tls_accept_invalid_cert, get_cached_tls_type, upsert_tls_cache, TlsType},
     tokio::{
@@ -2319,13 +2320,31 @@ pub fn decode_id_pk(signed: &[u8], key: &sign::PublicKey) -> ResultType<(String,
     }
 }
 
-pub fn create_symmetric_key_msg(their_pk_b: [u8; 32]) -> (Bytes, Bytes, secretbox::Key) {
+/// Seal a fresh session key to the peer. We are the side that generates it, so we
+/// are the INITIATOR for SEC-14 purposes (see `hbb_common::tcp::Role`).
+///
+/// The sealed payload is `key || SESSION_KEY_V1`, one byte longer than it used to
+/// be. That byte is what tells the responder to use per-direction nonces, and it
+/// rides INSIDE the box on purpose: an on-path attacker cannot strip it to force
+/// the old shared nonce space back without holding the peer's secret key.
+///
+/// A pre-SEC-14 peer refuses the extra byte outright ("invalid secret key length")
+/// and closes the connection, so a half-updated fleet fails loudly at the handshake
+/// rather than silently corrupting a stream. See the rollout order in
+/// DESIGN-rendezvous-crypto.md: responders first, controllers last.
+pub fn create_symmetric_key_msg(their_pk_b: [u8; 32]) -> (Bytes, Bytes, SessionKey) {
     let their_pk_b = box_::PublicKey(their_pk_b);
     let (our_pk_b, out_sk_b) = box_::gen_keypair();
     let key = secretbox::gen_key();
     let nonce = box_::Nonce([0u8; box_::NONCEBYTES]);
-    let sealed_key = box_::seal(&key.0, &nonce, &their_pk_b, &out_sk_b);
-    (Vec::from(our_pk_b.0).into(), sealed_key.into(), key)
+    let mut payload = key.0.to_vec();
+    payload.push(hbb_common::tcp::SESSION_KEY_V1);
+    let sealed_key = box_::seal(&payload, &nonce, &their_pk_b, &out_sk_b);
+    (
+        Vec::from(our_pk_b.0).into(),
+        sealed_key.into(),
+        SessionKey::new(key, Role::Initiator),
+    )
 }
 
 // B (encrypted direct-IP): the management server pushes a signed `nemo-peer-keys` map
