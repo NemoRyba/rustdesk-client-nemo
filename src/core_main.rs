@@ -39,8 +39,10 @@ CONNECT
     --connect <id> [password]     open a remote-control session
     --file-transfer <id> [pw]     open a file-transfer session
     --port-forward <id> [pw]      open a port-forward session
-    --view-camera <id> [pw]       open the remote camera
-    --terminal <id> [pw]          open a remote terminal
+    --rdp <id> [pw]               open an RDP session
+
+    --password-stdin              read the peer password from stdin instead
+    --password-file <path>        read it from a file (must not be group/other readable)
 
 INFORMATION
     --version                     print the version and exit
@@ -51,10 +53,12 @@ INFORMATION
 CONFIGURATION
     --set-id <id>                 change this machine's id
     --password <pw>               set the permanent password
-    --set-unlock-pin <pin>        set the settings unlock pin
-    --option <key> [value]        read or write a single config option
+    --option <key> [value] [--force]  read or write a config option
     --config <path|host=..,key=..>  import a configuration
     --import-config <path>        import a configuration file
+
+    Most CONFIGURATION and SERVICE commands require an installed client and
+    administrative privileges.
 
 SERVICE / INSTALLATION (platform dependent, may need privileges)
     --install, --silent-install, --uninstall
@@ -63,9 +67,13 @@ SERVICE / INSTALLATION (platform dependent, may need privileges)
     --elevate, --run-as-system
 
 SECURITY NOTE
-    Passing a peer password or an API token on the command line makes it visible to
-    every other process on the machine (it appears in `ps` and in shell history).
-    Prefer the graphical client, or a configuration file with restrictive permissions.
+    Anything passed on the command line is visible to every other process on the
+    machine -- it appears in `ps` and in shell history. For the peer password use
+    --password-stdin or --password-file; the positional form still works but warns.
+
+    --option will not print or accept a private key (nemo-device-key); use the
+    client's "Import device key" dialog. Options that decide which keys this client
+    trusts need an explicit --force.
 "#,
         crate::VERSION,
         crate::BUILD_DATE
@@ -78,6 +86,61 @@ SECURITY NOTE
 /// If it returns [`None`], then the process will terminate, and flutter gui will not be started.
 /// If it returns [`Some`], then the process will continue, and flutter gui will be started.
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
+/// H26: config options that are long-term PRIVATE KEYS. Never printed, never taken
+/// from argv. `nemo-device-key` holds a full Ed25519 secret -- the Layer 1 proof that
+/// this machine is a fleet member. The supported way in is the client's "Import device
+/// key" dialog, which does not put it in a process list, a shell history, a tmux
+/// capture or a sudo audit trail.
+const OPTION_SECRET_KEYS: &[&str] = &["nemo-device-key"];
+
+/// H26: options that decide WHO THIS CLIENT TRUSTS. Rewriting one silently repoints the
+/// client at an attacker's infrastructure, so they need an explicit `--force` and are
+/// logged when changed.
+///
+/// `custom-rendezvous-server`, `api-server` and `relay-server` are deliberately NOT here:
+/// `--option custom-rendezvous-server` is the documented provisioning workflow (see the
+/// comment on the `--server` arm), and gating it would break the runbook for no gain --
+/// they say which server to talk to, while these say which keys to believe.
+const OPTION_TRUST_ROOT_KEYS: &[&str] = &[
+    "key",
+    "nemo-management-server",
+    "nemo-management-public-key",
+    "nemo-api-cert-fingerprint",
+    "nemo-peer-keys",
+];
+
+/// What `--option` is allowed to do with a given key. Split out from the CLI arm so the
+/// policy is testable: on Linux `is_installed()` is a `/usr` path-prefix test, so the arm
+/// itself is unreachable from any build that is not actually installed.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum OptionCliAction {
+    Read,
+    Write,
+    /// Refused, with the message to print.
+    Refuse(&'static str),
+}
+
+pub(crate) fn option_cli_action(key: &str, has_value: bool, force: bool) -> OptionCliAction {
+    if OPTION_SECRET_KEYS.contains(&key) {
+        // Both directions: never print it, and never accept it from argv either --
+        // writing it here would put the secret in `ps` and in shell history.
+        return OptionCliAction::Refuse(
+            "Refusing to read or write a private key from the command line. \
+             Use the client's \"Import device key\" dialog.",
+        );
+    }
+    if !has_value {
+        return OptionCliAction::Read;
+    }
+    if OPTION_TRUST_ROOT_KEYS.contains(&key) && !force {
+        return OptionCliAction::Refuse(
+            "Refusing to rewrite a trust root without --force. \
+             It decides which keys this client believes.",
+        );
+    }
+    OptionCliAction::Write
+}
+
 pub fn core_main() -> Option<Vec<String>> {
     if !crate::common::global_init() {
         return None;
@@ -487,7 +550,21 @@ pub fn core_main() -> Option<Vec<String>> {
                 } else {
                     filepath = path.to_str().unwrap().to_string();
                 }
-                import_config(&filepath);
+                // H27: this rewrites the calling user's WHOLE identity -- id, key pair,
+                // permanent password, rendezvous/relay/api servers and every option
+                // including nemo-device-key and nemo-management-public-key -- from a
+                // file anyone could drop. It was the only config-mutating arm with no
+                // gate at all. Use the same one its five neighbours use.
+                //
+                // Safe for the Windows installer: both `{import_config}` splice points
+                // in platform::windows run AFTER `{copy_exe}`, so is_installed() holds,
+                // and the service it creates has no `obj=` so it runs as LocalSystem,
+                // where is_root() is is_local_system().
+                if crate::platform::is_installed() && is_root() {
+                    import_config(&filepath);
+                } else {
+                    println!("Installation and administrative privileges required!");
+                }
             }
             return None;
         } else if args[0] == "--password" {
@@ -585,11 +662,32 @@ pub fn core_main() -> Option<Vec<String>> {
                 return None;
             }
             if crate::platform::is_installed() && is_root() {
-                if args.len() == 2 {
-                    let options = crate::ipc::get_options();
-                    println!("{}", options.get(&args[1]).unwrap_or(&"".to_owned()));
-                } else if args.len() == 3 {
-                    crate::ipc::set_option(&args[1], &args[2]);
+                // H26. Hygiene, not a privilege boundary -- the caller is already root
+                // and can read the config file directly. What it buys is that the device
+                // private key stops landing in terminal scrollback, `script`/tmux
+                // captures, CI logs and sudo audit trails, and that a trust-root repoint
+                // stops being a one-liner you can fat-finger.
+                let key = args[1].as_str();
+                let has_value = args.len() >= 3;
+                let force = args.iter().any(|x| x == "--force");
+                match option_cli_action(key, has_value, force) {
+                    OptionCliAction::Refuse(msg) => println!("{msg} (option: {key})"),
+                    OptionCliAction::Read => {
+                        let options = crate::ipc::get_options();
+                        println!("{}", options.get(key).unwrap_or(&"".to_owned()));
+                    }
+                    OptionCliAction::Write => {
+                        if OPTION_TRUST_ROOT_KEYS.contains(&key) {
+                            // Not an audit trail -- there is none for the CLI -- but it
+                            // puts the change in the client log next to what followed it.
+                            log::warn!(
+                                "CLI trust-root rewrite: {} changed via --force (exe {:?})",
+                                key,
+                                std::env::current_exe().ok()
+                            );
+                        }
+                        crate::ipc::set_option(key, &args[2]);
+                    }
                 }
             } else {
                 println!("Installation and administrative privileges required!");
@@ -888,14 +986,30 @@ fn import_config(path: &str) {
     if get_modified_time(&path) > get_modified_time(&Config::file())
         && get_modified_time(&path) < get_exe_time()
     {
-        if store_path(Config::file(), config).is_err() {
-            log::info!("config written");
+        // H27: this said `if ... .is_err() { log::info!("config written") }` -- it logged
+        // success exactly when the write FAILED, and said nothing when it succeeded. A
+        // failed import was therefore completely silent.
+        match store_path(Config::file(), config) {
+            Ok(()) => log::info!("config written"),
+            Err(err) => log::error!("failed to write config: {err}"),
         }
     }
     let config2: Config2 = load_path(path2.into());
-    if get_modified_time(&path2) > get_modified_time(&Config2::file()) {
-        if store_path(Config2::file(), config2).is_err() {
-            log::info!("config2 written");
+    // H27: the Config2 branch had neither the emptiness guard nor the exe-time upper
+    // bound its Config sibling has, so an existing-but-empty `<path>2.toml` wiped the
+    // whole options map -- key, custom-rendezvous-server, api-server, nemo-device-key,
+    // nemo-management-*. (A *missing* path2 was already safe: get_modified_time returns
+    // UNIX_EPOCH, so the `>` below is false.)
+    if config2 == Config2::default() {
+        log::info!("Empty source config2, skipped");
+        return;
+    }
+    if get_modified_time(&path2) > get_modified_time(&Config2::file())
+        && get_modified_time(&path2) < get_exe_time()
+    {
+        match store_path(Config2::file(), config2) {
+            Ok(()) => log::info!("config2 written"),
+            Err(err) => log::error!("failed to write config2: {err}"),
         }
     }
 }
@@ -1069,4 +1183,48 @@ mod tests {
 fn is_quick_support_exe(exe: &str) -> bool {
     let exe = exe.to_lowercase();
     exe.contains("-qs-") || exe.contains("-qs.exe") || exe.contains("_qs.exe")
+}
+
+#[cfg(test)]
+mod nemo_h26_tests {
+    use super::{option_cli_action, OptionCliAction};
+
+    /// H26. The device key is a full Ed25519 secret and the Layer 1 proof that this
+    /// machine is a fleet member; making it reachable from argv puts it in `ps`, shell
+    /// history and sudo audit trails. Refused in BOTH directions.
+    #[test]
+    fn a_private_key_is_never_read_or_written_from_argv() {
+        assert!(matches!(
+            option_cli_action("nemo-device-key", false, false),
+            OptionCliAction::Refuse(_)
+        ));
+        // --force must not buy a way past it.
+        assert!(matches!(
+            option_cli_action("nemo-device-key", true, true),
+            OptionCliAction::Refuse(_)
+        ));
+    }
+
+    /// A trust root decides which keys this client believes, so rewriting one is
+    /// deliberate or not at all. Reading one stays free -- it is not a secret.
+    #[test]
+    fn a_trust_root_needs_force_to_write_but_not_to_read() {
+        for key in ["key", "nemo-management-public-key", "nemo-peer-keys"] {
+            assert_eq!(option_cli_action(key, false, false), OptionCliAction::Read, "{key}");
+            assert!(
+                matches!(option_cli_action(key, true, false), OptionCliAction::Refuse(_)),
+                "{key} should need --force"
+            );
+            assert_eq!(option_cli_action(key, true, true), OptionCliAction::Write, "{key}");
+        }
+    }
+
+    /// The documented provisioning workflow must keep working ungated: these say WHICH
+    /// server to talk to, not which keys to believe.
+    #[test]
+    fn the_provisioning_options_stay_ungated() {
+        for key in ["custom-rendezvous-server", "api-server", "relay-server"] {
+            assert_eq!(option_cli_action(key, true, false), OptionCliAction::Write, "{key}");
+        }
+    }
 }
