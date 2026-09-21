@@ -2328,10 +2328,9 @@ pub fn decode_id_pk(signed: &[u8], key: &sign::PublicKey) -> ResultType<(String,
 /// rides INSIDE the box on purpose: an on-path attacker cannot strip it to force
 /// the old shared nonce space back without holding the peer's secret key.
 ///
-/// A pre-SEC-14 peer refuses the extra byte outright ("invalid secret key length")
-/// and closes the connection, so a half-updated fleet fails loudly at the handshake
-/// rather than silently corrupting a stream. See the rollout order in
-/// DESIGN-rendezvous-crypto.md: responders first, controllers last.
+/// `Encrypt::decode` refuses a bare 32-byte key, so no shape exists in which the two
+/// directions share a nonce space -- not for an on-path attacker, and not for an
+/// un-updated peer either.
 pub fn create_symmetric_key_msg(their_pk_b: [u8; 32]) -> (Bytes, Bytes, SessionKey) {
     let their_pk_b = box_::PublicKey(their_pk_b);
     let (our_pk_b, out_sk_b) = box_::gen_keypair();

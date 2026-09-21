@@ -235,21 +235,11 @@ pub async fn create_tcp_connection(
                 if let Ok(msg_in) = Message::parse_from_bytes(&bytes) {
                     if let Some(message::Union::PublicKey(pk)) = msg_in.union {
                         if pk.asymmetric_value.len() == box_::PUBLICKEYBYTES {
-                            let session = tcp::Encrypt::decode(
+                            stream.set_key(tcp::Encrypt::decode(
                                 &pk.symmetric_value,
                                 &pk.asymmetric_value,
                                 &our_sk_b,
-                            )?;
-                            // SEC-14 rollout aid: name the stragglers. A controller that
-                            // sealed a bare 32-byte key is a pre-SEC-14 build, and this
-                            // session keeps the old shared nonce space for it.
-                            if !session.directional {
-                                log::warn!(
-                                    "Peer sealed a pre-SEC-14 session key; this session keeps the \
-                                     old shared nonce space. Update the controlling machine."
-                                );
-                            }
-                            stream.set_key(session);
+                            )?);
                             secured = true;
                         } else if pk.asymmetric_value.is_empty() {
                             // S-A: refuse an unencrypted session when policy requires
