@@ -24,6 +24,7 @@ use hbb_common::{
     get_version_number, log,
     message_proto::*,
     protobuf::{Enum, Message as _},
+    nemo_device_auth_payload,
     rendezvous_proto::*,
     socket_client,
     sodiumoxide::crypto::{box_, secretbox, sign},
@@ -2169,15 +2170,56 @@ async fn nemo_rendezvous_key_exchange(
                         }
                         let their_pk_b = sign::verify(&ex.keys[0], &rs_pk)
                             .map_err(|_| anyhow!("Signature mismatch in key exchange"))?;
-                        let (asymmetric_value, symmetric_value, key) = create_symmetric_key_msg(
-                            get_pk(&their_pk_b)
-                                .context("Wrong their public length in key exchange")?,
-                        );
+                        let server_eph_pk = get_pk(&their_pk_b)
+                            .context("Wrong their public length in key exchange")?;
+                        let (asymmetric_value, symmetric_value, key) =
+                            create_symmetric_key_msg(server_eph_pk);
+                        // H5: prove this machine is a provisioned fleet member, not just
+                        // a host that knows the server's public key -- which is not a
+                        // secret: it ships in every client config and inside the
+                        // host=..,key=.. licence name. Without this, Layer 1 is enforced
+                        // at the management API but NOT at the rendezvous transport, so a
+                        // keyless host completes the handshake and registers.
                         let mut msg_out = RendezvousMessage::new();
-                        msg_out.set_key_exchange(KeyExchange {
-                            keys: vec![asymmetric_value, symmetric_value],
-                            ..Default::default()
-                        });
+                        match nemo_device_ed25519() {
+                            Some((device_pk, device_sk)) => {
+                                let peer_id = Config::get_id();
+                                let sig = sign::sign(
+                                    &nemo_device_auth_payload(
+                                        &server_eph_pk,
+                                        &asymmetric_value,
+                                        &symmetric_value,
+                                        &peer_id,
+                                    ),
+                                    &device_sk,
+                                );
+                                msg_out.set_nemo_client_auth(NemoClientAuth {
+                                    client_box_pk: asymmetric_value,
+                                    sealed_key: symmetric_value,
+                                    device_pub: Bytes::from(device_pk.as_ref().to_vec()),
+                                    peer_id,
+                                    sig: Bytes::from(sig),
+                                    ..Default::default()
+                                });
+                            }
+                            None => {
+                                // No device key imported. Send the unauthenticated reply
+                                // the server has always accepted; hbbs decides whether
+                                // that is allowed, using the same require_device_key flag
+                                // the management API uses. Keeping the decision on the
+                                // server is the point -- a client cannot talk its way in
+                                // by choosing the other branch.
+                                log::warn!(
+                                    "No device key imported: connecting to the rendezvous \
+                                     WITHOUT a Layer 1 proof. The server will refuse this \
+                                     if require-device-key is on."
+                                );
+                                msg_out.set_key_exchange(KeyExchange {
+                                    keys: vec![asymmetric_value, symmetric_value],
+                                    ..Default::default()
+                                });
+                            }
+                        }
                         timeout(CONNECT_TIMEOUT, conn.send(&msg_out)).await??;
                         conn.set_key(key);
                         if log_on_success {
