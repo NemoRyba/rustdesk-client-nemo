@@ -468,14 +468,17 @@ impl VideoQoS {
                 min.max(BR_MIN_HIGH_RESOLUTION)
             }
             Quality::Low => BR_MIN_HIGH_RESOLUTION,
-            // A user who explicitly asks for, say, 300% has stated an intent; letting
-            // ABR drag them to the 1% floor makes `custom` unusable over a WAN and is
-            // why "push image_quality=best instead" used to be the advice. Floor at a
-            // quarter of their OWN target, never below the absolute floor.
+            // REVERTED to upstream. A previous pass floored this at a quarter of the
+            // user's own target, reasoning that ABR should not drag an explicit 300%
+            // request down to 1%. That reasoning is LAN-shaped and wrong here: a 300%
+            // target would floor at ratio 1.5 -- 3.1 Mbps at 1080p on VP9, 4.6 Mbps on
+            // hardware H.264 -- which is THREE TIMES Best's floor and four times
+            // Balanced's. On a constrained uplink that stops ABR backing off far enough
+            // and the session stalls instead of degrading.
             //
-            // BR_MIN_HIGH_RESOLUTION itself stays 0.01 so the deliberate 1% slider still
-            // works for genuinely awful links.
-            Quality::Custom(target) => (target * 0.25).max(BR_MIN_HIGH_RESOLUTION),
+            // Dropping a long way IS adaptive bitrate doing its job. If a floor is ever
+            // wanted it must be bounded by what Balanced gets, not by the target.
+            Quality::Custom(_) => BR_MIN_HIGH_RESOLUTION,
         };
         let max = target_ratio * MAX_BR_MULTIPLE;
 
