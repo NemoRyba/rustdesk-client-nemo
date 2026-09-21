@@ -2497,7 +2497,10 @@ impl LoginConfigHandler {
                 quality
             };
             msg.custom_image_quality = quality << 8;
-            #[cfg(feature = "flutter")]
+            // The shipped client is a SCITER build, and this was behind the flutter
+            // feature -- so 30 fps was a hard ceiling that no managed-policy key could
+            // lift, and pushing custom-fps did nothing at all. For CAD orbit/pan the
+            // difference between 30 and 60 is the difference between judder and not.
             if let Some(custom_fps) = self.options.get("custom-fps") {
                 let mut custom_fps = custom_fps.parse().unwrap_or(30);
                 if !allow_more && custom_fps > 30 {

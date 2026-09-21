@@ -468,7 +468,14 @@ impl VideoQoS {
                 min.max(BR_MIN_HIGH_RESOLUTION)
             }
             Quality::Low => BR_MIN_HIGH_RESOLUTION,
-            Quality::Custom(_) => BR_MIN_HIGH_RESOLUTION,
+            // A user who explicitly asks for, say, 300% has stated an intent; letting
+            // ABR drag them to the 1% floor makes `custom` unusable over a WAN and is
+            // why "push image_quality=best instead" used to be the advice. Floor at a
+            // quarter of their OWN target, never below the absolute floor.
+            //
+            // BR_MIN_HIGH_RESOLUTION itself stays 0.01 so the deliberate 1% slider still
+            // works for genuinely awful links.
+            Quality::Custom(target) => (target * 0.25).max(BR_MIN_HIGH_RESOLUTION),
         };
         let max = target_ratio * MAX_BR_MULTIPLE;
 

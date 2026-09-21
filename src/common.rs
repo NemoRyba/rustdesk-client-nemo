@@ -2867,6 +2867,22 @@ pub fn rustdesk_interval(i: Interval) -> ThrottledInterval {
 }
 
 pub fn load_custom_client() {
+    // The rendezvous transport defaults to TCP, so no client->server message goes out
+    // unencrypted. UDP registration has no key exchange and no device-key proof, and hbbs
+    // now refuses it by default.
+    //
+    // Seeded into DEFAULT_SETTINGS rather than flipping is_udp_disabled()'s comparator:
+    // seven UI sites read the RAW option string and compare == "Y", so a comparator-only
+    // change would leave every checkbox and toggle lying about the effective transport.
+    // DEFAULT_SETTINGS is consulted last, so custom.txt, a managed policy and an explicit
+    // user choice all still win.
+    //
+    // This does NOT disable UDP hole punching -- that is enable-udp-punch, a separate
+    // switch on a separate path.
+    config::DEFAULT_SETTINGS
+        .write()
+        .unwrap()
+        .insert(keys::OPTION_DISABLE_UDP.to_owned(), "Y".to_owned());
     #[cfg(debug_assertions)]
     if let Ok(data) = std::fs::read_to_string("./custom.txt") {
         read_custom_client(data.trim());
