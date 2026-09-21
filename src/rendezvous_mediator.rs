@@ -519,18 +519,16 @@ impl RendezvousMediator {
 
         let mut socket = connect_tcp(&*self.host, CONNECT_TIMEOUT).await?;
         // S-C: this is a fresh rendezvous socket, so the secure_tcp done in start_tcp
-        // never covered it and the RelayResponse below went out in clear text. Only
-        // attempt the handshake when the operator opted in with
-        // nemo-require-secure-rendezvous: with the flag off we must make no call at
-        // all, because a rendezvous running --key-exchange=off never answers and the
-        // call would cost this connection the full 18s READ_TIMEOUT. With the flag on
-        // we deliberately fail closed: secure_tcp bails at the single enforcement
-        // point in common.rs when no key ended up set, and `?` propagates that rather
-        // than falling back to clear text.
-        // (secure_tcp_silent would fit better here but is private to common.rs.)
-        if crate::common::nemo_require_secure_rendezvous() {
-            crate::secure_tcp(&mut socket, &crate::get_key(true).await).await?;
-        }
+        // never covered it and the RelayResponse below -- which carries the peer id and
+        // the signed id/pk -- went out in clear text.
+        //
+        // Hardcoded, not a policy option: this is the responder half of H33. The
+        // controller's punch and relay sockets became mandatory-secure there; leaving
+        // the answering side opt-in would have protected one direction and left the
+        // other in the clear at shipped defaults. secure_tcp fails closed at the single
+        // enforcement point in common.rs, and `?` propagates that rather than falling
+        // back to clear text.
+        crate::secure_tcp(&mut socket, &crate::get_key(true).await).await?;
 
         let mut msg_out = Message::new();
         let mut rr = RelayResponse {
@@ -620,11 +618,11 @@ impl RendezvousMediator {
         log::debug!("Handle intranet from {:?}", peer_addr);
         let mut socket = connect_tcp(&*self.host, CONNECT_TIMEOUT).await?;
         // S-C: fresh rendezvous socket again, and the LocalAddr below carries this
-        // workstation's internal IP in clear text. send_raw() encrypts once the
-        // handshake has set a key (hbb_common tcp.rs:158). Flag off => no call.
-        if crate::common::nemo_require_secure_rendezvous() {
-            crate::secure_tcp(&mut socket, &crate::get_key(true).await).await?;
-        }
+        // workstation's INTERNAL IP. send_raw() encrypts once the handshake has set a
+        // key (hbb_common tcp.rs). Hardcoded for the same reason as the relay answer
+        // above -- this fires on every same-subnet connection, so at shipped defaults
+        // it was publishing the internal addressing of the whole site.
+        crate::secure_tcp(&mut socket, &crate::get_key(true).await).await?;
         let local_addr = socket.local_addr();
         // we saw invalid local_addr while using proxy, local_addr.ip() == "::1"
         let local_addr: SocketAddr =
@@ -705,10 +703,17 @@ impl RendezvousMediator {
             socket_addr_v6,
             ..Default::default()
         };
-        // S-C: the UDP punch puts PunchHoleSent on the wire as a plain datagram even
-        // in TCP mode, and there is no key exchange for a datagram socket. When the
-        // operator requires a secured rendezvous, fall through to the TCP punch /
-        // relay path below, which can be secured.
+        // S-C: the UDP punch sends PunchHoleSent straight to the PEER as a plain
+        // datagram, and there is no key exchange for a datagram socket. Setting
+        // nemo-require-secure-rendezvous falls through to the TCP punch below instead.
+        //
+        // This is now the ONLY thing that option controls. Every rendezvous-plane frame
+        // is encrypted unconditionally as of the H33 responder fix, so the option no
+        // longer means "require a secure rendezvous" -- it means "do not use the
+        // unkeyed UDP punch". Left as-is deliberately, pending the review of whether
+        // UDP punching is wanted on this topology; keying the datagram path (a
+        // DTLS-style sliding window, see DESIGN-rendezvous-crypto.md §2) is the fix
+        // that would remove the trade-off rather than choosing a side of it.
         if ph.udp_port > 0 && !crate::common::nemo_require_secure_rendezvous() {
             peer_addr.set_port(ph.udp_port as u16);
             self.punch_udp_hole(peer_addr, server, msg_punch, control_permissions)
@@ -725,14 +730,13 @@ impl RendezvousMediator {
             socket
         };
         // S-C: secure this fresh rendezvous socket before PunchHoleSent goes out.
-        // Deliberately placed *after* the block above: the connect / local_addr /
-        // connect_tcp_local sequence depends on that port being reused immediately,
-        // so no handshake may sit between the connect and the punch SYN. The server's
-        // KeyExchange waits in the receive buffer until we read it here. Flag off =>
-        // no call, so the fleet never pays the 18s READ_TIMEOUT.
-        if crate::common::nemo_require_secure_rendezvous() {
-            crate::secure_tcp(&mut socket, &crate::get_key(true).await).await?;
-        }
+        // Deliberately placed *after* the block above and NOT moved: the connect /
+        // local_addr / connect_tcp_local sequence depends on that port being reused
+        // immediately, so no handshake may sit between the connect and the punch SYN.
+        // The server's KeyExchange waits in the receive buffer until we read it here.
+        //
+        // Hardcoded, not a policy option (responder half of H33).
+        crate::secure_tcp(&mut socket, &crate::get_key(true).await).await?;
         let mut msg_out = Message::new();
         msg_out.set_punch_hole_sent(msg_punch);
         let bytes = msg_out.write_to_bytes()?;

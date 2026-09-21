@@ -4205,15 +4205,12 @@ async fn hc_connection_(
     let host = check_port(&rendezvous_server, RENDEZVOUS_PORT);
     let mut conn = connect_tcp(host.clone(), CONNECT_TIMEOUT).await?;
     let key = crate::get_key(true).await;
-    // S-C: this call was unconditional, and against a rendezvous that answers no
-    // KeyExchange it could only ever burn the 18s READ_TIMEOUT and then `?`-bail, so
-    // the health check never got as far as sending HealthCheck. Attempt it only when
-    // the operator has opted in with nemo-require-secure-rendezvous; with the flag
-    // off the handshake (and its stall) is skipped and nothing else about the health
-    // check changes.
-    if crate::common::nemo_require_secure_rendezvous() {
-        crate::secure_tcp(&mut conn, &key).await?;
-    }
+    // S-C: the health check opens its own rendezvous socket and sends a HealthCheck
+    // carrying the connection token, so it is secured like every other frame on this
+    // plane. Against a rendezvous answering no KeyExchange this bails instead of
+    // sending in the clear -- which is the point; --key-exchange=off is a debugging
+    // option, not a mode to degrade into.
+    crate::secure_tcp(&mut conn, &key).await?;
     let mut msg_out = RendezvousMessage::new();
     msg_out.set_hc(HealthCheck {
         token,

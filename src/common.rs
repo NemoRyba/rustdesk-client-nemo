@@ -2180,17 +2180,6 @@ async fn nemo_rendezvous_key_exchange(
                         });
                         timeout(CONNECT_TIMEOUT, conn.send(&msg_out)).await??;
                         conn.set_key(key);
-                        // Review finding (fleet-offline foot-gun): remember that this
-                        // rendezvous CAN do a key exchange. Enforcement below refuses to
-                        // fail closed until it has seen this at least once, so pushing
-                        // `nemo-require-secure-rendezvous=Y` at a server still running
-                        // `--key-exchange=off` cannot take the fleet offline durably.
-                        if !nemo_rendezvous_kx_seen() {
-                            Config::set_option(
-                                OPTION_NEMO_RENDEZVOUS_KX_SEEN.to_owned(),
-                                "Y".to_owned(),
-                            );
-                        }
                         if log_on_success {
                             log::info!("Connection secured");
                         }
@@ -2223,18 +2212,20 @@ async fn secure_tcp_impl(conn: &mut Stream, key: &str, log_on_success: bool) -> 
     if !skipped_for_ws {
         nemo_rendezvous_key_exchange(conn, key, log_on_success).await?;
     }
-    // S-C: fail closed, at ONE point. With `nemo-require-secure-rendezvous=Y` an
-    // unsecured rendezvous connection is an error instead of upstream's silent
-    // plaintext fallback. The websocket skip counts as secure only when the endpoint
-    // we are configured to dial really is wss:// — plain ws:// carries the handshake
-    // in the clear. Default off (option empty) short-circuits on the first condition,
-    // so a deployed fleet behaves exactly as it does today.
-    if nemo_require_secure_rendezvous()
-        && nemo_rendezvous_kx_seen()
-        && !conn.is_secured()
-        && !(skipped_for_ws && nemo_rendezvous_ws_is_tls())
-    {
-        bail!("nemo-require-secure-rendezvous=Y: refusing an unencrypted rendezvous connection (no KeyExchange completed and the endpoint is not wss://). Clear the option `nemo-require-secure-rendezvous` to allow the unsecured fallback.");
+    // Fail closed, at ONE point, unconditionally. `nemo_rendezvous_key_exchange` above
+    // does NOT bail when the server answers with something other than a KeyExchange --
+    // it logs and returns Ok, leaving the link in the clear -- so this is what actually
+    // prevents a plaintext rendezvous connection. It used to be gated on
+    // `nemo-require-secure-rendezvous` plus a kx-seen ratchet, which meant the shipped
+    // default was upstream's silent plaintext fallback.
+    //
+    // The websocket skip counts as secure only when the endpoint we are configured to
+    // dial really is wss://; plain ws:// carries the handshake in the clear. Note
+    // check_ws() only yields wss:// for a DOMAIN endpoint whose api-server is https, so
+    // an IP-based websocket rendezvous now fails closed. That is correct, and it also
+    // closes the plain-ws:// bypass (H42).
+    if !conn.is_secured() && !(skipped_for_ws && nemo_rendezvous_ws_is_tls()) {
+        bail!("Refusing an unencrypted rendezvous connection: no KeyExchange completed and the endpoint is not wss://. The server needs --key-exchange=require (or offer); `off` is a debugging option only.");
     }
     Ok(())
 }
@@ -2657,21 +2648,20 @@ pub fn nemo_sealed_request_enabled() -> bool {
     Config::get_option("nemo-sealed-request") == "v1"
 }
 
-// S-C kill switch: "Y" => fail closed on an unsecured rendezvous connection (enforced
-// at the single check in secure_tcp_impl). Default empty = upstream's silent plaintext
-// fallback, unchanged.
-// Review finding: `nemo-require-secure-rendezvous` is managed, so a hostile or simply
-// mistaken policy could switch it on against a server that cannot answer a KeyExchange
-// and brick every client's rendezvous across reboots. This marker is set only after a
-// real handshake has succeeded, and enforcement requires it — so the flag can only ever
-// harden a path that has been observed to work. It is deliberately one-way (a ratchet),
-// and clearing the managed key still disables enforcement entirely.
-pub const OPTION_NEMO_RENDEZVOUS_KX_SEEN: &str = "nemo-rendezvous-kx-seen";
+// The kx-seen ratchet that used to guard the enforcement below is gone with it.
+// It existed because enforcement was a managed policy flag, so a mistaken push could
+// brick every client's rendezvous against a server that answers no KeyExchange; the
+// ratchet made the flag only ever harden a path already observed to work. Enforcement
+// is now unconditional and the flag no longer controls it, so there is nothing left to
+// ratchet -- a server that cannot complete the handshake is a broken server, and
+// `--key-exchange=require` is its default.
 
-pub fn nemo_rendezvous_kx_seen() -> bool {
-    Config::get_option(OPTION_NEMO_RENDEZVOUS_KX_SEEN) == "Y"
-}
-
+/// NOTE: despite the name, this no longer decides whether the rendezvous is secured --
+/// every frame on that plane is encrypted unconditionally. Its ONLY remaining effect is
+/// to skip the unkeyed UDP punch (`rendezvous_mediator.rs`), which sends PunchHoleSent
+/// to the peer as a plain datagram. Kept pending the review of whether UDP punching is
+/// wanted on this topology; renaming it would churn the managed-policy key and the
+/// admin UI for no behaviour change.
 pub fn nemo_require_secure_rendezvous() -> bool {
     Config::get_option("nemo-require-secure-rendezvous") == "Y"
 }
