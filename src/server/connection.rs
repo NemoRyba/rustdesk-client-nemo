@@ -1082,7 +1082,10 @@ impl Connection {
         if conn.authorized {
             password::update_temporary_password();
         }
-        if let Err(err) = conn.try_port_forward_loop(&mut rx_from_cm).await {
+        if let Err(err) = conn
+            .try_port_forward_loop(&mut rx_from_cm, &mut rx_from_authed)
+            .await
+        {
             conn.on_close(&err.to_string(), false).await;
             raii::AuthedConnID::check_remove_session(conn.inner.id(), conn.session_key());
         }
@@ -1215,6 +1218,7 @@ impl Connection {
     async fn try_port_forward_loop(
         &mut self,
         rx_from_cm: &mut mpsc::UnboundedReceiver<Data>,
+        rx_from_authed: &mut mpsc::UnboundedReceiver<Data>,
     ) -> ResultType<()> {
         let mut last_recv_time = Instant::now();
         if let Some(mut forward) = self.port_forward_socket.take() {
@@ -1232,6 +1236,18 @@ impl Connection {
                                 bail!("{e}");
                             }
                             _ => {}
+                        }
+                    }
+                    // Server-issued revocation: `terminate_all_authed_sessions` sends
+                    // Close on `tx_from_authed`, the sender held in AUTHED_CONNS and the
+                    // only handle to a session that has left the main loop. The stream
+                    // is raw here (both ends `set_raw` after login), so no CloseReason
+                    // can be sent: bail with the main loop's reason string and let the
+                    // caller run on_close + check_remove_session, like the CM arm above.
+                    Some(data) = rx_from_authed.recv() => {
+                        if let ipc::Data::Close = data {
+                            log::info!("Closing port forward: revoked by the management server");
+                            bail!("server revocation");
                         }
                     }
                     res = forward.next() => {
