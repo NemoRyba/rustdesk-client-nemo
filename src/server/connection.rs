@@ -1448,9 +1448,31 @@ impl Connection {
         });
     }
 
-    #[inline]
-    async fn post_audit_async(url: String, v: Value) -> ResultType<String> {
-        crate::post_request(url, v.to_string(), "").await
+    // TBFDesk: carry the pinned device key's proof (domain "nemo-audit"); no key
+    // = no upload (an unattributable trail is worse than none). post_request()
+    // is Ok for every status < 500, so refusals are surfaced from the reply here.
+    async fn post_audit_async(url: String, mut v: Value) -> ResultType<String> {
+        let (pk, sig) = crate::common::nemo_device_sign("nemo-audit", &Config::get_id());
+        if pk.is_empty() {
+            log::debug!("audit upload skipped: no device key on this machine");
+            return Ok(String::new());
+        }
+        v["device_key_pub"] = json!(pk);
+        v["device_key_sig"] = json!(sig);
+        let text = crate::post_request(url.clone(), v.to_string(), "").await?;
+        match serde_json::from_str::<Value>(&text) {
+            Ok(r) => {
+                if let Some(err) = r.get("error").and_then(|e| e.as_str()) {
+                    log::warn!("audit upload to {} refused: {}", url, err);
+                }
+            }
+            Err(_) => log::warn!(
+                "audit upload to {}: non-JSON reply: {:.200}",
+                url,
+                text
+            ),
+        }
+        Ok(text)
     }
 
     fn normalize_port_forward_target(pf: &mut PortForward) -> (String, bool) {

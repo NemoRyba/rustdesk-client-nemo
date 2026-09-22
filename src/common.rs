@@ -1187,7 +1187,10 @@ pub fn get_audit_server(api: String, custom: String, typ: String) -> String {
     if url.is_empty() || is_public(&url) {
         return "".to_owned();
     }
-    format!("{}/api/audit/{}", url, typ)
+    // TBFDesk: the sink is the device-key-authenticated route on the management
+    // API (server nemo_management.rs `client_audit`), not RustDesk Pro's
+    // /api/audit/{typ}, which this server never served.
+    format!("{}/nemo/api/client/audit/{}", url, typ)
 }
 
 /// Check if we should use raw TCP proxy for API calls.

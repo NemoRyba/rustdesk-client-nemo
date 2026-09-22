@@ -2053,6 +2053,27 @@ async fn start_one_port_forward<T: InvokeUiSession>(
 
 #[tokio::main(flavor = "current_thread")]
 async fn send_note(url: String, id: String, sid: u64, note: String) {
-    let body = serde_json::json!({ "id": id, "session_id": sid, "note": note });
-    allow_err!(crate::post_request(url, body.to_string(), "").await);
+    // TBFDesk: `id` is the REMOTE peer the note is about; the proof is over OUR
+    // id (device key bound to it server-side); cf. connection.rs post_audit_async.
+    let me = Config::get_id();
+    let (pk, sig) = crate::common::nemo_device_sign("nemo-audit", &me);
+    if pk.is_empty() {
+        log::warn!("audit note not sent: no device key on this machine");
+        return;
+    }
+    let body = serde_json::json!({
+        "id": me, "peer_id": id, "session_id": sid, "note": note,
+        "device_key_pub": pk, "device_key_sig": sig,
+    });
+    match crate::post_request(url.clone(), body.to_string(), "").await {
+        Ok(text) => match serde_json::from_str::<serde_json::Value>(&text) {
+            Ok(r) => {
+                if let Some(err) = r.get("error").and_then(|e| e.as_str()) {
+                    log::warn!("audit note to {} refused: {}", url, err);
+                }
+            }
+            Err(_) => log::warn!("audit note to {}: non-JSON reply: {:.200}", url, text),
+        },
+        Err(e) => log::warn!("audit note to {} failed: {}", url, e),
+    }
 }
