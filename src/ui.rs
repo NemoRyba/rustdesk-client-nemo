@@ -272,6 +272,18 @@ pub fn start(args: &mut [String]) {
 
 struct UI {}
 
+// Options that script may write but must never read back. Keep this list tight and
+// keep the reason with it: an entry here is a secret whose value the GUI has no
+// legitimate use for. `nemo-device-key` is the Layer 1 private key; the import dialog
+// writes it and `nemo_device_key_present()` reports whether one exists, which is all
+// the interface needs.
+const NEMO_SCRIPT_SECRET_OPTIONS: &[&str] = &["nemo-device-key"];
+
+#[inline]
+fn nemo_is_script_secret(key: &str) -> bool {
+    NEMO_SCRIPT_SECRET_OPTIONS.contains(&key.trim())
+}
+
 impl UI {
     fn recent_sessions_updated(&self) -> bool {
         recent_sessions_updated()
@@ -334,6 +346,14 @@ impl UI {
     }
 
     fn get_option(&self, key: String) -> String {
+        // Layer 1: the device key's PRIVATE half lives in this map, so anything that can
+        // read the map from script can clone this machine's identity -- and script runs
+        // on the controlled machine's own screen, which a remote operator is looking at.
+        // The UI never needs the value: nemo_device_key_present() answers the only
+        // question it has. Writing is still allowed; that is the supported import path.
+        if nemo_is_script_secret(&key) {
+            return "".to_owned();
+        }
         get_option(key)
     }
 
@@ -398,6 +418,11 @@ impl UI {
             serde_json::from_str(&get_options()).unwrap_or_default();
         let mut m = Value::map();
         for (k, v) in hashmap {
+            // Same reason as get_option above: this one handed over the WHOLE map, so
+            // filtering only the single-key getter would have left the leak wide open.
+            if nemo_is_script_secret(&k) {
+                continue;
+            }
             m.set_item(k, v);
         }
         m

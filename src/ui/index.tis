@@ -605,16 +605,23 @@ function open_nemo_alias_dialog() {
 // this client authenticates to the server with its own key. Saved to config
 // (nemo-device-key); the poll signs with it.
 function open_import_device_key_dialog() {
-    var cur = handler.get_option("nemo-device-key") || "";
+    // Never read the key back to show it: the field starts empty and is masked. A
+    // remote operator watching this screen could otherwise copy the machine's Layer 1
+    // identity straight out of the input.
+    var configured = handler.nemo_device_key_present();
     msgbox("custom-server", translate("Import device key"),
             <div .form .set-password>
-                <div><span>{translate('Device key')}: </span><input|text .outline-focus name='devkey' value={cur} /></div>
-                <div style="margin-top:6px;opacity:0.7;font-size:0.9em">{translate('Paste the private key generated on your TBFDesk server. Leave empty to remove.')}</div>
+                <div><span>{translate('Device key')}: </span><input|password .outline-focus name='devkey' value='' /></div>
+                <div style="margin-top:6px;opacity:0.7;font-size:0.9em">{configured ? translate('A device key is already configured. Paste a new one to replace it; leave empty to keep the current key.') : translate('Paste the private key generated on your TBFDesk server.')}</div>
             </div>,
             "", function(res=null, show_progress) {
                 if (!res) return;
                 if (typeof show_progress === 'function') show_progress();
-                handler.set_option("nemo-device-key", (res.devkey || "").trim());
+                // Empty now means "no change", not "remove". With no pre-fill an empty
+                // submit would otherwise wipe the key and lock this machine out of the
+                // fleet, since Layer 1 is mandatory.
+                var entered = (res.devkey || "").trim();
+                if (entered) handler.set_option("nemo-device-key", entered);
                 if (typeof show_progress === 'function') show_progress(-1);
             }, 200, get_msgbox_width());
 }
