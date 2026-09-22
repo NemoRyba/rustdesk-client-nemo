@@ -2193,12 +2193,16 @@ async fn nemo_rendezvous_key_exchange(
                                     ),
                                     &device_sk,
                                 );
-                                msg_out.set_nemo_client_auth(NemoClientAuth {
+                                let auth = NemoClientAuth {
                                     client_box_pk: asymmetric_value,
                                     sealed_key: symmetric_value,
                                     device_pub: Bytes::from(device_pk.as_ref().to_vec()),
                                     peer_id,
                                     sig: Bytes::from(sig),
+                                    ..Default::default()
+                                };
+                                msg_out.set_nemo_sealed_auth(NemoSealedAuth {
+                                    sealed: nemo_seal_client_auth(&auth, &rs_pk)?,
                                     ..Default::default()
                                 });
                             }
@@ -2658,6 +2662,20 @@ pub fn nemo_seal_to_mgmt_key(plaintext: &[u8]) -> Option<String> {
     let pk = get_rs_pk(mgmt_pk_b64.trim())?;
     let curve_pk = sign::to_curve25519_pk(&pk).ok()?;
     Some(encode64(&sealedbox::seal(plaintext, &curve_pk)))
+}
+
+// T23: seal a NemoClientAuth to the rendezvous server's long-term key, so device_pub
+// and peer_id stop crossing the wire in the clear on every connection. The session key
+// INSIDE is still sealed to the per-connection ephemeral, so forward secrecy is
+// unchanged; the inner message and its signature payload are untouched.
+fn nemo_seal_client_auth(auth: &NemoClientAuth, rs_pk: &sign::PublicKey) -> ResultType<Bytes> {
+    use hbb_common::sodiumoxide::crypto::sealedbox;
+    let curve_pk = sign::to_curve25519_pk(rs_pk)
+        .map_err(|_| anyhow!("server public key does not convert to curve25519"))?;
+    Ok(Bytes::from(sealedbox::seal(
+        &auth.write_to_bytes()?,
+        &curve_pk,
+    )))
 }
 
 // S-B scope b: wrap a whole client->server request body in a sealed envelope, so no
