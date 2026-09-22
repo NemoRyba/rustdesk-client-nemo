@@ -5,6 +5,7 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("use your Windows credentials", "Windows-Anmeldedaten verwenden"),
         ("address of your TBFDesk server", "Adresse Ihres TBFDesk-Servers"),
         ("Secure login unavailable: the server key could not be verified.", "Sichere Anmeldung nicht verfügbar: Der Serverschlüssel konnte nicht verifiziert werden."),
+        ("Secure login unavailable: the session token could not be opened.", "Sichere Anmeldung nicht verfügbar: Das Sitzungs-Token konnte nicht geöffnet werden."),
         ("Allow insecure TLS (self-signed certificate)", "Unsicheres TLS erlauben (selbstsigniertes Zertifikat)"),
         ("managed by your administrator", "von Ihrem Administrator verwaltet"),
         ("Insecure TLS is currently allowed", "Unsicheres TLS ist derzeit erlaubt"),

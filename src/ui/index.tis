@@ -2643,7 +2643,26 @@ function nemoGateSubmit() {
     var onSuccess = function(data) {
         if (data.error) { abLoading = false; setErr(translate(data.error)); return; }
         if (data.type == 'email_check') { abLoading = false; setErr(""); on_2fa_check(data); return; }
-        handler.set_local_option("access_token", data.access_token);
+        // S-B ("MITM still gets a valid session"): nemo_seal_login puts an ephemeral
+        // reply_pk inside the sealed credential, so the server hands the session token
+        // back SEALED to that key instead of in the clear — an observer of the response
+        // can no longer lift a usable token. The server OMITS access_token whenever it
+        // sealed the reply (nemo_management.rs:1621), so reading data.access_token there
+        // yields `undefined`, the native set_local_option call fails, and the gate never
+        // clears — which is exactly what happened while this block was missing. A server
+        // that predates this omits sealed_access_token instead and we keep today's
+        // behaviour. If the field IS there but will not open, fail closed: never store an
+        // empty token and then behave as if we were signed in.
+        var token = data.access_token;
+        if (data.sealed_access_token) {
+            token = handler.nemo_open_login_reply(data.sealed_access_token);
+            if (!token) {
+                abLoading = false;
+                setErr(translate("Secure login unavailable: the session token could not be opened."));
+                return;
+            }
+        }
+        handler.set_local_option("access_token", token);
         set_local_user_info(data.user);
         nemoGateShown = false;
         nemoLastGate = false;
