@@ -1093,6 +1093,12 @@ impl Client {
                     if !rs.refuse_reason.is_empty() {
                         bail!(rs.refuse_reason);
                     }
+                    // TASK #16: the session id is the grant hbbs minted, not the uuid
+                    // proposed above; hbbr refuses anything else.
+                    if rs.uuid.is_empty() {
+                        bail!("hbbs answered the relay request without a session grant");
+                    }
+                    uuid = rs.uuid;
                     succeed = true;
                     break;
                 }

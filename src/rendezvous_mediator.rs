@@ -540,15 +540,24 @@ impl RendezvousMediator {
             socket_addr: socket_addr.into(),
             version: crate::VERSION.to_owned(),
             socket_addr_v6,
+            uuid: uuid.clone(),
             ..Default::default()
         };
         if initiate {
-            rr.uuid = uuid.clone();
             rr.relay_server = relay_server.clone();
             rr.set_id(Config::get_id());
         }
         msg_out.set_relay_response(rr);
         socket.send(&msg_out).await?;
+        // TASK #16: the session id is minted by hbbs, not by us: a grant signed with
+        // the server key that hbbr verifies. The uuid sent above is only a hint.
+        let uuid = match crate::get_next_nonkeyexchange_msg(&mut socket, Some(CONNECT_TIMEOUT))
+            .await
+            .and_then(|msg| msg.union)
+        {
+            Some(rendezvous_message::Union::RelayResponse(rr)) if !rr.uuid.is_empty() => rr.uuid,
+            _ => bail!("hbbs did not answer the relay response with a session grant"),
+        };
         crate::create_relay_connection(
             server,
             relay_server,
