@@ -709,6 +709,12 @@ fn apply_policy(policy: ManagementPolicy) -> ResultType<()> {
     // S-A: persist the require-encrypted-session flag so the peer handshake can
     // read it (controller refuses plaintext fallback; controlled refuses an
     // unencrypted session) from the very next connection.
+    // The flag now DEFAULTS ON — common.rs::nemo_require_encrypted_session treats
+    // anything but an explicit "N" as "required" — so this unwrap_or_default() is
+    // fail-closed: a policy that STOPS sending the key returns the machine to
+    // "encryption required", it does not re-open the plaintext fallback. Turning
+    // the fallback back on takes an explicit, signed "N". Do not "fix" this into
+    // a skip-on-absent: clearing must land on the safe side.
     Config::set_option(
         "nemo-require-encrypted-session".to_owned(),
         policy

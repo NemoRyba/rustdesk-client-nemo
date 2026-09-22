@@ -88,7 +88,12 @@ impl RendezvousMediator {
                 sleep(1.).await;
             }
         }
-        crate::hbbs_http::sync::start();
+        // TBFDesk: the hbbs HTTP sync thread is gone. It POSTed {api-server}/api/heartbeat
+        // and /api/sysinfo with an empty auth header; this fork serves neither route, and
+        // its `strategy` reply was a second, unauthenticated, unfiltered path into
+        // Config::set_options that bypassed option_scope()/POLICY_DENIED_KEYS. Presence is
+        // the rendezvous-plane RegisterPeer (server PeerMap::runtime_snapshot); config and
+        // session revocation ride the signed /nemo/api/client/policy poll.
         #[cfg(target_os = "windows")]
         if crate::platform::is_installed() && crate::is_server() {
             crate::updater::start_auto_update();
@@ -932,9 +937,12 @@ async fn direct_server(server: ServerPtr) {
                             // B: was `false` (direct-IP always ran plaintext). Enable the
                             // secure handshake so the controlled side sends its SignedId and
                             // a controller holding the server-pushed anchored key encrypts
-                            // the session (server-anchored, no relay). Falls back to plaintext
-                            // for a controller that can't anchor UNLESS policy requires
-                            // encryption, in which case the handshake below fails closed.
+                            // the session (server-anchored, no relay). A controller that
+                            // can't anchor is REFUSED, not downgraded: require-encrypted-
+                            // session now defaults ON, so the handshake below fails closed
+                            // unless an explicit "N" has been set. Note that a controller
+                            // dialling a bare <ip> never runs a handshake at all (see
+                            // Client::_start), so that path is refused here too.
                             true,
                             None, // Direct connections don't have control_permissions
                         )

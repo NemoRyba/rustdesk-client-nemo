@@ -2452,13 +2452,26 @@ pub fn nemo_public_network_blocked() -> bool {
     true
 }
 
-// Nemo S-A: when a managed policy sets `nemo-require-encrypted-session=Y`, the
-// controller must NOT fall back to a plaintext session when the peer's key is
-// absent or mismatched, and the controlled side must REFUSE an unencrypted
-// session — instead of the upstream silent downgrade to plaintext. Default off
-// (empty) preserves upstream behavior until the fleet opts in via policy.
+// Nemo S-A: the controller must NOT fall back to a plaintext session when the
+// peer's key is absent or mismatched, and the controlled side must REFUSE an
+// unencrypted session — instead of the upstream silent downgrade to plaintext.
+//
+// DEFAULT ON. The party best placed to induce the handshake fault that triggers
+// the downgrade is hbbr: create_relay_connection_ clears the control-frame key
+// (server.rs) before the peer-to-peer bytes flow, so the relay sits in the byte
+// path of every relayed session and runs no Layer 1. One flipped byte in the
+// peer's SignedId makes decode_id_pk fail, and the old default handed the relay
+// exactly the plaintext session it had corrupted the frame to get.
+//
+// So an UNSET key has to mean "required", not "ask the policy": a machine that
+// has never polled, or whose policy stopped carrying the key (apply_policy
+// clears on omit, nemo_management_client.rs), must still fail closed.
+//
+// Only an explicit "N" disables it. That is the un-brick path — pushable in a
+// signed policy, or settable locally in the config file to recover a fleet that
+// locked itself out. The relay can reach neither.
 pub fn nemo_require_encrypted_session() -> bool {
-    Config::get_option("nemo-require-encrypted-session") == "Y"
+    Config::get_option("nemo-require-encrypted-session") != "N"
 }
 
 // #2: is this source TBFDesk ID on the admin's server-pushed blocklist? The list
@@ -4075,5 +4088,53 @@ mod tests {
         let (_, sk) = sign::gen_keypair();
         Config::set_option("nemo-device-key".to_string(), encode64(sk.as_ref()));
         assert!(nemo_device_key_present());
+    }
+
+    // S-A: the plaintext-downgrade switch must read as ON unless an operator
+    // explicitly turned it off. hbbr sits in the byte path of every relayed session
+    // and runs no Layer 1, so one flipped byte in the peer's SignedId used to buy it
+    // a fully plaintext session. "Unset" therefore has to mean "required": a machine
+    // that has never polled, or whose policy stopped carrying the key (apply_policy
+    // clears on omit), must still refuse to run in the clear. The Drop guard restores
+    // the operator's value even if an assert panics.
+    #[test]
+    fn nemo_require_encrypted_session_defaults_on() {
+        struct RestoreFlag(String);
+        impl Drop for RestoreFlag {
+            fn drop(&mut self) {
+                Config::set_option(
+                    "nemo-require-encrypted-session".to_string(),
+                    self.0.clone(),
+                );
+            }
+        }
+        let _restore = RestoreFlag(Config::get_option("nemo-require-encrypted-session"));
+
+        // Unset: fresh install, never polled, or a policy that stopped sending the key.
+        Config::set_option("nemo-require-encrypted-session".to_string(), String::new());
+        assert!(
+            nemo_require_encrypted_session(),
+            "an unset nemo-require-encrypted-session must fail CLOSED"
+        );
+        // Explicitly required.
+        Config::set_option(
+            "nemo-require-encrypted-session".to_string(),
+            "Y".to_string(),
+        );
+        assert!(nemo_require_encrypted_session());
+        // The one escape hatch: an explicit "N" (signed policy, or local recovery).
+        Config::set_option(
+            "nemo-require-encrypted-session".to_string(),
+            "N".to_string(),
+        );
+        assert!(!nemo_require_encrypted_session());
+        // Nothing else is an opt-out — not lowercase, not garbage.
+        for v in ["n", "0", "no", "false", "off"] {
+            Config::set_option("nemo-require-encrypted-session".to_string(), v.to_string());
+            assert!(
+                nemo_require_encrypted_session(),
+                "{v:?} must not disable the fail-closed default"
+            );
+        }
     }
 }

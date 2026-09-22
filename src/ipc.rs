@@ -869,8 +869,10 @@ async fn handle(data: Data, stream: &mut Connection) {
                         None
                     };
                 } else if name == "hide_cm" {
-                    value = if crate::hbbs_http::sync::is_pro() || crate::common::is_custom_client()
-                    {
+                    // TBFDesk: `is_pro()` was only ever set true from the hbbs
+                    // /api/heartbeat reply, which this fork does not serve, so it was
+                    // a constant `false`; only the custom-client branch was ever live.
+                    value = if crate::common::is_custom_client() {
                         Some(hbb_common::password_security::hide_cm().to_string())
                     } else {
                         None
