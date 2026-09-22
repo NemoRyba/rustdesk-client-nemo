@@ -623,6 +623,11 @@ function open_import_device_key_dialog() {
                 var entered = (res.devkey || "").trim();
                 if (entered) handler.set_option("nemo-device-key", entered);
                 if (typeof show_progress === 'function') show_progress(-1);
+                // Layer 1: leave (or re-enter) the provisioning gate right away
+                // instead of waiting for the 3 s watcher tick. show_progress(-1) has
+                // already closed the msgbox, so this re-render never runs under it.
+                nemoLastDevKeyGate = null;   // let nemoEnforceLogin treat the next tick as a transition
+                if (app) app.update();
             }, 200, get_msgbox_width());
 }
 
@@ -966,6 +971,9 @@ var nemoGateShown = false;
 // Last gate visibility we rendered (null = unknown), so the watcher only forces a
 // re-render on an actual transition (shown<->hidden) instead of every tick.
 var nemoLastGate = null;
+// Layer 1: last device-key gate visibility we rendered (null = unknown), same
+// transition-only re-render rule as nemoLastGate.
+var nemoLastDevKeyGate = null;
 var nemoLastAbVersion = null;   // #3-push: last server address-book version seen
 
 // Identity-based access helpers. These MUST be defined before class App: App is
@@ -979,6 +987,23 @@ function nemoLoginRequired() {
 }
 function nemoIsLoggedIn() {
     return !!handler.get_local_option("access_token");
+}
+// Layer 1: a usable (well-formed) device key is mandatory; App.render asks this
+// FIRST, before the login gate. The Rust side validates the key, so a pasted
+// garbage value does not count as "present".
+function nemoDeviceKeyPresent() {
+    return !!handler.nemo_device_key_present();
+}
+// Layer 1: the provisioning-gate card (same card look as the login gate below).
+function nemoDevKeyGateCard() {
+    return <div style="margin:*; width:340px; padding:40px 42px; background:#fff; border:1px solid #e2e6ea; border-radius:10px; flow:vertical">
+        <div style="text-align:center; font-size:30px; font-weight:bold; color:#0b7285; margin-bottom:6px">TBFDesk</div>
+        <div style="text-align:center; font-size:16px; font-weight:bold; color:#334; margin-bottom:10px">{translate('This device is not set up yet')}</div>
+        <div style="text-align:center; color:#667; margin-bottom:26px; font-size:13px">{translate('A device key issued by your TBFDesk server is required before this client can be used.')}</div>
+        <div style="text-align:center">
+            <button .button #gate-import-devkey style="padding:11px 44px; background:#0b7285; color:#fff; border:none; border-radius:6px; font-size:15px; font-weight:bold">{translate('Import device key')}</button>
+        </div>
+    </div>;
 }
 // TBFDesk: server address shown/edited on the login gate. Pre-fills with the
 // current api-server (or the ID server host if no api-server is set).
@@ -1680,6 +1705,19 @@ class App: Reactor.Component
     }
 
     function render() {
+        // Layer 1 (provisioning gate): without its offline-exchanged device key this
+        // client is not a fleet member, so it gets NOTHING but the way to become one —
+        // no ID panel, connect field, address book, MyIdMenu or settings dialog.
+        // Evaluated BEFORE the login gate because a login must itself be device-
+        // signed. Same purity rule as the login gate: the import dialog is opened by
+        // the #gate-import-devkey click handler below, never from render().
+        if (!nemoDeviceKeyPresent()) {
+            return
+                <div style="background:#f0f2f5; size:*">
+                    {nemoDevKeyGateCard()}
+                    <div .nemo-build-id title={translate('Identifies the exact running build (git commit and date).')}>{"Build " + handler.get_build_id()}</div>
+                </div>;
+        }
         // Login-first gate: when the server requires login and nobody is signed
         // in, hide the entire UI (ID, connect field, address book) and show only
         // a login screen. render() must stay pure — the login modal is opened by
@@ -2597,6 +2635,19 @@ function set_local_user_info(user) {
 // auto-open the login modal: the gate is shown so the user can read it and click
 // Login themselves (auto-opening it hid the gate and made Cancel a close/reopen loop).
 function nemoEnforceLogin() {
+    // Layer 1: the device key can appear (or vanish) behind our back — provisioned
+    // by the service over IPC, or imported in the dialog — so re-check it every
+    // tick and re-render on a transition only, exactly like the login gate below.
+    // While the provisioning gate is up the login gate is not rendered, so its
+    // focus/cert-probe work is skipped; nemoLastGate is reset so the login gate
+    // re-fires as a fresh transition once a key is present.
+    var devGate = !nemoDeviceKeyPresent();
+    if (devGate !== nemoLastDevKeyGate) {        // shown<->hidden transition only
+        nemoLastDevKeyGate = devGate;
+        nemoLastGate = null;
+        if (app) app.update();
+    }
+    if (devGate) { self.timer(3s, nemoEnforceLogin); return; }
     var gate = nemoLoginRequired() && !nemoIsLoggedIn();
     if (gate !== nemoLastGate) {                 // shown<->hidden transition only
         nemoLastGate = gate;
