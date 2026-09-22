@@ -435,13 +435,6 @@ class Enhancements: Reactor.Component {
     }
 }
 
-function getUserName() {
-    try {
-        return JSON.parse(handler.get_local_option("user_info")).name;
-    } catch(e) {}
-    return '';
-}
-
 function getAccountLabelWithHandle() {
     try {
         var user = JSON.parse(handler.get_local_option("user_info"));
@@ -757,9 +750,7 @@ class MyIdMenu: Reactor.Component {
                 {!disable_settings && <DirectServer />}
                 {!disable_settings && false && handler.using_public_server() && <li #allow-always-relay><span>{svg_checkmark}</span>{translate('Always connect via relay')}</li>}
                 {!disable_change_id && handler.is_ok_change_id() ? <div .separator /> : ""}
-                {!disable_account && (accountLabel ?
-                <li #logout>{translate('Logout')} ({accountLabel})</li> :
-                <li #login>{translate('Login')}</li>)}
+                {!disable_account && accountLabel ? <li #logout>{translate('Logout')} ({accountLabel})</li> : ""}
                 {!disable_change_id && !disable_settings && handler.is_ok_change_id() && key_confirmed && connect_status > 0 ? <li #change-id>{translate('Change ID')}</li> : ""}
                 <div .separator />
                 <li #allow-darktheme><span>{svg_checkmark}</span>{translate('Dark Theme')}</li>
@@ -781,10 +772,6 @@ class MyIdMenu: Reactor.Component {
         if (direct_server) direct_server.update();
         var menu = this.$(menu#config-options);
         this.$(svg#menu).popup(menu);
-    }
-
-    event click $(li#login) () {
-        login();
     }
 
     event click $(li#logout) () {
@@ -1625,7 +1612,6 @@ class NemoSettingsDialog: Reactor.Component {
         else if (act == "edit-direct-port") editDirectAccessPort();
         else if (act == "about") { if (myIdMenu) myIdMenu.showAbout(); }
         else if (act == "change-id") nemoChangeIdDialog();
-        else if (act == "login") { this.close(); login(); }
         else if (act == "logout") { this.close(); logout(); }
         else if (act == "audio") me.popup(this.$(menu#dlg-audio));
         else if (act == "enhancements") me.popup(this.$(menu#dlg-enh));
@@ -2424,11 +2410,6 @@ event click $(li#socks5-server) (_, me) {
     open_proxy_dialog();
 }
 
-event click $(li#login) (_, me) {
-    if (!outgoing_only) return;
-    login();
-}
-
 function self.closing() {
     var (x, y, w, h) = view.box(#rectw, #border, #screen);
     handler.closing(x, y, w, h);
@@ -2673,7 +2654,7 @@ function nemoEnforceLogin() {
 }
 
 // Inline sign-in for the login-first gate: the username/password fields are
-// rendered directly on the gate (no separate modal). Mirrors login()'s /api/login
+// rendered directly on the gate (no separate modal). Mirrors the former login() modal (removed as dead code in task #27)'s /api/login
 // flow but reads the gate inputs and reports errors inline in #gate-error.
 function nemoGateSubmit() {
     var uEl = $(#gate-username), errEl = $(#gate-error);
@@ -2751,69 +2732,6 @@ function nemoGateSubmit() {
         function(err, status) {
             if (managed) { onError(err, status); } else { loginPlain(); }
         });
-}
-
-function login(force = false) {
-    var name0 = getUserName();
-    var pass0 = '';
-    msgbox("custom-login", translate('Login'), <div .form .set-password>
-            <div><span>{translate('Username')}:</span><input|text name="username" value={name0} .outline-focus /></div>
-            <div><span>{translate('Password')}:</span><PasswordComponent value={pass0} /></div>
-        </div>, "", function(res=null, show_progress) {
-        if (!res) {
-            // Cancel just closes the modal. The login gate (logo + text + Login
-            // button) stays visible underneath, so the user can retry by clicking
-            // Login. Do NOT auto-re-prompt — that created a close/reopen deadloop.
-            return;
-        }
-        show_progress();
-        var name = (res.username || '').trim();
-        if (!name) {
-            show_progress(false, translate("Username missed"));
-            return " ";
-        }
-        var pass = (res.password || '').trim();
-        if (!pass) {
-            show_progress(false, translate("Password missed"));
-            return " ";
-        }
-        abLoading = true;
-        var url = handler.get_api_server();
-        httpRequest(url + "/api/login", #post, {username: name, password: pass, id: my_id, uuid: handler.get_uuid(), type: 'account', deviceInfo: getDeviceInfo()}, function(data) {
-            if (data.error) {
-                abLoading = false;
-                var err = translate(data.error);
-                show_progress(false, err);
-                return;
-            }
-            if (data.type == 'email_check') {
-                abLoading = false;
-                show_progress(-1);
-                on_2fa_check(data);
-                return;
-            }
-            handler.set_local_option("access_token", data.access_token);
-            set_local_user_info(data.user);
-            // Reveal the app immediately: drop the login gate now instead of waiting
-            // for the ~3s watcher tick, and load the address book BEFORE closing the
-            // modal. Closing a login modal that the gate transition may have detached
-            // can throw ("has no method show_progress"); doing it last (in try/catch)
-            // means that error can no longer abort the address-book load — which was
-            // why the address book came up empty right after logging in.
-            nemoGateShown = false;
-            nemoLastGate = false;
-            if (app) app.update();
-            if (myIdMenu) myIdMenu.update();
-            getAb();
-            try { show_progress(-1); } catch (e) {}
-        }, function(err, status) {
-            abLoading = false;
-            err = translate(err);
-            if (url.indexOf('rustdesk') < 0) err = url + ', ' + err;
-            show_progress(false, err);
-        });
-        return " ";
-      }, msgbox_default_height, get_msgbox_width());
 }
 
 function on_2fa_check(last_msg) {
