@@ -2647,7 +2647,7 @@ function nemoGateSubmit() {
         // reply_pk inside the sealed credential, so the server hands the session token
         // back SEALED to that key instead of in the clear — an observer of the response
         // can no longer lift a usable token. The server OMITS access_token whenever it
-        // sealed the reply (nemo_management.rs:1621), so reading data.access_token there
+        // sealed the reply (nemo_management.rs:1626), so reading data.access_token there
         // yields `undefined`, the native set_local_option call fails, and the gate never
         // clears — which is exactly what happened while this block was missing. A server
         // that predates this omits sealed_access_token instead and we keep today's
