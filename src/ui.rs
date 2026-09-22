@@ -284,6 +284,50 @@ fn nemo_is_script_secret(key: &str) -> bool {
     NEMO_SCRIPT_SECRET_OPTIONS.contains(&key.trim())
 }
 
+/// A map coming back from script cannot carry the secret keys, because script was never
+/// shown them. Re-insert each one from the live config unless script supplied a value
+/// itself (the import dialog does, through set_option, not through here).
+fn nemo_reinject_script_secrets(
+    m: &mut HashMap<String, String>,
+    live: impl Fn(&str) -> String,
+) {
+    for key in NEMO_SCRIPT_SECRET_OPTIONS {
+        if !m.contains_key(*key) {
+            let v = live(key);
+            if !v.is_empty() {
+                m.insert((*key).to_owned(), v);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod nemo_script_secret_tests {
+    use super::*;
+
+    #[test]
+    fn a_round_tripped_map_keeps_the_device_key() {
+        let mut m: HashMap<String, String> = HashMap::new();
+        m.insert("codec-preference".into(), "vp9".into());
+        nemo_reinject_script_secrets(&mut m, |k| {
+            if k == "nemo-device-key" { "live-secret".into() } else { String::new() }
+        });
+        assert_eq!(m.get("nemo-device-key").map(String::as_str), Some("live-secret"));
+        assert_eq!(m.get("codec-preference").map(String::as_str), Some("vp9"));
+    }
+
+    #[test]
+    fn a_value_script_did_supply_is_left_alone_and_an_empty_live_value_is_not_inserted() {
+        let mut m: HashMap<String, String> = HashMap::new();
+        m.insert("nemo-device-key".into(), "from-script".into());
+        nemo_reinject_script_secrets(&mut m, |_| "live-secret".into());
+        assert_eq!(m.get("nemo-device-key").map(String::as_str), Some("from-script"));
+        let mut empty: HashMap<String, String> = HashMap::new();
+        nemo_reinject_script_secrets(&mut empty, |_| String::new());
+        assert!(!empty.contains_key("nemo-device-key"));
+    }
+}
+
 impl UI {
     fn recent_sessions_updated(&self) -> bool {
         recent_sessions_updated()
@@ -447,6 +491,13 @@ impl UI {
                 }
             }
         }
+        // Script never SEES the secret keys (get_option / get_options filter them), so
+        // a map it round-trips arrives without them -- and ui_interface::set_options
+        // REPLACES the whole map. Absence from script is not a request to delete: put
+        // the live value back, or the settings dialog wipes this machine's Layer 1
+        // identity on every save. (Found by the correctness sweep the same day the
+        // filter landed.)
+        nemo_reinject_script_secrets(&mut m, |k| get_option(k.to_owned()));
         set_options(m);
     }
 
