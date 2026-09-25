@@ -40,7 +40,7 @@ pub(crate) use ipc_auth::ensure_peer_executable_matches_current_by_pid_opt;
 #[cfg(windows)]
 pub(crate) use ipc_auth::log_rejected_windows_ipc_connection;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-use ipc_auth::{active_uid, authorize_service_scoped_ipc_connection};
+use ipc_auth::{active_uid, authorize_main_ipc_connection, authorize_service_scoped_ipc_connection};
 #[cfg(windows)]
 use ipc_auth::{
     authorize_windows_main_ipc_connection, portable_service_listener_security_attributes,
@@ -491,6 +491,14 @@ pub async fn start(postfix: &str) -> ResultType<()> {
                     #[cfg(any(target_os = "linux", target_os = "macos"))]
                     if config::is_service_ipc_postfix(&postfix) {
                         if !authorize_service_scoped_ipc_connection(&stream, &postfix) {
+                            continue;
+                        }
+                    }
+                    #[cfg(any(target_os = "linux", target_os = "macos"))]
+                    if postfix.is_empty() {
+                        // H24: Main IPC on Linux/macOS needs authorization since the socket
+                        // has 0666 permissions (world-writable) by default.
+                        if !authorize_main_ipc_connection(&stream, &postfix) {
                             continue;
                         }
                     }

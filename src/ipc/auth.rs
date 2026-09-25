@@ -571,6 +571,30 @@ fn log_rejected_service_connection(postfix: &str, peer_uid: Option<u32>, active_
     });
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[inline]
+fn log_rejected_main_ipc_connection(postfix: &str, peer_uid: Option<u32>, active_uid: Option<u32>) {
+    static LOG_THROTTLE: OnceLock<Mutex<UnauthorizedIpcLogThrottle>> = OnceLock::new();
+    throttled_unauthorized_ipc_log(&LOG_THROTTLE, |suppressed| {
+        if suppressed > 0 {
+            log::warn!(
+                "Rejected unauthorized connection on main IPC channel: postfix={}, peer_uid={:?}, active_uid={:?} (suppressed {} similar events)",
+                postfix,
+                peer_uid,
+                active_uid,
+                suppressed
+            );
+        } else {
+            log::warn!(
+                "Rejected unauthorized connection on main IPC channel: postfix={}, peer_uid={:?}, active_uid={:?}",
+                postfix,
+                peer_uid,
+                active_uid
+            );
+        }
+    });
+}
+
 #[cfg(target_os = "linux")]
 #[inline]
 pub(crate) fn log_rejected_uinput_connection(
@@ -647,6 +671,36 @@ pub(crate) fn authorize_service_scoped_ipc_connection(stream: &Connection, postf
     if let Err(err) = ensure_peer_executable_matches_current_by_pid_opt(peer_pid, postfix) {
         log::warn!(
             "Rejected unauthorized connection on protected service-scoped IPC channel due to executable mismatch: postfix={}, peer_pid={:?}, err={}",
+            postfix,
+            peer_pid,
+            err
+        );
+        return false;
+    }
+    true
+}
+
+/// H24: Authorization for main IPC on Linux/macOS.
+/// On Linux, the main IPC socket has 0666 permissions (world-writable), so we need
+/// runtime authorization to prevent unauthorized processes from connecting.
+/// 
+/// Authorization policy:
+/// - Peer must be running as the same user as the active user session, OR
+/// - Peer must be running as root (for service startup scenarios)
+/// 
+/// This prevents other users on the system from connecting to the main IPC
+/// channel and gaining control over the RustDesk service.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) fn authorize_main_ipc_connection(stream: &Connection, postfix: &str) -> bool {
+    let peer_pid = stream.peer_pid();
+    let (authorized, peer_uid, active_uid) = stream.main_ipc_authorization_status();
+    if !authorized {
+        log_rejected_main_ipc_connection(postfix, peer_uid, active_uid);
+        return false;
+    }
+    if let Err(err) = ensure_peer_executable_matches_current_by_pid_opt(peer_pid, postfix) {
+        log::warn!(
+            "Rejected unauthorized connection on main IPC due to executable mismatch: postfix={}, peer_pid={:?}, err={}",
             postfix,
             peer_pid,
             err
@@ -758,6 +812,16 @@ where
         // On Linux, `_service` can use the cached active UID from the service loop for
         // stable config sync. Uinput does a fresh active-UID lookup in its own authorizer.
         let active_uid = active_uid();
+        let authorized = peer_uid.is_some_and(|uid| is_allowed_service_peer_uid(uid, active_uid));
+        (authorized, peer_uid, active_uid)
+    }
+
+    /// H24: Authorization status for main IPC on Linux/macOS.
+    /// Authorizes if the peer is running as the active user OR as root.
+    fn main_ipc_authorization_status(&self) -> (bool, Option<u32>, Option<u32>) {
+        let peer_uid = self.peer_uid();
+        let active_uid = active_uid();
+        // Allow root OR the active user (same as service-scoped IPC)
         let authorized = peer_uid.is_some_and(|uid| is_allowed_service_peer_uid(uid, active_uid));
         (authorized, peer_uid, active_uid)
     }
