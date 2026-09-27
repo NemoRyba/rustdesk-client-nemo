@@ -2708,30 +2708,21 @@ function nemoGateSubmit() {
         if (url.indexOf('rustdesk') < 0) err = url + ', ' + err;
         setErr(err);
     };
-    var loginPlain = function() {
-        httpRequest(url + "/api/login", #post,
-            {username: name, password: pass, id: my_id, uuid: handler.get_uuid(), type: 'account', deviceInfo: getDeviceInfo()},
-            onSuccess, onError);
-    };
     var loginSealed = function(sealed) {
         httpRequest(url + "/api/login", #post,
             {sealed: sealed, id: my_id, uuid: handler.get_uuid(), type: 'account', deviceInfo: getDeviceInfo()},
             onSuccess, onError);
     };
-    // S-B: seal the credential to the server's login-encryption key so the password
-    // is confidential regardless of TLS. On a MANAGED client (management key set),
-    // refuse to send plaintext if sealing fails; on an unmanaged/dev client, fall back.
-    var managed = (handler.get_option("nemo-management-public-key") || "").trim() != "";
+    // S-B / N12: the credential is only ever sent sealed to the server's verified
+    // login key. There is no plaintext fallback any more, managed or not: a client
+    // that cannot verify the key cannot sign in, rather than sending the password.
     httpRequest(url + "/api/login-key", #post, {},
         function(keyData) {
             var sealed = (keyData && keyData.signed_key) ? handler.nemo_seal_login(keyData.key || "", keyData.signed_key || "", name, pass) : "";
             if (sealed) { loginSealed(sealed); }
-            else if (managed) { abLoading = false; setErr(translate("Secure login unavailable: the server key could not be verified.")); }
-            else { loginPlain(); }
+            else { abLoading = false; setErr(translate("Secure login unavailable: the server key could not be verified.")); }
         },
-        function(err, status) {
-            if (managed) { onError(err, status); } else { loginPlain(); }
-        });
+        onError);
 }
 
 function on_2fa_check(last_msg) {
