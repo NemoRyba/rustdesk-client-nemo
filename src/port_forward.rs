@@ -187,9 +187,13 @@ async fn connect_and_login(
             },
         }
     }
-    stream.set_raw();
+    // CRITICAL gap (port-forward/RDP plaintext): both ends used to call set_raw()
+    // here, dropping the session cipher AND the framing, so the tunnelled bytes
+    // (an RDP session, whatever the forwarded port carries) crossed the network in
+    // the clear. The stream now stays framed and encrypted: send_raw() seals each
+    // chunk, next() opens it. Both ends of a forward must run this version.
     if !buffer.is_empty() {
-        allow_err!(stream.send_bytes(buffer.into()).await);
+        allow_err!(stream.send_raw(buffer.to_vec()).await);
     }
     Ok(Some(stream))
 }
@@ -202,7 +206,7 @@ async fn run_forward(forward: Framed<TcpStream, BytesCodec>, stream: Stream) -> 
         tokio::select! {
             res = forward.next() => {
                 if let Some(Ok(bytes)) = res {
-                    allow_err!(stream.send_bytes(bytes.into()).await);
+                    allow_err!(stream.send_raw(bytes.to_vec()).await);
                 } else {
                     break;
                 }

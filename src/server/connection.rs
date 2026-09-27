@@ -1223,7 +1223,8 @@ impl Connection {
         let mut last_recv_time = Instant::now();
         if let Some(mut forward) = self.port_forward_socket.take() {
             log::info!("Running port forwarding loop");
-            self.stream.set_raw();
+            // The session cipher stays on for the tunnel (see port_forward.rs):
+            // send_raw() seals each chunk, stream.next() opens it.
             loop {
                 tokio::select! {
                     Some(data) = rx_from_cm.recv() => {
@@ -1241,8 +1242,8 @@ impl Connection {
                     // Server-issued revocation: `terminate_all_authed_sessions` sends
                     // Close on `tx_from_authed`, the sender held in AUTHED_CONNS and the
                     // only handle to a session that has left the main loop. The stream
-                    // is raw here (both ends `set_raw` after login), so no CloseReason
-                    // can be sent: bail with the main loop's reason string and let the
+                    // carries tunnel bytes here, not Messages, so no CloseReason can be
+                    // sent: bail with the main loop's reason string and let the
                     // caller run on_close + check_remove_session, like the CM arm above.
                     Some(data) = rx_from_authed.recv() => {
                         if let ipc::Data::Close = data {
@@ -1253,7 +1254,7 @@ impl Connection {
                     res = forward.next() => {
                         if let Some(res) = res {
                             last_recv_time = Instant::now();
-                            self.stream.send_bytes(res?.into()).await?;
+                            self.stream.send_raw(res?.to_vec()).await?;
                         } else {
                             bail!("Forward reset by the peer");
                         }
