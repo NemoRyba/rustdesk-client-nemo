@@ -1147,7 +1147,14 @@ fn get_api_server_(api: String, custom: String) -> String {
             return format!("http://{}", s);
         }
     }
-    "https://admin.rustdesk.com".to_owned()
+    // Standalone fork (2026-09-28): the stock fallback here was RustDesk's own
+    // "https://admin.rustdesk.com" -- so a client with no licence, no api option and
+    // no custom-rendezvous-server (a fresh install before provisioning) would send its
+    // address-book/login/currentUser requests to a third party's server by default.
+    // This fork always has its own server; there is nothing correct to fall back to,
+    // so fall back to nothing. Every caller of get_api_server() already treats an
+    // empty string as "no request" (see is_public()'s callers) rather than dereferencing it.
+    String::new()
 }
 
 #[inline]
