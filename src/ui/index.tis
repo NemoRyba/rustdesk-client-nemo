@@ -102,15 +102,16 @@ class ConnectStatus: Reactor.Component {
             return translate('connecting_status');
         }
         if (!handler.using_public_server()) return translate('Ready');
-        return <span>{translate("Ready")}, <span .link #setup-server>{translate("setup_server_tip")}</span></span>;
+        // Standalone fork: this used to be a clickable link to RustDesk's own blog
+        // post about setting up a server. This client has no default public server
+        // to fall back to any more (an unconfigured install just has nothing
+        // configured, not "using rustdesk.com"), so the advice still applies but
+        // there is nowhere of ours to send someone -- plain text, not a link out.
+        return <span>{translate("Ready")}, {translate("setup_server_tip")}</span>;
     }
 
     event click $(#start-service) () {
         handler.set_option("stop-service", "");
-    }
-
-    event click $(#setup-server) () {
-        handler.open_url("https://rustdesk.com/blog/id-relay-set/");
     }
 }
 
