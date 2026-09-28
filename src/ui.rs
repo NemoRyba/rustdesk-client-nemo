@@ -967,6 +967,13 @@ impl UI {
         crate::common::nemo_device_key_present()
     }
 
+    // R6-14: lets the import dialog validate a pasted candidate BEFORE committing it,
+    // instead of writing it unconditionally and finding out afterward (via the gate
+    // reappearing, with no explanation) that it did not parse.
+    fn nemo_device_key_candidate_valid(&self, candidate: String) -> bool {
+        crate::common::nemo_device_key_candidate_valid(&candidate)
+    }
+
     // Login-gate certificate probe (accept-invalid; diagnostic only).
     fn nemo_cert_info_start(&self, url: String) {
         crate::common::nemo_cert_info_start(url);
@@ -1126,6 +1133,7 @@ impl sciter::EventHandler for UI {
         fn nemo_seal_envelope(String);
         fn nemo_sealed_request_enabled();
         fn nemo_device_key_present();
+        fn nemo_device_key_candidate_valid(String);
         fn nemo_cert_info_start(String);
         fn nemo_cert_info_result();
         fn nemo_save_text_file(String, String);

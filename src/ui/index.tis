@@ -614,6 +614,14 @@ function open_import_device_key_dialog() {
                 // submit would otherwise wipe the key and lock this machine out of the
                 // fleet, since Layer 1 is mandatory.
                 var entered = (res.devkey || "").trim();
+                if (entered && !handler.nemo_device_key_candidate_valid(entered)) {
+                    // R6-14: used to be written unconditionally, so a bad paste closed
+                    // the dialog as if it had worked and only showed up later as the
+                    // provisioning gate silently reappearing, with nothing saying why.
+                    // Returning a string here keeps the dialog open with the error
+                    // instead (same contract the IP-whitelist dialog uses).
+                    return translate("That is not a valid device key. Check you copied the whole key with nothing else attached.");
+                }
                 if (entered) handler.set_option("nemo-device-key", entered);
                 if (typeof show_progress === 'function') show_progress(-1);
                 // Layer 1: leave (or re-enter) the provisioning gate right away

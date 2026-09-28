@@ -2604,6 +2604,42 @@ pub fn nemo_device_key_present() -> bool {
     nemo_device_ed25519().is_some()
 }
 
+// R6-14: the "Import device key" dialog used to hand whatever was pasted straight to
+// set_option with no check at all. A typo or a copy-paste mistake (wrong field, a
+// trailing space eaten by a browser, half the key) still closed the dialog as if it
+// had worked, and the machine silently fell straight back to "not yet provisioned" --
+// same underlying bug shape as N9/M21, just for a secret instead of a hostname.
+//
+// This checks more than nemo_device_ed25519() does, on purpose: libsodium's 64-byte
+// "expanded" secret key is laid out seed(32)||precomputed-public(32), and
+// PublicKey::from_slice on the second half only checks its LENGTH -- it does not
+// recompute it, so any 64 well-formed-length bytes "parse". A pasted key generated
+// by this server's own `sign::gen_keypair()` always has that second half correctly
+// derived from the seed; nothing else plausibly does. Re-deriving the keypair from
+// the candidate's seed half with keypair_from_seed and comparing catches exactly the
+// pastes worth catching (truncated, garbled, wrong field, a relay/admin key instead
+// of a device key) while every genuine device key still passes, since re-deriving a
+// genuine key's seed reproduces the exact same 64 bytes it started as.
+//
+// The candidate is never written to Config, so the dialog can validate before it
+// commits rather than after the machine is already locked out.
+pub fn nemo_device_key_candidate_valid(candidate: &str) -> bool {
+    use hbb_common::sodiumoxide::crypto::sign;
+    let candidate = candidate.trim();
+    if candidate.is_empty() {
+        return false;
+    }
+    let Ok(sk_bytes) = decode64(candidate) else {
+        return false;
+    };
+    let Some(seed) = sign::Seed::from_slice(&sk_bytes[..sk_bytes.len().min(sign::SEEDBYTES)])
+    else {
+        return false;
+    };
+    let (_, derived_sk) = sign::keypair_from_seed(&seed);
+    sk_bytes.len() == sign::SECRETKEYBYTES && derived_sk.as_ref() == sk_bytes.as_slice()
+}
+
 // S-DUALKEY: sign "{domain}:{id}:{ts}" with the imported device key. The domain
 // separates endpoints ("nemo-poll" for the policy poll, "nemo-ab" for the address
 // book) so a captured signature for one cannot be replayed against the other.
@@ -3463,6 +3499,29 @@ mod tests {
         time::{interval, interval_at, sleep, Duration, Instant, Interval},
     };
     use std::collections::HashSet;
+
+    #[test]
+    fn device_key_candidate_valid_matches_the_generation_algorithm() {
+        use hbb_common::sodiumoxide::crypto::sign;
+        let (_, sk) = sign::gen_keypair();
+        let real = encode64(sk.as_ref());
+        assert!(nemo_device_key_candidate_valid(&real), "a genuine generated key must validate");
+        // Whitespace a paste commonly picks up must not fail it.
+        assert!(nemo_device_key_candidate_valid(&format!("  {real}\n")));
+
+        assert!(!nemo_device_key_candidate_valid(""), "empty");
+        assert!(!nemo_device_key_candidate_valid("   "), "whitespace only");
+        assert!(!nemo_device_key_candidate_valid("not base64 at all!!"), "not base64");
+        assert!(!nemo_device_key_candidate_valid(&real[..real.len() - 8]), "truncated");
+        assert!(!nemo_device_key_candidate_valid(&(real.clone() + "AAAA")), "padded longer");
+        // A well-formed but foreign 64-byte blob (e.g. someone pasted a relay key or
+        // random base64 of the right length) must still fail: it has to parse as an
+        // actual Ed25519 secret key, not just be the right number of bytes.
+        assert!(!nemo_device_key_candidate_valid(&base64::encode([7u8; 64])));
+        // The device key's public HALF specifically, not the whole secret key --
+        // easy to paste by mistake if a public key was generated alongside it.
+        assert!(!nemo_device_key_candidate_valid(&base64::encode(sk.public_key().as_ref())));
+    }
 
     // A4: fingerprint parsing accepts colon/upper/lower and rejects wrong lengths.
     #[test]
