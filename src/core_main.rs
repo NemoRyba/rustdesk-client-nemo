@@ -661,14 +661,30 @@ pub fn core_main() -> Option<Vec<String>> {
                 println!("Settings are disabled!");
                 return None;
             }
+            // R6-13: args[1] used to be indexed unconditionally, so a bare `--option`
+            // (no key at all) panicked instead of erroring. And `--force` was counted
+            // as a positional the same way any real value was, so `--option key
+            // --force` (key, no value, just the flag) silently wrote the literal
+            // string "--force" as the option's value. Separate the `--force` FLAG
+            // from the positional key/value first; only a positional arg is ever
+            // treated as the value.
+            let positional: Vec<&str> = args[1..]
+                .iter()
+                .map(String::as_str)
+                .filter(|a| *a != "--force")
+                .collect();
+            let Some(&key) = positional.first() else {
+                println!("Usage: --option <key> [value] [--force]. See --help.");
+                return None;
+            };
             if crate::platform::is_installed() && is_root() {
                 // H26. Hygiene, not a privilege boundary -- the caller is already root
                 // and can read the config file directly. What it buys is that the device
                 // private key stops landing in terminal scrollback, `script`/tmux
                 // captures, CI logs and sudo audit trails, and that a trust-root repoint
                 // stops being a one-liner you can fat-finger.
-                let key = args[1].as_str();
-                let has_value = args.len() >= 3;
+                let value = positional.get(1).copied();
+                let has_value = value.is_some();
                 let force = args.iter().any(|x| x == "--force");
                 match option_cli_action(key, has_value, force) {
                     OptionCliAction::Refuse(msg) => println!("{msg} (option: {key})"),
@@ -686,7 +702,8 @@ pub fn core_main() -> Option<Vec<String>> {
                                 std::env::current_exe().ok()
                             );
                         }
-                        crate::ipc::set_option(key, &args[2]);
+                        // has_value guarantees Write is only reachable with Some(v).
+                        crate::ipc::set_option(key, value.unwrap_or_default());
                     }
                 }
             } else {
