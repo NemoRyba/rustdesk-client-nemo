@@ -232,10 +232,15 @@ fn apply_session_revocation(terminate_sessions_before: u64) {
 }
 
 fn check_policy_freshness(issued_ts: u64, high_water: u64, now: u64) -> Result<(), String> {
+    // R6-12: there is no backward-compatibility exemption. issued_ts is inside the
+    // SIGNED payload, so a MITM cannot forge one by stripping the stamp off a current
+    // response — but the previous `issued_ts == 0` bypass didn't defend against that;
+    // it defended against breaking policy sync with a pre-A2 server that never sent a
+    // stamp. This fleet no longer runs one, so the bypass only ever gave a captured
+    // pre-A2 (or briefly-downgraded) response permanent, unaged replayability. A
+    // missing stamp is now refused outright, the same as an out-of-window one.
     if issued_ts == 0 {
-        // Older server that does not stamp issued_ts — no rollback protection possible;
-        // accept for backward compatibility (the signature still guarantees authenticity).
-        return Ok(());
+        return Err("policy has no issued_ts (unstamped/pre-rollback-protection responses are refused)".to_owned());
     }
     // Anti-rollback: never step to an OLDER policy than one we already applied.
     if issued_ts < high_water {
@@ -512,9 +517,8 @@ fn sync_policy() -> ResultType<()> {
     if let Err(reason) = check_policy_freshness(payload.issued_ts, high_water, now) {
         bail!("management policy rejected: {reason}");
     }
-    if payload.issued_ts == 0 {
-        log::warn!("Nemo management: policy has no issued_ts (older server); rollback protection unavailable");
-    } else if payload.issued_ts > high_water {
+    // check_policy_freshness already refused issued_ts == 0, so this is always > 0.
+    if payload.issued_ts > high_water {
         Config::set_option(
             OPTION_NEMO_POLICY_ISSUED_TS.to_owned(),
             payload.issued_ts.to_string(),
@@ -952,8 +956,12 @@ mod tests {
         assert!(check_policy_freshness(now - 601, now - 601, now).is_err());
         // Absurd future timestamp: refused.
         assert!(check_policy_freshness(now + 601, 0, now).is_err());
-        // issued_ts == 0 (older server, no stamp): accepted for backward compat.
-        assert!(check_policy_freshness(0, now, now).is_ok());
+        // R6-12: issued_ts == 0 (unstamped, e.g. a pre-A2 or downgraded server) is
+        // refused outright -- there is no backward-compatibility exemption. A captured
+        // unstamped response must not be replayable forever just because rejecting it
+        // would have broken sync with an old server this fleet no longer runs.
+        assert!(check_policy_freshness(0, now, now).is_err());
+        assert!(check_policy_freshness(0, 0, now).is_err(), "no exemption even with an empty high-water mark");
     }
 
     // Scope (b): the poll body is today's plain shape while nemo-sealed-request is
