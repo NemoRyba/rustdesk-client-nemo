@@ -1344,6 +1344,7 @@ var NEMO_SETTING_TIPS = {
     "edit-direct-port": "The network port used for direct IP access.",
     "share-rdp": "Share Windows Remote Desktop (RDP) sessions through TBFDesk.",
     "allow-darktheme": "Use the dark color scheme for the app.",
+    "allow-sync-clipboard-between-sessions": "Text or images copied in one remote session are also sent to the clipboard of your other connected sessions.",
     "allow-auto-update": "Automatically download and install new versions of the client.",
     "audio": "Choose which microphone or sound the connecting person hears from this computer.",
     "enhancements": "Extra image and session options (hardware acceleration, adaptive quality, and more).",
@@ -1472,6 +1473,9 @@ class NemoSettingsDialog: Reactor.Component {
             if (is_win && handler.is_installed()) gen.push(this.tRow("share-rdp", translate('Enable RDP session sharing'), handler.is_share_rdp(), false, "rdp"));
         }
         gen.push(this.tRow("allow-darktheme", translate('Dark Theme'), handler.get_option("allow-darktheme") == "Y", handler.is_option_fixed("allow-darktheme"), "theme"));
+        // Per-user local option (RustDesk_local.toml), like upstream: a clipboard received in
+        // one remote session is also offered to this machine's other remote sessions.
+        gen.push(this.tRow("allow-sync-clipboard-between-sessions", translate('Sync clipboard between sessions'), handler.get_local_option("allow-sync-clipboard-between-sessions") == "Y", handler.is_option_fixed("allow-sync-clipboard-between-sessions"), "local"));
         if (!disable_installation) {
             // Auto update is DORMANT until the TBF update server exists
             // (OPEN-TODOS HIGH #1): the row is greyed and fully non-interactive
@@ -1573,6 +1577,10 @@ class NemoSettingsDialog: Reactor.Component {
         } else if (kind == "theme") {
             handler.set_option("allow-darktheme", handler.get_option("allow-darktheme") == "Y" ? default_option_no : "Y");
             updateTheme();
+        } else if (kind == "local") {
+            // Per-user Y/N option in RustDesk_local.toml. set_local_option already
+            // refuses admin-fixed keys, and the row is greyed for those (data-fixed).
+            handler.set_local_option(id, handler.get_local_option(id) == "Y" ? "N" : "Y");
         } else if (kind == "rdp") {
             handler.set_share_rdp(!handler.is_share_rdp());
         } else if (kind == "direct") {

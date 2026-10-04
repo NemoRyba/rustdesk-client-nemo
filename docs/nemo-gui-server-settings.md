@@ -13,7 +13,8 @@ writes these persisted options across launches:
 - `nemo-company-network-only`
 
 When the Windows executable name contains custom server data, for example
-`rustdesk-host=192.168.0.176,key=...,.exe`, that executable configuration stays
+`rustdesk-host=192.168.1.14,key=...,relay=192.168.1.14,.exe` (LAN) or
+`rustdesk-host=85.126.226.2,key=...,relay=85.126.226.2,.exe` (internet), that executable configuration stays
 higher priority than the saved GUI settings. In this mode the GUI shows
 `ID/Relay Server (locked)` and opens a read-only information dialog instead of
 allowing edits. Attempts to change the same server keys through the Sciter

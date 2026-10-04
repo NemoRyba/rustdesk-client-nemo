@@ -14,6 +14,33 @@ pub const CLIPBOARD_INTERVAL: u64 = 333;
 // This format is used to store the flag in the clipboard.
 const RUSTDESK_CLIPBOARD_OWNER_FORMAT: &'static str = "dyn.com.rustdesk.owner";
 
+// Upstream f28ac38cc (sync clipboard between sessions), Sciter port. Upstream relays a
+// clipboard received in one session to the other sessions of the same Flutter process.
+// Every Sciter remote session is its own process, so instead the CLIENT owner marker
+// carries a per-process instance id, and a controller's clipboard watcher forwards
+// content that a DIFFERENT controller process on this machine wrote (see
+// `ClipboardSide::is_from_other_session`). Off by default; per-user local option.
+pub const OPTION_ALLOW_SYNC_CLIPBOARD_BETWEEN_SESSIONS: &str =
+    "allow-sync-clipboard-between-sessions";
+
+// Read from disk, not from this process's `LOCAL_CONFIG` cache: the toggle is written
+// by the main-window process and must reach session processes that are already open.
+// Only evaluated after a sibling-session marker was seen, so the file read is rare.
+pub fn is_sync_clipboard_between_sessions_enabled() -> bool {
+    hbb_common::config::option2bool(
+        OPTION_ALLOW_SYNC_CLIPBOARD_BETWEEN_SESSIONS,
+        &hbb_common::config::LocalConfig::get_option_from_file(
+            OPTION_ALLOW_SYNC_CLIPBOARD_BETWEEN_SESSIONS,
+        ),
+    )
+}
+
+lazy_static::lazy_static! {
+    // Random per-process id appended to the client owner marker, so a session process
+    // can tell its own clipboard writes from those of sibling session processes.
+    static ref CLIPBOARD_INSTANCE_ID: [u8; 8] = hbb_common::rand::random::<u64>().to_le_bytes();
+}
+
 // Add special format for Excel XML Spreadsheet
 const CLIPBOARD_FORMAT_EXCEL_XML_SPREADSHEET: &'static str = "XML Spreadsheet";
 
@@ -149,7 +176,9 @@ pub fn check_clipboard_files(
 pub fn update_clipboard_files(files: Vec<String>, side: ClipboardSide) {
     if !files.is_empty() {
         std::thread::spawn(move || {
-            do_update_clipboard_(vec![ClipboardData::FileUrl(files)], side);
+            // File clipboards are never synced between sessions: the urls point at this
+            // session's own fuse mount.
+            do_update_clipboard_(vec![ClipboardData::FileUrl(files)], side, false);
         });
     }
 }
@@ -229,11 +258,18 @@ fn update_clipboard_(multi_clipboards: Vec<Clipboard>, side: ClipboardSide) {
     if to_update_data.is_empty() {
         return;
     }
-    do_update_clipboard_(to_update_data, side);
+    do_update_clipboard_(to_update_data, side, true);
 }
 
+// `syncable`: whether a sibling controller session on this machine may forward this
+// write to its own peer when "sync clipboard between sessions" is on (text/images from
+// a peer: yes; file clipboards: no, see `update_clipboard_files`).
 #[cfg(not(target_os = "android"))]
-fn do_update_clipboard_(mut to_update_data: Vec<ClipboardData>, side: ClipboardSide) {
+fn do_update_clipboard_(
+    mut to_update_data: Vec<ClipboardData>,
+    side: ClipboardSide,
+    syncable: bool,
+) {
     let mut ctx = CLIPBOARD_CTX.lock().unwrap();
     if ctx.is_none() {
         match ClipboardContext::new() {
@@ -247,9 +283,14 @@ fn do_update_clipboard_(mut to_update_data: Vec<ClipboardData>, side: ClipboardS
         }
     }
     if let Some(ctx) = ctx.as_mut() {
+        let owner_data = if syncable {
+            side.get_owner_data()
+        } else {
+            side.get_owner_data_no_sync()
+        };
         to_update_data.push(ClipboardData::Special((
             RUSTDESK_CLIPBOARD_OWNER_FORMAT.to_owned(),
-            side.get_owner_data(),
+            owner_data,
         )));
         if let Err(e) = ctx.set(&to_update_data) {
             log::debug!("Failed to set clipboard: {}", e);
@@ -367,7 +408,14 @@ impl ClipboardContext {
         if !force {
             for c in data.iter() {
                 if let ClipboardData::Special((s, d)) = c {
-                    if s == RUSTDESK_CLIPBOARD_OWNER_FORMAT && side.is_owner(d) {
+                    // Written by TBFDesk itself: don't echo it back — unless it came from
+                    // another controller session on this machine and the user opted into
+                    // syncing the clipboard between sessions.
+                    if s == RUSTDESK_CLIPBOARD_OWNER_FORMAT
+                        && side.is_owner(d)
+                        && !(side.is_from_other_session(d)
+                            && is_sync_clipboard_between_sessions_enabled())
+                    {
                         return Ok(vec![]);
                     }
                 }
@@ -465,12 +513,13 @@ impl ClipboardContext {
                     ""
                 }
                 .to_string();
+                // No-sync marker: a sibling session must not forward the placeholder text.
                 self.inner
                     .set_formats(&[
                         ClipboardData::Text(clear_holder_text),
                         ClipboardData::Special((
                             RUSTDESK_CLIPBOARD_OWNER_FORMAT.to_owned(),
-                            side.get_owner_data(),
+                            side.get_owner_data_no_sync(),
                         )),
                     ])
                     .ok();
@@ -535,8 +584,26 @@ pub enum ClipboardSide {
 
 impl ClipboardSide {
     // 01: the clipboard is owned by the host
-    // 10: the clipboard is owned by the client
+    // 10: the clipboard is owned by the client, followed by the writing process's
+    //     instance id (see CLIPBOARD_INSTANCE_ID). Readers only look at byte 0 to
+    //     decide ownership, so the id is transparent to older builds and to the host.
     fn get_owner_data(&self) -> Vec<u8> {
+        match self {
+            ClipboardSide::Host => vec![0b01],
+            ClipboardSide::Client => Self::client_owner_data(&*CLIPBOARD_INSTANCE_ID),
+        }
+    }
+
+    fn client_owner_data(instance_id: &[u8; 8]) -> Vec<u8> {
+        let mut data = vec![0b10];
+        data.extend_from_slice(instance_id);
+        data
+    }
+
+    // Marker for writes that must never be forwarded to sibling sessions (file
+    // clipboards, the clear-files placeholder): no instance id, so
+    // `is_from_other_session` is false for every reader.
+    fn get_owner_data_no_sync(&self) -> Vec<u8> {
         match self {
             ClipboardSide::Host => vec![0b01],
             ClipboardSide::Client => vec![0b10],
@@ -548,6 +615,105 @@ impl ClipboardSide {
             return false;
         }
         data[0] & 0b11 != 0
+    }
+
+    // True when `data` is a client owner marker written by a DIFFERENT controller
+    // session process than this one. A marker without an instance id (empty tail) is
+    // treated as our own, so nothing changes for markers older builds wrote.
+    fn is_from_other_session(&self, data: &[u8]) -> bool {
+        Self::is_from_other_session_impl(*self, data, &*CLIPBOARD_INSTANCE_ID)
+    }
+
+    fn is_from_other_session_impl(side: Self, data: &[u8], own_id: &[u8; 8]) -> bool {
+        // Compare only the id bytes so a backend that pads the payload can't make a
+        // process mistake its own marker for a sibling's.
+        side == ClipboardSide::Client
+            && data.first().map_or(false, |b| b & 0b10 != 0)
+            && data.get(1..1 + own_id.len()).map_or(false, |id| id != &own_id[..])
+    }
+}
+
+#[cfg(test)]
+mod owner_marker_tests {
+    use super::ClipboardSide;
+
+    const ME: [u8; 8] = [1, 2, 3, 4, 5, 6, 7, 8];
+    const OTHER: [u8; 8] = [8, 7, 6, 5, 4, 3, 2, 1];
+
+    #[test]
+    fn client_marker_carries_instance_id_and_stays_owner() {
+        let data = ClipboardSide::client_owner_data(&ME);
+        assert_eq!(data[0], 0b10);
+        assert_eq!(&data[1..], &ME);
+        assert!(ClipboardSide::Client.is_owner(&data));
+        assert!(ClipboardSide::Host.is_owner(&data));
+    }
+
+    #[test]
+    fn only_other_controller_processes_count_as_other_sessions() {
+        let mine = ClipboardSide::client_owner_data(&ME);
+        let theirs = ClipboardSide::client_owner_data(&OTHER);
+        assert!(!ClipboardSide::is_from_other_session_impl(ClipboardSide::Client, &mine, &ME));
+        assert!(ClipboardSide::is_from_other_session_impl(ClipboardSide::Client, &theirs, &ME));
+        // The host side never syncs between sessions this way.
+        assert!(!ClipboardSide::is_from_other_session_impl(ClipboardSide::Host, &theirs, &ME));
+        // A host-written marker is not a sibling session either.
+        assert!(!ClipboardSide::is_from_other_session_impl(ClipboardSide::Client, &[0b01], &ME));
+        // Legacy client marker without an id: treated as our own (no behaviour change).
+        assert!(!ClipboardSide::is_from_other_session_impl(ClipboardSide::Client, &[0b10], &ME));
+        assert!(!ClipboardSide::is_from_other_session_impl(ClipboardSide::Client, &[], &ME));
+        // Trailing padding after the id must not change the classification.
+        let mut padded_mine = mine.clone();
+        padded_mine.extend_from_slice(&[0, 0, 0]);
+        assert!(!ClipboardSide::is_from_other_session_impl(ClipboardSide::Client, &padded_mine, &ME));
+        let mut padded_theirs = theirs.clone();
+        padded_theirs.extend_from_slice(&[0, 0, 0]);
+        assert!(ClipboardSide::is_from_other_session_impl(ClipboardSide::Client, &padded_theirs, &ME));
+        // A truncated id is unknown territory: treat as our own (never forward).
+        assert!(!ClipboardSide::is_from_other_session_impl(ClipboardSide::Client, &theirs[..5], &ME));
+    }
+
+    #[test]
+    fn no_sync_marker_is_owned_but_never_a_sibling_session() {
+        for side in [ClipboardSide::Client, ClipboardSide::Host] {
+            let data = side.get_owner_data_no_sync();
+            assert_eq!(data.len(), 1);
+            assert!(ClipboardSide::Client.is_owner(&data));
+            assert!(!ClipboardSide::is_from_other_session_impl(ClipboardSide::Client, &data, &ME));
+            assert!(!ClipboardSide::is_from_other_session_impl(ClipboardSide::Client, &data, &OTHER));
+        }
+    }
+}
+
+#[cfg(all(test, not(target_os = "android")))]
+mod peer_marker_tests {
+    use super::{
+        proto::from_multi_clipboards, CLIPBOARD_FORMAT_EXCEL_XML_SPREADSHEET,
+        RUSTDESK_CLIPBOARD_OWNER_FORMAT,
+    };
+    use hbb_common::message_proto::{Clipboard, ClipboardFormat};
+
+    fn special(name: &str) -> Clipboard {
+        Clipboard {
+            format: ClipboardFormat::Special.into(),
+            special_name: name.to_owned(),
+            content: vec![0u8].into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn peer_supplied_owner_marker_is_dropped_other_specials_kept() {
+        let out = from_multi_clipboards(vec![
+            special(RUSTDESK_CLIPBOARD_OWNER_FORMAT),
+            special(&RUSTDESK_CLIPBOARD_OWNER_FORMAT.to_ascii_uppercase()),
+            special(CLIPBOARD_FORMAT_EXCEL_XML_SPREADSHEET),
+        ]);
+        assert_eq!(out.len(), 1);
+        assert!(matches!(
+            &out[0],
+            arboard::ClipboardData::Special((name, _)) if name == CLIPBOARD_FORMAT_EXCEL_XML_SPREADSHEET
+        ));
     }
 }
 
@@ -700,6 +866,18 @@ mod proto {
                 std::str::from_utf8(&data).unwrap_or_default(),
             ))),
             Ok(ClipboardFormat::Special) => {
+                // Never accept the owner marker from a peer. It is appended locally by
+                // `do_update_clipboard_` and decides whether the local watcher echoes or
+                // forwards the content; a sender never emits it (`get_formats_filter`
+                // strips it), and on X11/Wayland the first entry of a duplicated format
+                // wins, so a peer-supplied one would override ours. Case-insensitive
+                // because Win32 RegisterClipboardFormat treats names that way.
+                if clipboard
+                    .special_name
+                    .eq_ignore_ascii_case(super::RUSTDESK_CLIPBOARD_OWNER_FORMAT)
+                {
+                    return None;
+                }
                 Some(ClipboardData::Special((clipboard.special_name, data)))
             }
             _ => None,
