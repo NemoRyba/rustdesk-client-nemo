@@ -194,6 +194,8 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("scam_text2", "They are likely a scammer trying to steal your money or other private information."),
         ("auto_disconnect_option_tip", "Automatically close incoming sessions on user inactivity"),
         ("Connection failed due to inactivity", "Automatically disconnected due to inactivity"),
+        ("Session ended by the TBF server: your access was revoked", "An administrator revoked your access, so this session was ended by the TBF server. Reconnecting will not work until your access is restored."),
+        ("Session ended: the remote machine stopped its TBFDesk service", "The remote machine stopped its TBFDesk service, so the session ended. Nobody hung up on you and your access is unchanged."),
         ("upgrade_rustdesk_server_pro_to_{}_tip", "Please upgrade RustDesk Server Pro to version {} or newer!"),
         ("pull_group_failed_tip", "Failed to refresh group"),
         ("doc_fix_wayland", "https://rustdesk.com/docs/en/client/linux/#x11-required"),

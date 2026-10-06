@@ -940,7 +940,14 @@ impl Connection {
                         Some(message::Union::Misc(m)) => {
                             match &m.union {
                                 Some(misc::Union::StopService(_)) => {
-                                    conn.send_close_reason_no_retry("").await;
+                                    // Third distinct cause, same reasoning as the
+                                    // revocation arm: the remote machine shut its service
+                                    // down, which is neither a person hanging up nor an
+                                    // administrator revoking access.
+                                    conn.send_close_reason_no_retry(
+                                        "Session ended: the remote machine stopped its TBFDesk service",
+                                    )
+                                    .await;
                                     conn.on_close("stop service", false).await;
                                     break;
                                 }
@@ -1003,7 +1010,17 @@ impl Connection {
                         // then on_close, then leave the loop.
                         ipc::Data::Close => {
                             log::info!("Closing session: revoked by the management server");
-                            conn.send_close_reason_no_retry("").await;
+                            // Name the cause. An empty reason renders as "Closed manually
+                            // by the peer", which is what the operator saw when an admin
+                            // revoked their access -- it reads as "the user at the other
+                            // end hung up on me", so the technician retries instead of
+                            // asking why, and an audited revocation looks like an
+                            // ordinary disconnect. These are three different events and
+                            // the controller should say which one happened.
+                            conn.send_close_reason_no_retry(
+                                "Session ended by the TBF server: your access was revoked",
+                            )
+                            .await;
                             conn.on_close("server revocation", true).await;
                             break;
                         }

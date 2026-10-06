@@ -641,6 +641,8 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("Timeout in minutes", "Zeitüberschreitung in Minuten"),
         ("auto_disconnect_option_tip", "Eingehende Sitzungen bei Benutzer-Inaktivität automatisch schließen"),
         ("Connection failed due to inactivity", "Automatische Trennung der Verbindung aufgrund von Inaktivität"),
+        ("Session ended by the TBF server: your access was revoked", "Ein Administrator hat Ihren Zugriff entzogen, daher wurde diese Sitzung vom TBF-Server beendet. Ein erneuter Verbindungsversuch bleibt erfolglos, bis Ihr Zugriff wiederhergestellt ist."),
+        ("Session ended: the remote machine stopped its TBFDesk service", "Der entfernte Computer hat seinen TBFDesk-Dienst beendet, daher wurde die Sitzung geschlossen. Niemand hat aufgelegt und an Ihrem Zugriff hat sich nichts geändert."),
         ("Check for software update on startup", "Beim Start auf Softwareaktualisierung prüfen"),
         ("upgrade_rustdesk_server_pro_to_{}_tip", "Bitte aktualisieren Sie TBFDesk Server Pro auf die Version {} oder neuer!"),
         ("pull_group_failed_tip", "Aktualisierung der Gruppe fehlgeschlagen"),
