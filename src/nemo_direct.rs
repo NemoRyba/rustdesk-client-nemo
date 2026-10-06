@@ -483,6 +483,42 @@ mod tests {
         }
     }
 
+    // The decisive check: a REAL fwknopd accepts what we send. The two tests above prove
+    // our bytes match a captured packet; this one proves the daemon agrees, through the
+    // production `knock()` path with a fresh nonce, timestamp and salt.
+    //
+    // Ignored because it needs a daemon running. To re-verify (no root needed — UDP
+    // server mode binds a high port and -t skips the firewall commands):
+    //
+    //   cat > access.conf <<'EOF'
+    //   SOURCE                  ANY
+    //   KEY_BASE64              dGJmZGVzay1sYWItc3BhLWtleS0wMDAx
+    //   HMAC_KEY_BASE64         dGJmZGVzay1sYWItc3BhLWhtYWMtMDAwMQ==
+    //   REQUIRE_SOURCE_ADDRESS  N
+    //   OPEN_PORTS              tcp/21118
+    //   EOF
+    //   chmod 600 access.conf; : > fwknopd.conf; chmod 600 fwknopd.conf
+    //   fwknopd -c fwknopd.conf -a access.conf -r . -d ./digest.cache \
+    //           -p ./fwknopd.pid -U -t -f -v
+    //   cargo test --lib nemo_direct::tests::knock_is_accepted -- --ignored
+    //
+    // fwknopd must log "SPA Packet from IP: 127.0.0.1 received with access source match"
+    // and then the tcp/21118 request. "Error creating fko context" means it rejected us.
+    #[test]
+    #[ignore = "needs a local fwknopd (see the comment above for the one-liner)"]
+    fn knock_is_accepted_by_a_live_fwknopd() {
+        let cfg = KnockConfig {
+            port: 62201,
+            source_ip: "0.0.0.0".to_owned(),
+            ..test_cfg()
+        };
+        hbb_common::tokio::runtime::Runtime::new()
+            .expect("tokio runtime")
+            .block_on(async {
+                knock("127.0.0.1", 21118, &cfg).await.expect("knock sent");
+            });
+    }
+
     #[test]
     fn rand16_is_always_sixteen_digits() {
         for _ in 0..64 {
