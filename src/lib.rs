@@ -43,6 +43,10 @@ mod auth_2fa;
     not(any(target_os = "android", target_os = "ios"))
 ))]
 mod nemo_management_client;
+// Server-distributed direct endpoints + the optional SPA knock. Unconditional: the
+// controller path in client.rs reads it on every platform, and a workstation with no
+// endpoint pushed to it simply finds an empty map.
+pub mod nemo_direct;
 #[cfg(feature = "cli")]
 pub mod cli;
 #[cfg(not(target_os = "ios"))]

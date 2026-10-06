@@ -69,6 +69,17 @@ const NEMO_MANAGEMENT_SETTINGS: &[&str] = &[
     OPTION_NEMO_AUTO_UPDATE,
 ];
 
+/// Direct endpoints + the SPA knock. Kept as its own slice so the owning module
+/// (`nemo_direct`) declares its own keys and this list cannot drift from it; the two are
+/// concatenated by `is_nemo_management_setting`. Every one of these is subject to the
+/// policy's `allow_user_override`, which is exactly the semantics asked for: an admin can
+/// lock the knock down fleet-wide, or push it as a default a technician may adjust.
+use crate::nemo_direct::NEMO_DIRECT_SETTINGS;
+
+fn is_nemo_management_setting(key: &str) -> bool {
+    NEMO_MANAGEMENT_SETTINGS.contains(&key) || NEMO_DIRECT_SETTINGS.contains(&key)
+}
+
 #[derive(Clone, Copy)]
 enum ManagedOptionScope {
     Settings,
@@ -822,6 +833,14 @@ fn secret_policy_keys() -> &'static [&'static str] {
         keys::OPTION_DEFAULT_CONNECT_PASSWORD,
         keys::OPTION_PROXY_PASSWORD,
         keys::OPTION_PRESET_ADDRESS_BOOK_PASSWORD,
+        // The SPA keys are shared secrets with the fwknopd on the edge: anyone holding
+        // them can open the forwarded port for themselves. They are applied live (into
+        // the in-memory policy maps) but masked out of the blob we persist, so a stolen
+        // config file does not hand over the fleet's knock. The cost is that a freshly
+        // started client cannot knock until its first poll lands (~10s), and until then
+        // its direct attempts fall back to the relay — which is the right trade.
+        crate::nemo_direct::OPTION_KNOCK_KEY,
+        crate::nemo_direct::OPTION_KNOCK_HMAC_KEY,
     ]
 }
 
@@ -902,7 +921,7 @@ fn policy_maps(
 }
 
 fn option_scope(key: &str) -> Option<ManagedOptionScope> {
-    if keys::KEYS_SETTINGS.contains(&key) || NEMO_MANAGEMENT_SETTINGS.contains(&key) {
+    if keys::KEYS_SETTINGS.contains(&key) || is_nemo_management_setting(key) {
         Some(ManagedOptionScope::Settings)
     } else if keys::KEYS_LOCAL_SETTINGS.contains(&key) {
         Some(ManagedOptionScope::Local)

@@ -56,6 +56,14 @@ serde_repr = "0.1"
 cfg-if = "1.0"
 lazy_static = "1.4"
 sha2 = "0.10"
+# fwknop-compatible SPA knock (src/nemo_direct.rs). All four are already in the lock
+# file as transitive dependencies, so naming them here adds no new build units. They
+# cannot be replaced by `openssl`, which this crate only links on Linux/Android --
+# the knock has to work on the Windows workstations too.
+aes = "0.8"
+cbc = "0.1"
+md-5 = "0.10"
+hmac = "0.12"
 repng = "0.2"
 parity-tokio-ipc = { git = "https://github.com/rustdesk-org/parity-tokio-ipc" }
 magnum-opus = { git = "https://github.com/rustdesk-org/magnum-opus" }

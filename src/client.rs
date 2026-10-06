@@ -367,6 +367,21 @@ impl Client {
         } else {
             (peer, "", key, token)
         };
+        // TBFDesk direct endpoints: when the management server published a reachable
+        // host:port for this id (a port forward on the workstation's edge), go straight
+        // there and skip the rendezvous. Relay costs ~36% of the link on the lab WAN
+        // path, which is the whole reason this exists.
+        //
+        // Strictly additive — no endpoint for the id, a knock we could not send, a
+        // refused connect, or a handshake we cannot anchor all return None and fall
+        // through to the unchanged hole-punch / relay path below. Skipped for
+        // `other_server` sessions (whose endpoints are not ours to know) and when the
+        // user asked for relay explicitly.
+        if other_server.is_empty() && !interface.is_force_relay() {
+            if let Some(conn) = Self::try_nemo_direct(peer, key).await {
+                return Ok((conn, (0, "".to_owned()), false));
+            }
+        }
         if crate::nemo_public_network_blocked()
             && (other_server == PUBLIC_SERVER
                 || (other_server.is_empty() && crate::using_public_server()))
@@ -448,6 +463,96 @@ impl Client {
             Ok(conn) => Ok((conn.0 .0, conn.0 .1, conn.0 .2)),
             Err(e) => Err(e),
         }
+    }
+
+    /// Try the direct endpoint the management server published for `peer_id`.
+    ///
+    /// `None` means "use the rendezvous", and it is the normal answer whenever anything
+    /// is missing or fails. Nothing in here may surface as a connection error: the whole
+    /// point of distributing endpoints is to make the fast path available when it works,
+    /// never to make a reachable peer unreachable when it does not.
+    async fn try_nemo_direct(
+        peer_id: &str,
+        key: &str,
+    ) -> Option<(
+        Stream,
+        bool,
+        Option<Vec<u8>>,
+        Option<KcpStream>,
+        &'static str,
+    )> {
+        let endpoint = crate::nemo_direct::endpoint_for(peer_id)?;
+        let budget = crate::nemo_direct::direct_timeout();
+        let budget_ms = budget.as_millis() as u64;
+        log::info!(
+            "TBFDesk direct: trying {} for {} (budget {}ms)",
+            endpoint.target(),
+            peer_id,
+            budget_ms
+        );
+        let start = Instant::now();
+        match timeout(
+            budget_ms,
+            Self::nemo_direct_inner(peer_id, key, &endpoint, budget_ms),
+        )
+        .await
+        {
+            Ok(Ok((conn, pk))) => {
+                log::info!(
+                    "TBFDesk direct: established with {} in {:?}, no relay",
+                    endpoint.target(),
+                    start.elapsed()
+                );
+                Some((conn, true, pk, None, "TCP"))
+            }
+            Ok(Err(e)) => {
+                log::info!(
+                    "TBFDesk direct: {} unusable ({}); falling back to hole punch / relay",
+                    endpoint.target(),
+                    e
+                );
+                None
+            }
+            Err(_) => {
+                log::info!(
+                    "TBFDesk direct: {} did not complete within {}ms; falling back to hole punch / relay",
+                    endpoint.target(),
+                    budget_ms
+                );
+                None
+            }
+        }
+    }
+
+    async fn nemo_direct_inner(
+        peer_id: &str,
+        key: &str,
+        endpoint: &crate::nemo_direct::DirectEndpoint,
+        budget_ms: u64,
+    ) -> ResultType<(Stream, Option<Vec<u8>>)> {
+        if let Some(cfg) = crate::nemo_direct::knock_config() {
+            let cfg = crate::nemo_direct::KnockConfig {
+                // A per-endpoint knock port wins: a fleet behind several edges needs one
+                // SPA port per site, wherever that site's router forwards it.
+                port: endpoint.knock_port.unwrap_or(cfg.port),
+                ..cfg
+            };
+            // A knock that could not go out is not fatal — the forward may not be gated
+            // at all, in which case the connect below simply succeeds.
+            if let Err(e) = crate::nemo_direct::knock(&endpoint.host, endpoint.port, &cfg).await {
+                log::warn!("TBFDesk knock to {} failed: {}", endpoint.host, e);
+            }
+        }
+        let mut conn = connect_tcp_local(endpoint.target(), None, budget_ms).await?;
+        // `signed_id_pk` is deliberately empty. There is no rendezvous broker on this
+        // path, so secure_connection falls through to secure_connection_direct, which
+        // verifies the peer's self-signed SignedId against the Ed25519 key the server
+        // pushed in `nemo-peer-keys` and binds it to the id we asked for. Server-
+        // anchored, no TOFU window, and it fails closed while
+        // nemo-require-encrypted-session is on (it defaults on), so a direct endpoint
+        // can never buy an attacker a plaintext session.
+        let pk = Self::secure_connection(peer_id, Vec::new(), key, &mut conn).await?;
+        Ok((conn, pk))
     }
 
     async fn _start_inner(
