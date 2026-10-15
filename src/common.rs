@@ -1064,6 +1064,24 @@ pub fn get_app_name() -> String {
     hbb_common::config::APP_NAME.read().unwrap().clone()
 }
 
+/// TODO 17 / RENAMING-PLAN Layer 0: the name a human SEES, kept separate from
+/// `get_app_name()` (`APP_NAME`, still "RustDesk"), which is the machine IDENTITY --
+/// the config directory, the service name, the registry key, the URI scheme and the exe
+/// file name all derive from it, and moving those needs the migration RENAMING-PLAN.md
+/// defers.
+///
+/// Windows Start-menu search does not index any of that: it indexes the SHORTCUT file
+/// name and the exe's version-info. So the searchable name can be fixed on its own, with
+/// no re-registration and no config move, by using this for labels only.
+/// Keep in step with `build.rs`'s version-info strings, which cannot read this
+/// constant (build.rs is compiled before the crate).
+pub const DISPLAY_NAME: &str = "TBFDesk";
+
+#[inline]
+pub fn get_display_name() -> String {
+    DISPLAY_NAME.to_owned()
+}
+
 #[inline]
 pub fn is_rustdesk() -> bool {
     hbb_common::config::APP_NAME.read().unwrap().eq("RustDesk")

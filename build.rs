@@ -44,6 +44,19 @@ fn build_manifest() {
                 winapi::um::winnt::LANG_ENGLISH,
                 winapi::um::winnt::SUBLANG_ENGLISH_US,
             ))
+            // TODO 17: Windows search and Explorer's Description column read the exe's
+            // VERSION-INFO, not APP_NAME. Left unset, winres fills these from
+            // Cargo.toml - `name = "rustdesk"` and "RustDesk Remote Desktop" - which is
+            // why the installed client is not findable as "TBFDesk". Setting them here
+            // needs no crate rename and changes nothing a machine reads (the file on
+            // disk is still rustdesk.exe; OriginalFilename is only the version-info
+            // string, and RENAMING-PLAN.md recommends keeping the crate name).
+            // Literal, not common.rs's DISPLAY_NAME: build.rs is compiled before the
+            // crate and cannot see it. Keep the two in step.
+            .set("ProductName", "TBFDesk")
+            .set("FileDescription", "TBFDesk Remote Desktop")
+            .set("OriginalFilename", "TBFDesk.exe")
+            .set("CompanyName", "TBF GmbH")
             .set_manifest_file("res/manifest.xml");
         match res.compile() {
             Err(e) => {

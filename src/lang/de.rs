@@ -182,6 +182,11 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("Identifies the exact running build (git commit and date).", "Kennzeichnet den laufenden Build (Git-Commit und Datum)."),
         ("to be added", "wird ergänzt"),
         ("Based on the open-source RustDesk project.", "Basiert auf dem Open-Source-Projekt RustDesk."),
+        // TODO 18: these three keys were missing from de.rs, so the German UI fell back
+        // to the key text and read "RustDesk".
+        ("About RustDesk", "Über TBFDesk"),
+        ("Keep RustDesk background service", "TBFDesk-Hintergrunddienst aktiv halten"),
+        ("Show RustDesk", "TBFDesk anzeigen"),
         ("Let the person connecting control this computer's keyboard and mouse.", "Erlaubt der verbindenden Person, Tastatur und Maus dieses Computers zu steuern."),
         ("Share copy & paste (clipboard) between this computer and the remote one.", "Teilt die Zwischenablage (Kopieren & Einfügen) zwischen diesem und dem entfernten Computer."),
         ("Allow copying files to and from this computer during a session.", "Erlaubt das Kopieren von Dateien zu und von diesem Computer während einer Sitzung."),

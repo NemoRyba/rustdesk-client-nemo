@@ -813,15 +813,28 @@ class MyIdMenu: Reactor.Component {
 
     function showAbout() {
         var name = "TBFDesk";  // display name only; APP_NAME stays "RustDesk" (config dir)
-        // Placeholders below (website/support/privacy) — real TBF info TBD, see
-        // OPEN-TODOS.md "About-dialog placeholders". Clickable-link wiring
-        // (.link .custom-event url='…') is kept ready in the callback.
+        // TODO 13: the one place to put the real addresses. An empty value means the row
+        // is not rendered at all, so a half-filled list is still presentable.
+        var NEMO_ABOUT_LINKS = [
+            ["Website", ""],
+            ["Support", ""],
+            ["Privacy Statement", ""],
+        ];
+        // TODO 13: the Website / Support / Privacy rows are OMITTED rather than shown
+        // as "(wird ergänzt)". A dialog that advertises support and then says the
+        // address is missing is worse than one that does not mention it: a user reading
+        // it has no way to tell "not set up yet" from "we lost the page". Fill
+        // NEMO_ABOUT_LINKS in and the rows come back, as real clickable links - the
+        // .link .custom-event url='…' wiring below has always been ready for them.
+        var links = "";
+        for (var row in NEMO_ABOUT_LINKS) {
+            if (!row[1]) continue;
+            links += "<div>" + translate(row[0]) + ": <span .link .custom-event url='" + row[1] + "'>" + row[1] + "</span>";
+        }
         msgbox("custom-nocancel-nook-hasclose", translate("About") + " " + name, "<div style='line-height: 2em'> \
             <div>Version: " + handler.get_version() + " \
             <div>Fingerprint: " + handler.get_fingerprint() + " \
-            <div>" + translate("Website") + ": (" + translate("to be added") + ") \
-            <div>Support: (" + translate("to be added") + ") \
-            <div>" + translate("Privacy Statement") + ": (" + translate("to be added") + ") \
+            " + links + " \
 	    <div style='background: #2c8cff; color: white; padding: 1em; margin-top: 1em;'>Copyright &copy; 2026 TBF GmbH\
             <br />" + handler.get_license() + " \
             <p>" + translate("Based on the open-source RustDesk project.") + "</p>\
@@ -1477,9 +1490,14 @@ class NemoSettingsDialog: Reactor.Component {
         if (!disable_settings) {
             if (!hide_server_settings) sec.push(this.aRow("custom-server", translate('ID/Relay Server') + ((nemoExeServerSettingsLocked() || nemoManagementServerSettingsLocked()) ? " (locked)" : "")));
             if (!hide_server_settings && nemo_management_settings) sec.push(this.aRow("nemo-management", "Management"));
-            if (nemo_management_settings) sec.push(this.aRow("nemo-alias", translate('Alias')));
             sec.push(this.aRow("import-device-key", translate('Import device key')));
             sec.push(this.aRow("whitelist", translate('IP Whitelisting')));
+            // TODO 12: direct IP access opens a listening port on this machine and
+            // bypasses the server entirely - an exposure setting, so it sits next to
+            // the IP whitelist that gates it rather than under General.
+            var direct_on = handler.get_option("direct-server") == "Y";
+            sec.push(this.tRow("direct-server", translate('Enable direct IP access'), direct_on, handler.is_option_fixed("direct-server"), "direct"));
+            if (direct_on) sec.push(this.aRow("edit-direct-port", translate('Port')));
             if (!hide_proxy_settings) sec.push(this.aRow("socks5-server", translate('Socks5/Http(s) Proxy')));
             if (!hide_websocket_settings) this.pAllow(sec, "allow-websocket", translate('Use WebSocket'));
             if (!using_public_server && !outgoing_only) sec.push(this.tRow("disable-udp", translate('Disable UDP'), handler.get_option("disable-udp") == "Y", handler.is_option_fixed("disable-udp"), "udp"));
@@ -1493,11 +1511,11 @@ class NemoSettingsDialog: Reactor.Component {
             gen.push(this.tRow("stop-service", translate('Enable service'), !svc_stopped, handler.is_option_fixed("stop-service"), "service"));
         }
         if (!disable_settings) {
-            var direct_on = handler.get_option("direct-server") == "Y";
-            gen.push(this.tRow("direct-server", translate('Enable direct IP access'), direct_on, handler.is_option_fixed("direct-server"), "direct"));
-            if (direct_on) gen.push(this.aRow("edit-direct-port", translate('Port')));
             if (is_win && handler.is_installed()) gen.push(this.tRow("share-rdp", translate('Enable RDP session sharing'), handler.is_share_rdp(), false, "rdp"));
         }
+        // TODO 12: Alias is a friendly display name, not a security control, so it
+        // belongs here and not in Security & Network (where direct IP access now is).
+        if (!disable_settings && nemo_management_settings) gen.push(this.aRow("nemo-alias", translate('Alias')));
         gen.push(this.tRow("allow-darktheme", translate('Dark Theme'), handler.get_option("allow-darktheme") == "Y", handler.is_option_fixed("allow-darktheme"), "theme"));
         // Per-user local option (RustDesk_local.toml), like upstream: a clipboard received in
         // one remote session is also offered to this machine's other remote sessions.

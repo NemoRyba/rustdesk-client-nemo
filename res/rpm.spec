@@ -1,7 +1,7 @@
 Name:       rustdesk
 Version:    1.4.6
 Release:    0
-Summary:    RPM package
+Summary:    TBFDesk remote desktop client
 License:    GPL-3.0
 URL:        https://rustdesk.com
 Vendor:     rustdesk <info@rustdesk.com>
@@ -11,7 +11,7 @@ Recommends: libayatana-appindicator-gtk3 libxdo
 # https://docs.fedoraproject.org/en-US/packaging-guidelines/Scriptlets/
 
 %description
-The best open-source remote desktop client software, written in Rust.
+TBFDesk remote desktop client. Based on the open-source RustDesk project, written in Rust.
 
 %prep
 # we have no source, so nothing here
