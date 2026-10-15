@@ -238,6 +238,33 @@ fn nemo_source_marker(conn: &Stream) -> String {
     nemo_source_marker_with(&base, &token, nemo_channel_is_confidential(conn))
 }
 
+/// TODO 8: the same identity as `nemo_source_marker`, in the typed field that now
+/// exists for it (`PunchHoleRequest.nemo_source` / `RequestRelay.nemo_source`) instead
+/// of smuggled inside the version string or the licence key.
+///
+/// Both are sent for now: a server that reads only the marker is still in the field,
+/// and the two fields are built from the same values here so they cannot drift.
+///
+/// The H33 rule is the same and applies for the same reason -- the token is a bearer
+/// credential, so it is attached ONLY when the socket that will carry it is
+/// confidential. Putting the decision in one function is what keeps a future call site
+/// from leaking it; the typed field does not get its own copy of the rule.
+fn nemo_source_proto(conn: &Stream) -> MessageField<NemoSource> {
+    let token = LocalConfig::get_option("access_token");
+    let token = if token.is_empty() || nemo_channel_is_confidential(conn) {
+        token
+    } else {
+        // nemo_source_marker_with already logged why, on the same socket.
+        String::new()
+    };
+    MessageField::some(NemoSource {
+        id: Config::get_id(),
+        uuid: hbb_common::get_uuid().into(),
+        token,
+        ..Default::default()
+    })
+}
+
 /// The H33 decision itself, split out so it can be tested without a socket or a
 /// config directory. `base` is the identity half, which is not secret; `token` is.
 fn nemo_source_marker_with(base: &str, token: &str, confidential: bool) -> String {
@@ -680,6 +707,7 @@ impl Client {
             licence_key: key.to_owned(),
             conn_type: conn_type.into(),
             version: nemo_version_with_source(&socket),
+            nemo_source: nemo_source_proto(&socket),
             udp_port: udp_nat_port as _,
             force_relay: interface.is_force_relay(),
             socket_addr_v6: ipv6.1.unwrap_or_default(),
@@ -1186,6 +1214,7 @@ impl Client {
                 uuid: uuid.clone(),
                 relay_server: relay_server.clone(),
                 licence_key: nemo_source_marker(&socket),
+                nemo_source: nemo_source_proto(&socket),
                 secure,
                 ..Default::default()
             });
