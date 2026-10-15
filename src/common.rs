@@ -2611,6 +2611,40 @@ pub fn nemo_device_key_present() -> bool {
     nemo_device_ed25519().is_some()
 }
 
+// M1-CLAIM: a device key can be present, well-formed, genuinely issued by this server
+// -- and STILL be refused, because an unbound key is a one-shot provisioning token and
+// the server will not honour it until the operator confirms, in the dashboard, that this
+// machine is the one it was issued to. Without this the client passes its provisioning
+// gate (it has a key), shows an ID, and then silently fails every connection: the poll
+// is a 403 and the rendezvous handshake is dropped. The poll carries the only readable
+// explanation, so it records it here for the UI.
+//
+// Process-global rather than a config option on purpose: it is a live report about the
+// last poll, not a setting, and a stale value written to disk would outlive the
+// approval it describes.
+pub const NEMO_CLAIM_NONE: &str = "";
+pub const NEMO_CLAIM_PENDING: &str = "pending";
+pub const NEMO_CLAIM_DENIED: &str = "denied";
+static NEMO_CLAIM_STATUS: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
+pub fn nemo_set_claim_status(status: &str) {
+    // A poisoned lock means a panic elsewhere; the UI losing this string is not worth
+    // propagating it.
+    if let Ok(mut s) = NEMO_CLAIM_STATUS.lock() {
+        if *s != status {
+            *s = status.to_owned();
+        }
+    }
+}
+
+/// "" (nothing to report), "pending" (waiting for the operator) or "denied".
+pub fn nemo_claim_status() -> String {
+    NEMO_CLAIM_STATUS
+        .lock()
+        .map(|s| s.clone())
+        .unwrap_or_default()
+}
+
 // R6-14: the "Import device key" dialog used to hand whatever was pasted straight to
 // set_option with no check at all. A typo or a copy-paste mistake (wrong field, a
 // trailing space eaten by a browser, half the key) still closed the dialog as if it

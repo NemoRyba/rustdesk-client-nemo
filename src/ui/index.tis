@@ -990,6 +990,15 @@ function nemoIsLoggedIn() {
 function nemoDeviceKeyPresent() {
     return !!handler.nemo_device_key_present();
 }
+// M1-CLAIM: the key is present and valid, but the server will not honour it until an
+// administrator confirms, in the dashboard, that THIS machine is the one it was issued
+// to (an unbound key is a one-shot provisioning token, and a machine-derived ID is
+// self-reported, so only a human can attest the pairing). Without this card the client
+// passes the gate below, shows an ID, and then fails every connection with nothing on
+// screen to explain why. Reported by the policy poll, which carries the refusal.
+function nemoClaimStatus() {
+    return (handler.nemo_claim_status() || "").trim();
+}
 // Layer 1: the provisioning-gate card (same card look as the login gate below).
 function nemoDevKeyGateCard() {
     return <div style="margin:*; width:340px; padding:40px 42px; background:#fff; border:1px solid #e2e6ea; border-radius:10px; flow:vertical">
@@ -998,6 +1007,23 @@ function nemoDevKeyGateCard() {
         <div style="text-align:center; color:#667; margin-bottom:26px; font-size:13px">{translate('A device key issued by your TBFDesk server is required before this client can be used.')}</div>
         <div style="text-align:center">
             <button .button #gate-import-devkey style="padding:11px 44px; background:#0b7285; color:#fff; border:none; border-radius:6px; font-size:15px; font-weight:bold">{translate('Import device key')}</button>
+        </div>
+    </div>;
+}
+// M1-CLAIM: the waiting (or refused) card. Same look as the gate above, because it is
+// the same situation from the user's side: the machine is not usable yet and the next
+// step is not theirs. No Import button on the pending card -- re-importing the key is
+// exactly the wrong thing to do here, and it is what a user sent to the gate above
+// would try.
+function nemoClaimGateCard(denied) {
+    return <div style="margin:*; width:360px; padding:40px 42px; background:#fff; border:1px solid #e2e6ea; border-radius:10px; flow:vertical">
+        <div style="text-align:center; font-size:30px; font-weight:bold; color:#0b7285; margin-bottom:6px">TBFDesk</div>
+        <div style="text-align:center; font-size:16px; font-weight:bold; color:#334; margin-bottom:10px">{denied ? translate('This device was not approved') : translate('Waiting for approval by your administrator')}</div>
+        <div style="text-align:center; color:#667; margin-bottom:20px; font-size:13px">{denied
+            ? translate('Your administrator refused this device key. Ask them to clear the request or to issue a new key for this machine.')
+            : translate('This device has asked to be registered with its device key. Your administrator has to confirm it once; this screen clears by itself within a minute of that.')}</div>
+        <div style="text-align:center">
+            <button .button #gate-import-devkey style="padding:9px 30px; background:#fff; color:#0b7285; border:1px solid #0b7285; border-radius:6px; font-size:13px">{translate('Import device key')}</button>
         </div>
     </div>;
 }
@@ -1718,6 +1744,17 @@ class App: Reactor.Component
             return
                 <div style="background:#f0f2f5; size:*">
                     {nemoDevKeyGateCard()}
+                    <div .nemo-build-id title={translate('Identifies the exact running build (git commit and date).')}>{"Build " + handler.get_build_id()}</div>
+                </div>;
+        }
+        // M1-CLAIM: a key that is present but not yet confirmed gets the same treatment
+        // as no key at all -- the server refuses everything, so an ID panel and a
+        // connect field would only mislead.
+        var claim = nemoClaimStatus();
+        if (claim == "pending" || claim == "denied") {
+            return
+                <div style="background:#f0f2f5; size:*">
+                    {nemoClaimGateCard(claim == "denied")}
                     <div .nemo-build-id title={translate('Identifies the exact running build (git commit and date).')}>{"Build " + handler.get_build_id()}</div>
                 </div>;
         }
@@ -2639,7 +2676,11 @@ function nemoEnforceLogin() {
     // While the provisioning gate is up the login gate is not rendered, so its
     // focus/cert-probe work is skipped; nemoLastGate is reset so the login gate
     // re-fires as a fresh transition once a key is present.
-    var devGate = !nemoDeviceKeyPresent();
+    // M1-CLAIM: a pending/denied claim is the same gate from the user's side, and it
+    // flips asynchronously (the poll learns it, the operator clears it), so it rides the
+    // same transition check -- the card appears and disappears on its own.
+    var devGate = !nemoDeviceKeyPresent() ? "nokey" : nemoClaimStatus();
+    if (devGate !== "nokey" && devGate != "pending" && devGate != "denied") devGate = "";
     if (devGate !== nemoLastDevKeyGate) {        // shown<->hidden transition only
         nemoLastDevKeyGate = devGate;
         nemoLastGate = null;

@@ -477,7 +477,36 @@ fn sync_policy() -> ResultType<()> {
             // and defeat the once-per-minute rule.
             return Ok(());
         }
-        if http.status_code == 403 && server_msg.to_ascii_lowercase().contains("device key") {
+        // M1-CLAIM: the server distinguishes "your key is wrong" from "your key is
+        // right, but a human has not confirmed this machine yet". Matched on the
+        // server's two refusal constants (nemo_management::DEVICE_KEY_CLAIM_PENDING /
+        // _DENIED) because a 403 alone cannot tell the two apart -- and telling the user
+        // to re-import a perfectly good key, which is what the branch below used to say,
+        // sends them to fix the one thing that is not broken.
+        let lowered = server_msg.to_ascii_lowercase();
+        if http.status_code == 403 && lowered.contains("awaiting operator confirmation") {
+            crate::common::nemo_set_claim_status(crate::common::NEMO_CLAIM_PENDING);
+            if device_key_rejection_log_due() {
+                log::warn!(
+                    "Nemo management: this machine's device key is not bound to an id yet. The server has the request (HTTP 403: {}) and this client stays refused until an administrator approves it in the dashboard (Peers, or Settings -> Device keys). Nothing to fix here. (repeats at most once per minute)",
+                    server_msg
+                );
+            }
+            // Ok, not bail!: the throttled line is the whole report, and this is a
+            // normal step of provisioning rather than an error to retry louder.
+            return Ok(());
+        }
+        if http.status_code == 403 && lowered.contains("claim was denied") {
+            crate::common::nemo_set_claim_status(crate::common::NEMO_CLAIM_DENIED);
+            if device_key_rejection_log_due() {
+                log::error!(
+                    "Nemo management: an administrator DENIED this machine's device-key claim (HTTP 403: {}). It will not ask again: the denial has to be cleared, or a new key issued, in the dashboard. (repeats at most once per minute)",
+                    server_msg
+                );
+            }
+            return Ok(());
+        }
+        if http.status_code == 403 && lowered.contains("device key") {
             // We DO hold a device key and the server still refused it: it is not the
             // one pinned for this id (rotated, re-provisioned, or never pinned).
             bail!(
@@ -492,6 +521,8 @@ fn sync_policy() -> ResultType<()> {
             server_msg
         );
     }
+    // M1-CLAIM: the server accepted this poll, so whatever claim was pending is settled.
+    crate::common::nemo_set_claim_status(crate::common::NEMO_CLAIM_NONE);
     let response: ClientPolicyResponse = serde_json::from_str(&http.body)?;
     let was_sealed = response.sealed_payload.is_some();
     let payload = verified_payload(response, public_key.trim())?;

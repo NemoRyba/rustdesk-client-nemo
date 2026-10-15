@@ -967,6 +967,14 @@ impl UI {
         crate::common::nemo_device_key_present()
     }
 
+    // M1-CLAIM: "" / "pending" / "denied" -- whether the server is refusing this
+    // machine because its (valid, issued) device key is still waiting for an
+    // administrator to confirm the pairing. Set by the policy poll, which carries the
+    // only readable refusal; the gate card reads it.
+    fn nemo_claim_status(&self) -> String {
+        crate::common::nemo_claim_status()
+    }
+
     // R6-14: lets the import dialog validate a pasted candidate BEFORE committing it,
     // instead of writing it unconditionally and finding out afterward (via the gate
     // reappearing, with no explanation) that it did not parse.
@@ -1133,6 +1141,7 @@ impl sciter::EventHandler for UI {
         fn nemo_seal_envelope(String);
         fn nemo_sealed_request_enabled();
         fn nemo_device_key_present();
+        fn nemo_claim_status();
         fn nemo_device_key_candidate_valid(String);
         fn nemo_cert_info_start(String);
         fn nemo_cert_info_result();
