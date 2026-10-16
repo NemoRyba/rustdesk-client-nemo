@@ -1143,8 +1143,18 @@ function nemoApplyGateServer(val) {
     var d = nemoDeriveApiUrl(val);
     var opts = handler.get_options();
     opts["custom-rendezvous-server"] = d.host;
-    opts["api-server"] = d.api;
-    opts[nemo_management_server_option] = d.api;
+    // Preserve an explicitly-configured api-server. A setup string carries the EXACT
+    // api URL, and the client API may sit on a different port than the historical
+    // :21120 (e.g. a dedicated client-API bind on :21121) — a port that cannot be
+    // guessed from the ID host. nemoDeriveApiUrl falls back to :21120 for a bare host,
+    // so overwriting here would clobber the bundle's port and send login/poll to the
+    // wrong one. Only (re)derive api-server when none is set yet, or when the operator
+    // actually pointed the gate at a DIFFERENT host than the configured API.
+    var curApi = (opts["api-server"] || "").trim();
+    if (!curApi || nemoDeriveApiUrl(curApi).host != d.host) {
+        opts["api-server"] = d.api;
+        opts[nemo_management_server_option] = d.api;
+    }
     handler.set_options(opts);
     // Seed the accept-self-signed default the first time only (see below).
     nemoInitInsecureTlsDefault();
