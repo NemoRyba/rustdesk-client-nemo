@@ -57,6 +57,12 @@ pub struct SetupBundle {
     /// afterwards this is the only clue that that is what happened.
     #[serde(default)]
     pub issued_from: String,
+    /// "internal" (the server's LAN address) or "external" (its public one). The server
+    /// exports both, and a client carries one: logged on apply, because a machine handed
+    /// the wrong one of the two fails in a way that looks like a network fault, and this
+    /// is the only record of which it was given.
+    #[serde(default)]
+    pub scope: String,
     #[serde(default)]
     pub server: SetupServer,
     /// The private half of a device key, when the bundle was generated together with
@@ -178,8 +184,14 @@ pub fn apply_setup(bundle: &SetupBundle) -> Vec<String> {
         applied.push("device key imported".to_owned());
     }
     log::info!(
-        "TBFDesk setup string applied{}{}: {}",
+        "TBFDesk setup string applied{}{}{}: {}",
         if bundle.label.is_empty() { String::new() } else { format!(" for '{}'", bundle.label) },
+        match bundle.scope.as_str() {
+            "internal" => " [inside the network]".to_owned(),
+            "external" => " [from the internet]".to_owned(),
+            other if !other.is_empty() => format!(" [{}]", other),
+            _ => String::new(),
+        },
         if bundle.issued_from.is_empty() {
             String::new()
         } else {
@@ -255,7 +267,7 @@ mod tests {
         let (pk, _sk) = hbb_common::sodiumoxide::crypto::sign::gen_keypair();
         let key = encode64(pk.as_ref());
         let json = format!(
-            "{{\"v\":1,\"label\":\"Reception\",\"issued_from\":\"10.0.0.5:21120\",\
+            "{{\"v\":1,\"label\":\"Reception\",\"issued_from\":\"10.0.0.5:21120\",\"scope\":\"internal\",\
               \"server\":{{\"id_server\":\"10.0.0.5\",\"relay_server\":\"\",\
               \"api_server\":\"https://10.0.0.5:21120\",\"key\":\"{}\",\
               \"api_cert_fingerprint\":\"AA:BB\"}}}}",
@@ -264,6 +276,15 @@ mod tests {
         let from_string = parse_setup(&encode(&json)).unwrap();
         assert_eq!(from_string.server.id_server, "10.0.0.5");
         assert_eq!(from_string.label, "Reception");
+        assert_eq!(from_string.scope, "internal");
+        // An older bundle has no scope at all, which must parse rather than fail: the
+        // field only feeds a log line.
+        assert_eq!(
+            parse_setup(&encode(&json.replace("\"scope\":\"internal\",", "")))
+                .unwrap()
+                .scope,
+            ""
+        );
         // The same string broken across lines by an email client.
         let wrapped = encode(&json);
         let wrapped = format!("{}\n{}", &wrapped[..20], &wrapped[20..]);

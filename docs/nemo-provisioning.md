@@ -33,14 +33,41 @@ tbfdesk-setup-v1:<base64 of a small JSON object>
 
 It is produced in **Settings → Device keys**:
 
-- the **Client setup string** block gives the string on its own (for a machine whose key
-  already exists), with *Copy string* and *Download file* (a `.tbfsetup` text file);
-- **generating a device key** returns the same bundle **with that key inside it**, which
-  is the whole provisioning run: generate on the server, paste on the machine.
+- the **Client setup string** block gives the strings on their own (for a machine whose
+  key already exists), each with *Copy string* and *Download file* (a `.tbfsetup` text
+  file);
+- **generating a device key** returns the same bundles **with that key inside them**,
+  which is the whole provisioning run: generate on the server, paste on the machine.
 
-The three server fields in that block are prefilled from the address the operator is
-reading the dashboard on, and are editable — a LAN address is wrong for a machine that
-will connect from outside, and the client gets no second chance to guess.
+### Two of them: inside and outside
+
+The server has two addresses, and a client carries **one** set, so the dashboard exports
+both profiles side by side:
+
+| | **Inside the network (LAN)** | **From the internet (public)** |
+|---|---|---|
+| for | workstations and technicians on the server's own network | roaming laptops, home offices |
+| prefilled from | the address the dashboard is being read on, else the server's `--local-ip` | the server's `-r` relay address |
+| relay in the bundle | the LAN address, so an internal session does not hairpin out through the router and back | empty — the server hands out its own public relay at runtime |
+| file name | `…-setup-lan.tbfsetup` | `…-setup-wan.tbfsetup` |
+
+Hand over the one that matches **where that machine connects from**. The wrong one fails
+in a way that looks like a network fault: a workstation given the public address relays
+out and back in through the router, and a roaming laptop given the LAN address cannot
+reach the server at all. Which profile a machine was given is recorded in its own log
+(`[inside the network]` / `[from the internet]` on the "setup string applied" line),
+because afterwards that is the only way to tell.
+
+The public profile is deliberately **not** derived from the dashboard address — an
+operator administering over the LAN would otherwise bake a LAN address into the
+"from the internet" string. If the server does not know its own public address it hands
+back an empty profile asking for it, rather than a wrong one.
+
+For a machine that is on both sides at different times, neither profile is really right:
+the fix is one **split-horizon DNS name** resolving to each address from each side, which
+makes the two strings identical. See `TOPOLOGY-DEPLOYMENT.md` in the superproject.
+
+All the fields in both blocks are editable before anything is generated.
 
 > **It is the client's trust anchor, not a convenience file.** The identity key inside is
 > what this machine will verify the server with from then on, so a bundle from the wrong
