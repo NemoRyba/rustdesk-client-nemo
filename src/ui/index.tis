@@ -637,10 +637,18 @@ function open_import_device_key_dialog() {
     // match it against the server's Device keys panel.
     var configured = handler.nemo_device_key_present();
     var fingerprint = handler.nemo_device_key_fingerprint();
+    // TODO 26: `.set-password > div` is a label/FIELD row - the label span is 30% wide
+    // and the field takes the rest. That shape is wrong for this dialog twice over:
+    // the German label ("Einrichtungszeichenfolge oder Geraeteschluessel") does not fit
+    // in 30% and came out clipped mid-word, and the lone "Load from file" button landed
+    // in the LABEL column, left of where the field starts. So this dialog puts the
+    // label on its OWN full-width row above the input (width:* overrides the 30%), and
+    // everything below it then lines up with the input's left edge by itself.
     msgbox("custom-server", translate("Import setup string or device key"),
             <div .form .set-password>
                 {configured ? <div style="margin-bottom:8px;font-size:0.9em"><span style="opacity:0.7">{translate('Current device key')}: </span><span style="font-family:monospace;word-break:break-all;user-select:text">{fingerprint}</span></div> : ""}
-                <div><span>{translate('Setup string or device key')}: </span><input|text .outline-focus #devkey-input name='devkey' value='' spellcheck="false" /></div>
+                <div><span style="width:*; line-height:1.4em">{translate('Setup string or device key')}:</span></div>
+                <div><input|text .outline-focus #devkey-input name='devkey' value='' spellcheck="false" style="width:*" /></div>
                 <div style="margin-top:5px"><button .custom-event #pick-setup-file style="padding:4px 12px">{translate('Load from file') + "..."}</button></div>
                 <div style="margin-top:6px;opacity:0.7;font-size:0.9em">{translate('Paste the device key or the setup string from your TBFDesk server. A setup string also configures the server addresses, so nothing else has to be typed in here.')}</div>
                 {configured ? <div style="margin-top:4px;opacity:0.7;font-size:0.9em">{translate('A device key is already configured. Paste a new one to replace it; leave empty to keep the current key.')}</div> : <div />}
@@ -699,6 +707,12 @@ function open_import_device_key_dialog() {
                                    : "<div style='margin-top:4px;opacity:0.75'>" + translate("This client was already configured this way.") + "</div>") +
                             "</div>", "", null, 200, get_msgbox_width());
                     });
+                    // TODO 22: the address book comes from the api-server the bundle has
+                    // just configured, and is otherwise only refetched on sign-in or on
+                    // an ab-version change — so after an import into an already
+                    // signed-in client it stayed empty with nothing saying why. Refetch
+                    // now; getAb() reports the server's own reason if it refuses.
+                    if (nemoIsLoggedIn()) getAb();
                 }
             }, 240, get_msgbox_width());
 }
@@ -1084,12 +1098,12 @@ function nemoClaimStatus() {
 }
 // Layer 1: the provisioning-gate card (same card look as the login gate below).
 function nemoDevKeyGateCard() {
-    return <div style="margin:*; width:340px; padding:40px 42px; background:#fff; border:1px solid #e2e6ea; border-radius:10px; flow:vertical">
+    return <div style="margin:*; width:380px; padding:40px 42px; background:#fff; border:1px solid #e2e6ea; border-radius:10px; flow:vertical">
         <div style="text-align:center; font-size:30px; font-weight:bold; color:#0b7285; margin-bottom:6px">TBFDesk</div>
         <div style="text-align:center; font-size:16px; font-weight:bold; color:#334; margin-bottom:10px">{translate('This device is not set up yet')}</div>
         <div style="text-align:center; color:#667; margin-bottom:26px; font-size:13px">{translate('A device key issued by your TBFDesk server is required before this client can be used.')}<br />{translate('Your administrator can give you a setup string instead, which also fills in the server addresses.')}</div>
         <div style="text-align:center">
-            <button .button #gate-import-devkey style="padding:11px 44px; background:#0b7285; color:#fff; border:none; border-radius:6px; font-size:15px; font-weight:bold">{translate('Import setup string or device key')}</button>
+            <button .button #gate-import-devkey style="width:*; height:auto; padding:11px 12px; background:#0b7285; color:#fff; border:none; border-radius:6px; font-size:14px; font-weight:bold; text-align:center"><div style="width:*; white-space:normal; text-align:center">{translate('Import setup string or device key')}</div></button>
         </div>
     </div>;
 }
@@ -1106,7 +1120,7 @@ function nemoClaimGateCard(denied) {
             ? translate('Your administrator refused this device key. Ask them to clear the request or to issue a new key for this machine.')
             : translate('This device has asked to be registered with its device key. Your administrator has to confirm it once; this screen clears by itself within a minute of that.')}</div>
         <div style="text-align:center">
-            <button .button #gate-import-devkey style="padding:9px 30px; background:#fff; color:#0b7285; border:1px solid #0b7285; border-radius:6px; font-size:13px">{translate('Import setup string or device key')}</button>
+            <button .button #gate-import-devkey style="width:*; height:auto; padding:9px 12px; background:#fff; color:#0b7285; border:1px solid #0b7285; border-radius:6px; font-size:13px; text-align:center"><div style="width:*; white-space:normal; text-align:center">{translate('Import setup string or device key')}</div></button>
         </div>
     </div>;
 }
@@ -1114,7 +1128,14 @@ function nemoClaimGateCard(denied) {
 // current api-server (or the ID server host if no api-server is set).
 function nemoGateServerValue() {
     var opts = handler.get_options();
-    return (opts["api-server"] || opts["custom-rendezvous-server"] || "").trim();
+    var v = (opts["api-server"] || opts["custom-rendezvous-server"] || "").trim();
+    // get_options() reads the UI process's option CACHE, which is seeded at startup and
+    // is empty on a machine that was provisioned in THIS session: right after an import
+    // the gate came up with an empty Server box, asking the user for an address the
+    // setup string had just supplied. get_api_server() resolves it the same way the
+    // request path does, so it is right whether or not the cache has caught up.
+    if (!v) v = (handler.get_api_server() || "").trim();
+    return v;
 }
 // Derive the ID host and api-server URL from a user-typed server value.
 // Accepts a bare host ("tbfdesk.example.com" -> https://host:21120) or a full

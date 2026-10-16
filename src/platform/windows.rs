@@ -2186,7 +2186,13 @@ pub fn is_win_10_or_greater() -> bool {
 }
 
 pub fn bootstrap() -> bool {
-    if let Ok(lic) = get_license_from_exe_name() {
+    // A setup string the operator imported outranks the exe file name (see
+    // nemo_setup::OPTION_SETUP_OVERRIDES_EXE). Re-asserting the name's host here would
+    // undo that import on every start: get_rendezvous_server() prefers
+    // EXE_RENDEZVOUS_SERVER over the imported custom-rendezvous-server.
+    if crate::common::nemo_setup_overrides_exe_name() {
+        log::info!("exe-name server ignored: this client was provisioned by a setup string");
+    } else if let Ok(lic) = get_license_from_exe_name() {
         *config::EXE_RENDEZVOUS_SERVER.write().unwrap() = lic.host.clone();
         // Nemo: a locked exe named `host=…,key=…,relay=…` also provisions the whole
         // TBFDesk control plane, so ONE rename fully configures a client. The name

@@ -274,6 +274,30 @@ div.remote-session .platform svg {
     background: none;
 }
 
+/* TBFDesk: "direct access possible" on a peer tile. The relay costs about a third of
+   the link, so which machines can be reached without it is the one property worth a
+   mark of its own. Green, top-right, out of the way of the platform glyph. */
+.nemo-direct-badge {
+    color: #ffffff;
+    background: #1a7a34;
+    border-radius: 0.6em;
+    font-size: 0.8em;
+    font-weight: bold;
+    padding: 1px 6px;
+}
+
+div.remote-session .platform .nemo-direct-badge {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+}
+
+div.remote-session-list .nemo-direct-badge {
+    margin-top: *;
+    margin-bottom: *;
+    margin-right: 4px;
+}
+
 div.remote-session-list {
     background: color(bg);
     width: 220px;

@@ -148,6 +148,62 @@ pub fn endpoint_for(peer_id: &str) -> Option<DirectEndpoint> {
     parse_endpoints(&raw).remove(peer_id)
 }
 
+/// Per-peer: "Y" => connect ONLY over the published direct endpoint, and fail with a
+/// reason instead of quietly falling back to hole punch / relay.
+///
+/// The mirror image of the existing per-peer `force-always-relay`. Direct is already
+/// automatic and silently additive, which is right as a default and useless as a test:
+/// when an operator wants to know whether a port forward works, a connection that
+/// succeeded over the relay anyway answers nothing. This is also what the Peers panel's
+/// "Connect directly" entry sets for the one attempt.
+pub const PEER_OPTION_FORCE_DIRECT: &str = "nemo-force-direct";
+
+/// Did the operator ask for a direct-only attempt to this peer?
+pub fn force_direct(peer_id: &str) -> bool {
+    hbb_common::config::PeerConfig::load(peer_id)
+        .options
+        .get(PEER_OPTION_FORCE_DIRECT)
+        .map(|v| v == "Y")
+        .unwrap_or(false)
+}
+
+/// Read the flag and CLEAR it, at the start of one connection attempt.
+///
+/// One-shot by construction: "Connect directly" answers a question about this attempt
+/// ("does the forward work?"), so leaving the flag set would silently turn the peer into
+/// a direct-only peer and break the next ordinary connect when the forward goes away.
+/// Consuming it here rather than in the UI means it is cleared whether the attempt
+/// succeeds, fails or the window is closed mid-connect.
+pub fn take_force_direct(peer_id: &str) -> bool {
+    let mut c = hbb_common::config::PeerConfig::load(peer_id);
+    if c.options.remove(PEER_OPTION_FORCE_DIRECT).is_none() {
+        return false;
+    }
+    c.store(peer_id);
+    true
+}
+
+/// The endpoint for this id as plain `host:port`, for the UI. Empty when the management
+/// server has not published one, which is exactly when direct access is NOT possible.
+pub fn endpoint_label(peer_id: &str) -> String {
+    endpoint_for(peer_id)
+        .map(|e| e.target())
+        .unwrap_or_default()
+}
+
+/// Every id the server has published an endpoint for. The address book marks these, so
+/// an operator can see at a glance which machines cost a third of the link and which do
+/// not.
+pub fn direct_capable_ids() -> Vec<String> {
+    let raw = Config::get_option(OPTION_DIRECT_ENDPOINTS);
+    if raw.trim().is_empty() {
+        return Vec::new();
+    }
+    let mut ids: Vec<String> = parse_endpoints(&raw).into_keys().collect();
+    ids.sort();
+    ids
+}
+
 pub fn direct_timeout() -> Duration {
     let ms = Config::get_option(OPTION_DIRECT_TIMEOUT_MS)
         .trim()

@@ -41,7 +41,20 @@ pub const APPLIED_OPTION_KEYS: &[&str] = &[
     "relay-server",
     "nemo-api-cert-fingerprint",
     "nemo-device-key",
+    OPTION_MANAGEMENT_ENABLED,
 ];
+
+/// The switch that makes the client actually POLL the management server it was just
+/// given. Without it a setup string configures everything and the client then talks to
+/// nobody: no policy, no login gate, no address-book version, no direct endpoints, no
+/// audit — while looking perfectly configured. The dashboard shows such a machine as
+/// online with a good device key and no poll, which is how this surfaced (OPEN-TODOS 21
+/// / 22 / 23: "address book stays empty", "shows provisioned, not polled").
+///
+/// The Windows exe-name bootstrap always set it, so only setup-string clients were
+/// affected — which is also why it was invisible on the machines that were provisioned
+/// the old way.
+pub const OPTION_MANAGEMENT_ENABLED: &str = "nemo-management-enabled";
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct SetupServer {
@@ -151,56 +164,153 @@ pub fn parse_setup(text: &str) -> ResultType<SetupBundle> {
     Ok(bundle)
 }
 
-/// Apply it to this client's config. Returns the human-readable summary of what changed,
-/// for the dialog and the log — provisioning that silently succeeds is impossible to
-/// support over the phone.
+/// Marker: this machine's server settings came from a setup string the operator
+/// imported, which therefore OUTRANKS the `host=…,key=…,relay=…` values baked into the
+/// exe's file name.
+///
+/// Without it, a client installed from such a name is permanently locked to it:
+/// `ui_interface::set_option` silently discards the four server keys
+/// (`nemo_is_server_config_key`) and `nemo_preserve_locked_server_options` re-writes
+/// them on every `set_options`, so a setup string applied exactly the two values that
+/// are not in that list and nothing else — reported as "the setup string imports the ID
+/// server and nothing else". Importing one is a deliberate re-provisioning, so it wins;
+/// the exe name remains what provisions a machine nobody has imported anything into.
+pub const OPTION_SETUP_OVERRIDES_EXE: &str = "nemo-setup-overrides-exe-name";
+
+/// Per-key result of an apply. `refused` is the one that matters: a half-applied bundle
+/// leaves a machine pointed at one server with another server's key, and until now that
+/// happened silently.
+#[derive(Clone, Debug, Default)]
+pub struct SetupOutcome {
+    /// What changed, human-readable, for the dialog and the log.
+    pub applied: Vec<String>,
+    /// What the client would not store, each with the reason. Non-empty means this
+    /// machine is NOT fully provisioned, however green the dialog looks.
+    pub refused: Vec<String>,
+}
+
+impl SetupOutcome {
+    pub fn is_complete(&self) -> bool {
+        self.refused.is_empty()
+    }
+}
+
+/// Heading the dialog and the log put in front of `SetupOutcome::refused`, kept here so
+/// the UI and the tests agree on the one string an operator searches for.
+pub const REFUSED_HEADING: &str = "NOT applied — this client is not fully provisioned:";
+
+/// Why a write did not stick. The answer is almost always "the server pushes this key
+/// as a fixed global default", which is invisible from the client's own settings and is
+/// the one thing the operator has to be told, because the fix is on the server.
+fn refusal_reason(key: &str, wanted: &str) -> String {
+    let pushed = hbb_common::config::OVERWRITE_SETTINGS
+        .read()
+        .map(|m| m.get(key).cloned())
+        .unwrap_or_default();
+    match pushed {
+        Some(pushed) if pushed.trim() != wanted => format!(
+            "{}: NOT applied — your server pushes this as a FIXED global default ({}). \
+             Clear it in the dashboard (ACL & Policy → Global client defaults) or this \
+             client keeps the pushed value.",
+            key, pushed
+        ),
+        Some(_) => format!(
+            "{}: pushed by the server as a fixed global default, same value — nothing to do.",
+            key
+        ),
+        None => format!(
+            "{}: NOT applied — the client refused to store it. Check that settings are \
+             not disabled on this machine.",
+            key
+        ),
+    }
+}
+
+/// Apply it to this client's config. Returns what changed and what would not — a
+/// provisioning step that silently succeeds is impossible to support over the phone, and
+/// one that silently half-succeeds is worse.
 ///
 /// Every value is written through `Config::set_option`, the same path the settings
 /// dialog and the licence-name bootstrap use, so there is no second mechanism to keep in
 /// step. An absent field is left alone rather than cleared: a bundle with no device key
-/// must not un-provision a machine that already has one.
-pub fn apply_setup(bundle: &SetupBundle) -> Vec<String> {
+/// must not un-provision a machine that already has one. Each write is then READ BACK:
+/// `Config::set_option` is a silent no-op for any key the server pushes as a fixed
+/// default (`is_option_can_save`), so "I wrote it" and "it is stored" are different
+/// facts and only the second one is worth reporting.
+pub fn apply_setup(bundle: &SetupBundle) -> SetupOutcome {
     let s = &bundle.server;
-    let mut applied = Vec::new();
-    let mut set = |key: &str, value: &str, label: &str| {
-        let value = value.trim();
-        if value.is_empty() {
-            return;
+    let mut out = SetupOutcome::default();
+    {
+        let out = &mut out;
+        let mut set = |key: &str, value: &str, label: &str| {
+            let value = value.trim();
+            if value.is_empty() {
+                return;
+            }
+            let old = Config::get_option(key);
+            Config::set_option(key.to_owned(), value.to_owned());
+            // Read back rather than trust the write.
+            if Config::get_option(key).trim() != value {
+                out.refused.push(refusal_reason(key, value));
+                return;
+            }
+            if old.trim() == value {
+                return;
+            }
+            out.applied.push(if old.trim().is_empty() {
+                format!("{}: {}", label, value)
+            } else {
+                // The re-pointing case, which is the one worth seeing in a log.
+                format!("{}: {} (was {})", label, value, old.trim())
+            });
+        };
+        set("custom-rendezvous-server", &s.id_server, "ID server");
+        set("api-server", &s.api_server, "api-server");
+        set("nemo-management-server", &s.api_server, "management server");
+        set("key", &s.key, "server key");
+        set("nemo-management-public-key", &s.key, "management key");
+        set("relay-server", &s.relay_server, "relay");
+        set(
+            "nemo-api-cert-fingerprint",
+            &s.api_cert_fingerprint,
+            "certificate pin",
+        );
+        // A bundle names a management server, so the machine is managed: turn the poll
+        // on. Leaving it off produced a client that was configured for this fleet and
+        // never spoke to it.
+        set(OPTION_MANAGEMENT_ENABLED, "Y", "managed policy poll");
+    }
+    // The exe-name override, written whenever a bundle really did re-point this client.
+    // It must be in place BEFORE anything calls set_options again, or the locked-exe
+    // preservation puts the old server back.
+    if !out.applied.is_empty() {
+        Config::set_option(OPTION_SETUP_OVERRIDES_EXE.to_owned(), "Y".to_owned());
+        // And in THIS process: get_rendezvous_server() prefers the in-memory exe value
+        // over custom-rendezvous-server, so without clearing it the imported ID server
+        // is ignored until the next restart.
+        if let Ok(mut exe) = hbb_common::config::EXE_RENDEZVOUS_SERVER.write() {
+            if !exe.is_empty() {
+                log::info!(
+                    "TBFDesk setup string overrides the server baked into the exe name ({})",
+                    exe
+                );
+                exe.clear();
+            }
         }
-        let old = Config::get_option(key);
-        Config::set_option(key.to_owned(), value.to_owned());
-        if old.trim() == value {
-            return;
-        }
-        applied.push(if old.trim().is_empty() {
-            format!("{}: {}", label, value)
-        } else {
-            // The re-pointing case, which is the one worth seeing in a log.
-            format!("{}: {} (was {})", label, value, old.trim())
-        });
-    };
-    set("custom-rendezvous-server", &s.id_server, "ID server");
-    set("api-server", &s.api_server, "api-server");
-    set("nemo-management-server", &s.api_server, "management server");
-    set("key", &s.key, "server key");
-    set("nemo-management-public-key", &s.key, "management key");
-    set("relay-server", &s.relay_server, "relay");
-    set(
-        "nemo-api-cert-fingerprint",
-        &s.api_cert_fingerprint,
-        "certificate pin",
-    );
+    }
     // Last, so a failure anywhere above leaves the machine un-keyed rather than keyed
     // against a half-configured server.
     if !bundle.device_key.trim().is_empty() {
-        Config::set_option(
-            "nemo-device-key".to_owned(),
-            bundle.device_key.trim().to_owned(),
-        );
-        applied.push("device key imported".to_owned());
+        let key = bundle.device_key.trim().to_owned();
+        Config::set_option("nemo-device-key".to_owned(), key.clone());
+        if Config::get_option("nemo-device-key").trim() == key {
+            out.applied.push("device key imported".to_owned());
+        } else {
+            out.refused.push(refusal_reason("nemo-device-key", &key));
+        }
     }
     log::info!(
-        "TBFDesk setup string applied{}{}{}: {}",
+        "TBFDesk setup string applied{}{}{}: {}{}",
         if bundle.label.is_empty() { String::new() } else { format!(" for '{}'", bundle.label) },
         match bundle.scope.as_str() {
             "internal" => " [inside the network]".to_owned(),
@@ -213,17 +323,22 @@ pub fn apply_setup(bundle: &SetupBundle) -> Vec<String> {
         } else {
             format!(" (generated on {})", bundle.issued_from)
         },
-        if applied.is_empty() {
+        if out.applied.is_empty() {
             "nothing changed, this client was already configured this way".to_owned()
         } else {
-            applied.join("; ")
+            out.applied.join("; ")
+        },
+        if out.refused.is_empty() {
+            String::new()
+        } else {
+            format!(" -- REFUSED: {}", out.refused.join("; "))
         }
     );
-    applied
+    out
 }
 
 /// Import from a string or a file path, for `--import-setup` and the UI's file picker.
-pub fn import_setup(arg: &str) -> ResultType<Vec<String>> {
+pub fn import_setup(arg: &str) -> ResultType<SetupOutcome> {
     let arg = arg.trim();
     // A path is the common case for the CLI (the dashboard's download), a string for a
     // paste. Deciding by "does this file exist" rather than by shape keeps a path that
@@ -276,6 +391,94 @@ mod tests {
             "{\"v\":1,\"server\":{\"id_server\":\"h\",\"api_server\":\"https://h\",\"key\":\"nope\"}}"
         ))
         .contains("not a valid Ed25519 public key"));
+    }
+
+    /// TODO 21: the setup string imported the ID server and nothing else.
+    ///
+    /// `Config::set_option` is a SILENT no-op for every key the server pushes as a fixed
+    /// global default (`is_option_can_save`), so "we wrote six values" and "six values
+    /// are stored" were different facts and the client only ever reported the first.
+    /// A machine pointed at one server with another server's key then fails as "cannot
+    /// reach the server", which looks like a network fault.
+    ///
+    /// This drives the read-back: with `api-server` pushed as fixed, the apply must
+    /// report it as REFUSED and name the pushed value, instead of listing it as applied.
+    #[test]
+    fn a_value_the_server_pins_is_reported_as_refused_not_as_applied() {
+        // apply_setup writes the process-global Config, which the rest of the suite
+        // also reads; serialise against the other config tests and put every key back.
+        let _config_guard = crate::common::lock_config_for_test();
+        let touched: Vec<&str> = APPLIED_OPTION_KEYS
+            .iter()
+            .copied()
+            .chain([OPTION_SETUP_OVERRIDES_EXE])
+            .collect();
+        let saved: Vec<(&str, String)> = touched
+            .iter()
+            .map(|k| (*k, Config::get_option(k)))
+            .collect();
+        struct Restore(Vec<(&'static str, String)>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                for (k, v) in self.0.drain(..) {
+                    Config::set_option(k.to_owned(), v);
+                }
+            }
+        }
+        let _restore = Restore(saved);
+
+        let (pk, _sk) = hbb_common::sodiumoxide::crypto::sign::gen_keypair();
+        let key = encode64(pk.as_ref());
+        let bundle = SetupBundle {
+            v: 1,
+            server: SetupServer {
+                id_server: "10.0.0.5".to_owned(),
+                relay_server: "10.0.0.5".to_owned(),
+                api_server: "https://10.0.0.5:21120".to_owned(),
+                key,
+                api_cert_fingerprint: "AA:BB".to_owned(),
+            },
+            ..Default::default()
+        };
+        // What a policy poll with allow_user_override=false leaves behind.
+        hbb_common::config::OVERWRITE_SETTINGS
+            .write()
+            .unwrap()
+            .insert("api-server".to_owned(), "https://wrong:21120".to_owned());
+        let out = apply_setup(&bundle);
+        hbb_common::config::OVERWRITE_SETTINGS
+            .write()
+            .unwrap()
+            .remove("api-server");
+
+        assert!(
+            !out.is_complete(),
+            "a bundle that could not store api-server is not a successful import"
+        );
+        let refused = out.refused.join("\n");
+        assert!(refused.contains("api-server"), "refused: {}", refused);
+        assert!(
+            refused.contains("https://wrong:21120"),
+            "the operator has to be told WHICH value the server pushes: {}",
+            refused
+        );
+        assert!(
+            !out.applied.iter().any(|l| l.starts_with("api-server:")),
+            "a refused key must never appear in the applied list: {:?}",
+            out.applied
+        );
+        // The keys that are not pinned still land, so a partial refusal does not stop
+        // the rest of the provisioning.
+        assert_eq!(Config::get_option("custom-rendezvous-server"), "10.0.0.5");
+        // And an import that changed anything claims the exe-name override, which is
+        // what stops a locked-exe client reverting on the next set_options.
+        assert_eq!(Config::get_option(OPTION_SETUP_OVERRIDES_EXE), "Y");
+        // A bundle that names a management server must also switch the poll on, or the
+        // machine is configured for a fleet it never talks to: no policy, no login
+        // gate, no address book, no direct endpoints. Verified in the lab — a
+        // setup-string client sat "online, device key good, never polled".
+        assert_eq!(Config::get_option(OPTION_MANAGEMENT_ENABLED), "Y");
+        assert!(APPLIED_OPTION_KEYS.contains(&OPTION_MANAGEMENT_ENABLED));
     }
 
     #[test]

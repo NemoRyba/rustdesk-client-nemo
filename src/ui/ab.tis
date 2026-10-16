@@ -323,9 +323,26 @@ class SessionList: Reactor.Component {
         return tmp;
     }
 
+    // Direct access, asked for explicitly, is offered only for peers the server
+    // published an endpoint for (#connect-direct is hidden otherwise, see the #menu
+    // handler): connecting "directly" to a machine with no port forward is not
+    // something an operator can ask for. Unlike the automatic attempt it does NOT fall
+    // back to the relay -- a session that quietly relayed would answer the wrong
+    // question when what you are testing is the forward.
     function render() {
         var sessions = this.getSessions();
         if (sessions.length == 0) {
+            // TODO 22: a bare "Empty" is indistinguishable from a broken address book.
+            // The server returns a REASON when it refuses one (handleAbError shows
+            // that); this covers the other case - it answered, with no peers for this
+            // account - and says what decides that, so nobody debugs the client for an
+            // ACL question.
+            if (this.type == "ab") {
+                return <div style="margin: *; width: 300px; text-align: center; color: color(lighter-text)">
+                    <div style="font-size: 1.4em">{translate("Empty")}</div>
+                    <div style="margin-top: 1em; font-size: 0.9em">{translate("The server shared no computers with this account. Check the user's access rights in the TBFDesk dashboard (ACL & Policy), then use the reload button above.")}</div>
+                </div>;
+            }
             return <div style="margin: *; font-size: 1.6em; width: 100px; text-align: center;">{translate("Empty")}</div>;
         }
         var me = this;
@@ -334,6 +351,7 @@ class SessionList: Reactor.Component {
             <popup>
                 <menu.context #remote-context>
                     <li #connect>{translate('Connect')}</li>
+                    <li #connect-direct>{translate('Connect directly (no relay)')}</li>
                     <li #transfer>{translate('Transfer file')}</li>
                     <li #tunnel>{translate('TCP tunneling')}</li>
                     <li #force-always-relay><span>{svg_checkmark}</span>{translate('Always connect via relay')}</li>
@@ -362,8 +380,19 @@ class SessionList: Reactor.Component {
         // Clean secondary label: "user@host", or just the host / user, never a
         // bare "@host" when the username is empty (Nemo peers have no username).
         var userhost = username ? (hostname ? username + "@" + hostname : username) : hostname;
+        // Can this machine be reached WITHOUT the relay? The relay costs about a third
+        // of the link, so this is the most consequential thing to know about a peer
+        // before dialling it, and it was invisible: the endpoint map arrives in the
+        // signed policy and was only ever read by the connect path.
+        var directEp = "";
+        try { directEp = handler.nemo_direct_endpoint(id) || ""; } catch (e) { directEp = ""; }
+        var directTip = directEp
+            ? translate("Direct access possible") + " — " + directEp + ". " + translate("Right-click for a direct-only connection.")
+            : "";
+        var directMark = directEp ? <span .nemo-direct-badge title={directTip}>{"⇄"}</span> : "";
+        var tileTitle = (alias ? "ID: " + id : "") + (directEp ? (alias ? "  •  " : "") + directTip : "");
         if (this.style == "list") {
-            return <div .remote-session-link .remote-session-list id={id} platform={platform} title={alias ? "ID: " + id : ""}>
+            return <div .remote-session-link .remote-session-list id={id} platform={platform} title={tileTitle}>
                 <div .platform style={"background:"+string2RGB(id+platform, 0.5)}>
                     {platform && platformSvg(platform, "white")}
                 </div>
@@ -374,14 +403,16 @@ class SessionList: Reactor.Component {
                     </div>
                 </div>
                 <div>
+                    {directMark}
                     {svg_menu}
                 </div>
             </div>;
         }
-        return <div .remote-session-link .remote-session id={id} platform={platform} title={alias ? "ID: " + id : ""} style={"background:"+string2RGB(id+platform, 0.5)}>
+        return <div .remote-session-link .remote-session id={id} platform={platform} title={tileTitle} style={"background:"+string2RGB(id+platform, 0.5)}>
             <div .platform>
                 {platform && platformSvg(platform, "white")}
                 <div .username .ellipsis>{userhost}</div>
+                {directMark}
             </div>
             <div .text>
                 <div #alias .ellipsis>{alias ? alias : formatId(id)}</div>
@@ -403,6 +434,14 @@ class SessionList: Reactor.Component {
         this.$(#forget-password).style.set{
             display: handler.peer_has_password(id) ? "block" : "none",
         };
+        // Direct access is only offered where the server says it exists, and the entry
+        // names the address so the operator can see WHICH forward is about to be tried.
+        var cd = this.$(#connect-direct);
+        if (cd) {
+            var ep = handler.nemo_direct_endpoint(id);
+            cd.style.set{ display: ep ? "block" : "none" };
+            if (ep) cd.text = translate('Connect directly (no relay)') + "  —  " + ep;
+        }
         if (!this.type || this.type == "fav") {
             var in_fav = handler.get_fav().indexOf(id) >= 0;
             this.$(#add-fav).style.set{
@@ -439,6 +478,12 @@ class SessionList: Reactor.Component {
         var action = me.id;
         var id = current_menu_peer_id;
         if (action == "connect") {
+            createNewConnect(id, "connect");
+        } else if (action == "connect-direct") {
+            // One-shot: the connection attempt CONSUMES the flag (take_force_direct),
+            // so this is "use the forward for this attempt or tell me why not" and
+            // never a mode the peer gets stuck in.
+            handler.nemo_set_force_direct(id, true);
             createNewConnect(id, "connect");
         } else if (action == "transfer") {
             createNewConnect(id, "file-transfer");

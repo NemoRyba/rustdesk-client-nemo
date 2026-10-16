@@ -983,7 +983,7 @@ impl UI {
     fn nemo_apply_setup_string(&self, text: String) -> String {
         match crate::nemo_setup::parse_setup(&text) {
             Ok(bundle) => {
-                let applied = crate::nemo_setup::apply_setup(&bundle);
+                let outcome = crate::nemo_setup::apply_setup(&bundle);
                 // apply_setup writes through Config::set_option (this GUI process only).
                 // Re-send each applied value to the service over IPC so the running
                 // rendezvous/poll adopts the new server, key and device key immediately —
@@ -991,13 +991,35 @@ impl UI {
                 // restart (the service keeps its own config). Read the freshly written
                 // value from Config, not ui_interface's OPTIONS cache, which apply_setup
                 // did not touch.
+                //
+                // NOT through set_option: that one returns silently for the four keys a
+                // `host=…,key=…,relay=…` exe name owns, and for anything the server
+                // pushes as a fixed default — so on a locked-exe client it dropped
+                // exactly `custom-rendezvous-server`, `relay-server`, `api-server` and
+                // `key`, i.e. the whole point of the bundle. An import is a deliberate
+                // re-provisioning by the operator and therefore writes through.
+                let mut provisioned = Vec::new();
                 for &k in crate::nemo_setup::APPLIED_OPTION_KEYS {
                     let v = hbb_common::config::Config::get_option(k);
                     if !v.trim().is_empty() {
-                        set_option(k.to_string(), v);
+                        provisioned.push((k.to_string(), v));
                     }
                 }
-                *NEMO_SETUP_SUMMARY.lock().unwrap() = applied.join("\n");
+                // The override marker travels with them, so the service's own
+                // set_options does not put the exe-name server back.
+                let marker = crate::nemo_setup::OPTION_SETUP_OVERRIDES_EXE;
+                let marker_value = hbb_common::config::Config::get_option(marker);
+                if !marker_value.is_empty() {
+                    provisioned.push((marker.to_string(), marker_value));
+                }
+                crate::ui_interface::nemo_set_provisioned_options(provisioned);
+                let mut summary = outcome.applied.clone();
+                if !outcome.refused.is_empty() {
+                    summary.push(String::new());
+                    summary.push(crate::nemo_setup::REFUSED_HEADING.to_owned());
+                    summary.extend(outcome.refused.clone());
+                }
+                *NEMO_SETUP_SUMMARY.lock().unwrap() = summary.join("\n");
                 String::new()
             }
             Err(err) => err.to_string(),
@@ -1009,6 +1031,30 @@ impl UI {
     /// knowable at the moment of the write.
     fn nemo_setup_summary(&self) -> String {
         NEMO_SETUP_SUMMARY.lock().unwrap().clone()
+    }
+
+    /// Where this peer can be reached WITHOUT the relay, as `host:port`, or "" when the
+    /// management server has published nothing for it — which is exactly when direct
+    /// access is not possible. The address book marks the ones that are: the relay costs
+    /// about a third of the link, so "can I reach this machine directly" is the single
+    /// most useful thing to see next to an id.
+    fn nemo_direct_endpoint(&self, id: String) -> String {
+        crate::nemo_direct::endpoint_label(&id)
+    }
+
+    /// The per-peer "direct only, do not fall back" flag the Connect-directly menu entry
+    /// sets. Kept as its own pair of calls rather than get/set_peer_option from script,
+    /// so the option NAME lives in one place (nemo_direct) and script cannot typo it.
+    fn nemo_force_direct(&self, id: String) -> bool {
+        crate::nemo_direct::force_direct(&id)
+    }
+
+    fn nemo_set_force_direct(&self, id: String, on: bool) {
+        crate::ui_interface::set_peer_option(
+            id,
+            crate::nemo_direct::PEER_OPTION_FORCE_DIRECT.to_owned(),
+            if on { "Y".to_owned() } else { String::new() },
+        );
     }
 
     /// Read a setup file the operator downloaded from the dashboard. Text only, and
@@ -1215,6 +1261,9 @@ impl sciter::EventHandler for UI {
         fn nemo_is_setup_string(String);
         fn nemo_apply_setup_string(String);
         fn nemo_setup_summary();
+        fn nemo_direct_endpoint(String);
+        fn nemo_force_direct(String);
+        fn nemo_set_force_direct(String, bool);
         fn nemo_read_text_file(String);
         fn nemo_claim_status();
         fn nemo_device_key_candidate_valid(String);

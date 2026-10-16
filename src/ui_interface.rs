@@ -461,6 +461,45 @@ pub fn set_options(mut m: HashMap<String, String>) {
     Config::set_options(m);
 }
 
+/// Provisioning write: the one path that may NOT be silently dropped.
+///
+/// `set_option` refuses two classes of key on purpose — those the server pushes as fixed
+/// (`is_option_fixed`) and the four server keys a `host=…,key=…,relay=…` exe name owns
+/// (`nemo_is_server_config_key`). Both guards exist so the SETTINGS DIALOG cannot drift
+/// away from a managed value. Importing a setup string is the opposite situation: the
+/// operator is deliberately re-pointing this machine, and a guard that silently discards
+/// four of the six values leaves it half-provisioned — reported from the Windows test
+/// workstation as "the setup string imports the ID server and nothing else".
+///
+/// So this writes through, in ONE batch: the whole set has to reach the service
+/// together, because the service re-derives the locked keys from the config it is handed
+/// (`nemo_preserve_locked_server_options`) and a key-by-key send lets it rebuild the old
+/// server from a half-updated map in between. Values that `Config::set_option` would not
+/// store at all are reported to the operator by the caller (`nemo_setup::apply_setup`);
+/// nothing here pretends.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub fn nemo_set_provisioned_options(values: Vec<(String, String)>) {
+    if values.is_empty() {
+        return;
+    }
+    let mut options = OPTIONS.lock().unwrap();
+    for (key, value) in values {
+        if value.is_empty() {
+            options.remove(&key);
+        } else {
+            options.insert(key, value);
+        }
+    }
+    ipc::set_options(options.clone()).ok();
+}
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
+pub fn nemo_set_provisioned_options(values: Vec<(String, String)>) {
+    for (key, value) in values {
+        Config::set_option(key, value);
+    }
+}
+
 #[inline]
 pub fn set_option(key: String, value: String) {
     if is_option_fixed(&key) {

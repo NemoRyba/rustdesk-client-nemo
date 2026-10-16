@@ -1405,6 +1405,46 @@ fn http_proxy_response_to_json(resp: HttpProxyResponse) -> ResultType<String> {
 }
 
 fn parse_json_header_entries(header: &str) -> ResultType<Vec<HeaderEntry>> {
+    // No header is not a malformed header. Every caller passes "" when it has none to
+    // send (`httpRequest`'s `headers=""` default), and serde_json::from_str("") is an
+    // error — "EOF while parsing a value at line 1 column 0" — so the request failed
+    // before a byte went out. That is what the login gate showed instead of signing in:
+    // /api/login-key and /api/login are the two calls that carry no header, so NO
+    // client could log in, and with no session token there was no address book either
+    // (OPEN-TODOS 22). Inherited from upstream's tcp-proxy refactor (#14633), which
+    // dropped the `if !header.is_empty()` guard this restores.
+    if header.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    // The Sciter UI passes headers as plain lines — `getHttpHeaders()` returns
+    // "Authorization: Bearer <token>" — which is what this function took before
+    // upstream's tcp-proxy refactor made it JSON-only. Nothing updated the UI, so every
+    // authenticated call it makes (the address book above all) failed with "expected
+    // value at line 1 column 1" and never left the machine. Accept both shapes: a JSON
+    // object, or one `Name: value` per line.
+    let text = header.trim();
+    if !text.starts_with('{') {
+        let mut out = Vec::new();
+        for line in text.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            let Some((name, value)) = line.split_once(':') else {
+                bail!("HTTP header information parsing failed!");
+            };
+            let name = name.trim();
+            if name.is_empty() {
+                bail!("HTTP header information parsing failed!");
+            }
+            out.push(HeaderEntry {
+                name: name.to_owned(),
+                value: value.trim().into(),
+                ..Default::default()
+            });
+        }
+        return Ok(out);
+    }
     let v: Value = serde_json::from_str(header)?;
     if let Value::Object(obj) = v {
         Ok(obj
@@ -2460,6 +2500,16 @@ pub fn using_public_server() -> bool {
 
 #[inline]
 pub fn nemo_exe_custom_server_configured() -> bool {
+    // An imported setup string is an explicit re-provisioning by the operator and
+    // outranks the server baked into the exe's file name. Without this, a client
+    // installed from a `host=…,key=…,relay=….exe` stays locked to that name for good:
+    // `ui_interface::set_option` drops the four server keys and
+    // `nemo_preserve_locked_server_options` re-writes them on every `set_options`, so an
+    // imported bundle applied only the keys NOT in that list. See
+    // `nemo_setup::OPTION_SETUP_OVERRIDES_EXE`.
+    if nemo_setup_overrides_exe_name() {
+        return false;
+    }
     if !config::EXE_RENDEZVOUS_SERVER.read().unwrap().trim().is_empty() {
         return true;
     }
@@ -2468,6 +2518,13 @@ pub fn nemo_exe_custom_server_configured() -> bool {
         return !lic.host.trim().is_empty();
     }
     false
+}
+
+/// Has a setup string been imported into this machine? Then it, not the exe file name,
+/// defines which server this client belongs to.
+#[inline]
+pub fn nemo_setup_overrides_exe_name() -> bool {
+    config::Config::get_option(crate::nemo_setup::OPTION_SETUP_OVERRIDES_EXE) == "Y"
 }
 
 #[inline]
@@ -3566,6 +3623,23 @@ pub fn get_control_permission(
     }
 }
 
+/// Tests that mutate the process-global `Config` must hold this.
+///
+/// `cargo test` runs the whole suite in ONE process, in parallel, and `Config` is a
+/// process global backed by the user's config file — so two tests writing the same
+/// option key race. That is not hypothetical: the sealed-envelope round trip here and
+/// the setup-import test in `nemo_setup` both write `nemo-management-public-key`, and
+/// the first one to finish restored it under the other's feet.
+#[cfg(test)]
+pub(crate) static CONFIG_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Take `CONFIG_TEST_LOCK`, ignoring poisoning: a panic in one config test must not turn
+/// every other config test into a second, confusing failure.
+#[cfg(test)]
+pub(crate) fn lock_config_for_test() -> std::sync::MutexGuard<'static, ()> {
+    CONFIG_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3864,6 +3938,47 @@ mod tests {
         assert!(err.contains("HTTP header information parsing failed!"));
     }
 
+    /// No header must mean "send no headers", not "fail the request".
+    ///
+    /// `httpRequest(url, #post, body, ok, err)` defaults `headers` to "", and the two
+    /// calls the login gate makes — /api/login-key and /api/login — use that default.
+    /// While "" was a parse error the gate could only ever show
+    /// "EOF while parsing a value at line 1 column 0" and no client could sign in; with
+    /// no session token the address book then stayed empty for everyone. Reproduced in
+    /// the lab against a real server before this was fixed.
+    #[test]
+    fn an_empty_header_means_no_headers_not_a_failed_request() {
+        assert!(parse_json_header_entries("").unwrap().is_empty());
+        assert!(parse_json_header_entries("   ").unwrap().is_empty());
+        // A header that is genuinely malformed is still an error.
+        assert!(parse_json_header_entries("{oops").is_err());
+        assert!(parse_json_header_entries("[]").is_err());
+    }
+
+    /// The Sciter UI sends `Name: value` lines, not JSON. Upstream's tcp-proxy refactor
+    /// made this parser JSON-only and nothing updated the UI, so every authenticated
+    /// call it makes failed with "expected value at line 1 column 1" before reaching
+    /// the network — which is what an operator saw as an address book that never
+    /// loaded. Both shapes must work.
+    #[test]
+    fn a_plain_header_line_is_accepted_as_well_as_json() {
+        let from_line =
+            parse_json_header_entries("Authorization: Bearer abc123").expect("line form");
+        assert_eq!(from_line.len(), 1);
+        assert_eq!(from_line[0].name, "Authorization");
+        assert_eq!(from_line[0].value, "Bearer abc123");
+        // Several lines, and the JSON form, agree.
+        let two = parse_json_header_entries("Authorization: Bearer abc123\nX-Nemo-Token: t")
+            .expect("two lines");
+        assert_eq!(two.len(), 2);
+        let as_json =
+            parse_json_header_entries(r#"{"Authorization":"Bearer abc123"}"#).expect("json form");
+        assert_eq!(as_json[0].name, from_line[0].name);
+        assert_eq!(as_json[0].value, from_line[0].value);
+        // Still rejected: a line that is not a header at all.
+        assert!(parse_json_header_entries("not a header").is_err());
+    }
+
     #[test]
     fn test_parse_json_header_entries_preserves_single_content_type() {
         let headers = parse_json_header_entries(
@@ -4031,6 +4146,7 @@ mod tests {
                 Config::set_option("nemo-management-public-key".to_string(), self.0.clone());
             }
         }
+        let _config_guard = lock_config_for_test();
         let _restore = RestoreMgmtKey(Config::get_option("nemo-management-public-key"));
 
         // The Ed25519 management key this client trusts; sealing converts it to Curve25519.

@@ -670,13 +670,27 @@ pub fn core_main() -> Option<Vec<String>> {
                 return None;
             };
             match crate::nemo_setup::import_setup(arg) {
-                Ok(applied) if applied.is_empty() => {
-                    println!("Setup string applied: this client was already configured this way.");
-                }
-                Ok(applied) => {
-                    println!("Setup string applied:");
-                    for line in applied {
-                        println!("  {}", line);
+                Ok(outcome) => {
+                    if outcome.applied.is_empty() {
+                        println!(
+                            "Setup string applied: this client was already configured this way."
+                        );
+                    } else {
+                        println!("Setup string applied:");
+                        for line in outcome.applied {
+                            println!("  {}", line);
+                        }
+                    }
+                    // A half-applied bundle used to exit 0 with a cheerful list. Say
+                    // which values did NOT stick and why, and fail, so an unattended
+                    // provisioning run cannot report success for a machine that cannot
+                    // reach the server.
+                    if !outcome.refused.is_empty() {
+                        println!("NOT applied — this client is not fully provisioned:");
+                        for line in outcome.refused {
+                            println!("  {}", line);
+                        }
+                        std::process::exit(1);
                     }
                 }
                 Err(err) => println!("Could not import that setup string: {}", err),

@@ -864,5 +864,9 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("password-hidden-tip", "Ein permanentes Passwort wurde festgelegt (ausgeblendet)."),
         ("preset-password-in-use-tip", "Das voreingestellte Passwort wird derzeit verwendet."),
         ("Enable privacy mode", "Datenschutzmodus aktivieren"),
+        ("Connect directly (no relay)", "Direkt verbinden (ohne Relay)"),
+        ("Direct access possible", "Direktzugriff möglich"),
+        ("Right-click for a direct-only connection.", "Rechtsklick für eine ausschließlich direkte Verbindung."),
+        ("The server shared no computers with this account. Check the user's access rights in the TBFDesk dashboard (ACL & Policy), then use the reload button above.", "Der Server hat diesem Konto keine Computer freigegeben. Prüfen Sie die Zugriffsrechte des Benutzers im TBFDesk-Dashboard (ACL & Policy) und verwenden Sie dann die Aktualisieren-Schaltfläche oben."),
     ].iter().cloned().collect();
 }

@@ -404,9 +404,34 @@ impl Client {
         // through to the unchanged hole-punch / relay path below. Skipped for
         // `other_server` sessions (whose endpoints are not ours to know) and when the
         // user asked for relay explicitly.
+        // "Connect directly" (per-peer nemo-force-direct, set by the peer menu): the
+        // operator asked for THIS path specifically, usually to find out whether a port
+        // forward works. Consumed here, before the attempt, so it governs exactly one
+        // connection however that connection ends.
+        let force_direct = other_server.is_empty() && crate::nemo_direct::take_force_direct(peer);
         if other_server.is_empty() && !interface.is_force_relay() {
             if let Some(conn) = Self::try_nemo_direct(peer, key).await {
                 return Ok((conn, (0, "".to_owned()), false));
+            }
+            // Falling back now would answer the wrong question -- a session that quietly
+            // went over the relay looks like a success and proves nothing about the
+            // forward -- so fail with the reason instead.
+            if force_direct {
+                let endpoint = crate::nemo_direct::endpoint_label(peer);
+                if endpoint.is_empty() {
+                    bail!(
+                        "Direct connection requested, but this server has published no \
+                         direct endpoint for {}. Set 'Reachable at' for it in the \
+                         dashboard, or connect normally.",
+                        peer
+                    );
+                }
+                bail!(
+                    "Direct connection to {} failed ({}). The relay was NOT used because \
+                     you asked for a direct connection; see the log for the reason.",
+                    peer,
+                    endpoint
+                );
             }
         }
         if crate::nemo_public_network_blocked()

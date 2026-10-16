@@ -282,5 +282,9 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("keep-awake-during-incoming-sessions-label", "Keep screen awake during incoming sessions"),
         ("password-hidden-tip", "Permanent password is set (hidden)."),
         ("preset-password-in-use-tip", "Preset password is currently in use."),
+        ("Connect directly (no relay)", "Connect directly (no relay)"),
+        ("Direct access possible", "Direct access possible"),
+        ("Right-click for a direct-only connection.", "Right-click for a direct-only connection."),
+        ("The server shared no computers with this account. Check the user's access rights in the TBFDesk dashboard (ACL & Policy), then use the reload button above.", "The server shared no computers with this account. Check the user's access rights in the TBFDesk dashboard (ACL & Policy), then use the reload button above."),
     ].iter().cloned().collect();
 }
