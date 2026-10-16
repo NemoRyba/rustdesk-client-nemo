@@ -27,6 +27,22 @@ use serde_derive::{Deserialize, Serialize};
 /// ignore the fields it does not know.
 pub const SETUP_PREFIX: &str = "tbfdesk-setup-v1:";
 
+/// Every config key `apply_setup` may write. The UI import handler reads these back
+/// after applying and re-sends them to the service over IPC — `apply_setup` writes
+/// through `Config::set_option` (correct for the `--import-setup` CLI, which runs
+/// before any service/IPC exists), but a GUI import must also reach the running
+/// service or the live client keeps the old server until the next restart.
+pub const APPLIED_OPTION_KEYS: &[&str] = &[
+    "custom-rendezvous-server",
+    "api-server",
+    "nemo-management-server",
+    "key",
+    "nemo-management-public-key",
+    "relay-server",
+    "nemo-api-cert-fingerprint",
+    "nemo-device-key",
+];
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct SetupServer {
     #[serde(default)]

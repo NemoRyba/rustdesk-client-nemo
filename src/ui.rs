@@ -984,6 +984,19 @@ impl UI {
         match crate::nemo_setup::parse_setup(&text) {
             Ok(bundle) => {
                 let applied = crate::nemo_setup::apply_setup(&bundle);
+                // apply_setup writes through Config::set_option (this GUI process only).
+                // Re-send each applied value to the service over IPC so the running
+                // rendezvous/poll adopts the new server, key and device key immediately —
+                // without this, a GUI import changes nothing for the live client until a
+                // restart (the service keeps its own config). Read the freshly written
+                // value from Config, not ui_interface's OPTIONS cache, which apply_setup
+                // did not touch.
+                for &k in crate::nemo_setup::APPLIED_OPTION_KEYS {
+                    let v = hbb_common::config::Config::get_option(k);
+                    if !v.trim().is_empty() {
+                        set_option(k.to_string(), v);
+                    }
+                }
                 *NEMO_SETUP_SUMMARY.lock().unwrap() = applied.join("\n");
                 String::new()
             }
