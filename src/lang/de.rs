@@ -168,6 +168,8 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("Refresh", "Aktualisieren"),
         ("Search ID or hostname", "ID oder Hostname suchen"),
         ("Import device key", "Geräteschlüssel importieren"),
+        ("Import setup string or device key", "Einrichtungszeichenfolge oder Geräteschlüssel importieren"),
+        ("Setup string or device key", "Einrichtungszeichenfolge oder Geräteschlüssel"),
         ("This device is not set up yet", "Dieses Gerät ist noch nicht eingerichtet"),
         ("A device key issued by your TBFDesk server is required before this client can be used.", "Ein vom TBFDesk-Server ausgestellter Geräteschlüssel ist erforderlich, bevor dieser Client verwendet werden kann."),
         ("Reload address book from server", "Adressbuch neu laden – die Liste der verfügbaren Computer vom Server aktualisieren"),

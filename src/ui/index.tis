@@ -603,13 +603,13 @@ function nemoLoadSetupFileInto(input) {
     if (!input) return;
     var url = view.selectFile(#open,
         translate("TBFDesk setup") + " (*.tbfsetup,*.txt,*.json)", "tbfsetup", "",
-        translate("Import device key"));
+        translate("Import setup string or device key"));
     if (!url) return;
     var text = handler.nemo_read_text_file(URL.toPath(url));
     if (!text || !text.trim()) {
         // Empty, unreadable, or too large to be one of our files - the Rust side logged
         // which. Say so here rather than leaving the field mysteriously unchanged.
-        msgbox("custom-nocancel-nook-hasclose", translate("Import device key"),
+        msgbox("custom-nocancel-nook-hasclose", translate("Import setup string or device key"),
             translate("That file could not be read, or it is empty."), "", null, 160, get_msgbox_width());
         return;
     }
@@ -634,10 +634,10 @@ function open_import_device_key_dialog() {
     // against the server's Device keys panel.
     var configured = handler.nemo_device_key_present();
     var fingerprint = handler.nemo_device_key_fingerprint();
-    msgbox("custom-server", translate("Import device key"),
+    msgbox("custom-server", translate("Import setup string or device key"),
             <div .form .set-password>
                 {configured ? <div style="margin-bottom:8px;font-size:0.9em"><span style="opacity:0.7">{translate('Current device key')}: </span><span style="font-family:monospace;word-break:break-all;user-select:text">{fingerprint}</span></div> : ""}
-                <div><span>{translate('Device key')}: </span><input|password .outline-focus #devkey-input name='devkey' value='' /></div>
+                <div><span>{translate('Setup string or device key')}: </span><input|password .outline-focus #devkey-input name='devkey' value='' /></div>
                 <div style="margin-top:5px"><button .custom-event #pick-setup-file style="padding:4px 12px">{translate('Load from file') + "..."}</button></div>
                 <div style="margin-top:6px;opacity:0.7;font-size:0.9em">{translate('Paste the device key or the setup string from your TBFDesk server. A setup string also configures the server addresses, so nothing else has to be typed in here.')}</div>
                 {configured ? <div style="margin-top:4px;opacity:0.7;font-size:0.9em">{translate('A device key is already configured. Paste a new one to replace it; leave empty to keep the current key.')}</div> : <div />}
@@ -689,7 +689,7 @@ function open_import_device_key_dialog() {
                 if (summary !== null) {
                     var lines = (summary || "").trim();
                     self.timer(120ms, function() {
-                        msgbox("custom-nocancel-nook-hasclose", translate("Import device key"),
+                        msgbox("custom-nocancel-nook-hasclose", translate("Import setup string or device key"),
                             "<div style='line-height:1.6em'>" +
                             "<div><b>" + translate("Settings imported") + "</b></div>" +
                             (lines ? "<div style='margin-top:4px;white-space:pre-wrap'>" + lines + "</div>"
@@ -814,7 +814,7 @@ class MyIdMenu: Reactor.Component {
                 {!disable_settings && !hide_server_settings && <li #custom-server>{translate('ID/Relay Server')}{(nemoExeServerSettingsLocked() || nemoManagementServerSettingsLocked()) ? " (locked)" : ""}</li>}
                 {!disable_settings && !hide_server_settings && nemo_management_settings && <li #nemo-management>Management</li>}
                 {!disable_settings && nemo_management_settings && <li #nemo-alias>{translate('Alias')}</li>}
-                {!disable_settings && <li #import-device-key>{translate('Import device key')}</li>}
+                {!disable_settings && <li #import-device-key>{translate('Import setup string or device key')}</li>}
                 {!disable_settings && <li #whitelist title={translate('whitelist_tip')}>{translate('IP Whitelisting')}</li>}
                 {!disable_settings && !hide_proxy_settings && <li #socks5-server>{translate('Socks5/Http(s) Proxy')}</li>}
                 {!disable_settings && !hide_websocket_settings && <li #allow-websocket><span>{svg_checkmark}</span>{translate('Use WebSocket')}</li>}
@@ -1086,7 +1086,7 @@ function nemoDevKeyGateCard() {
         <div style="text-align:center; font-size:16px; font-weight:bold; color:#334; margin-bottom:10px">{translate('This device is not set up yet')}</div>
         <div style="text-align:center; color:#667; margin-bottom:26px; font-size:13px">{translate('A device key issued by your TBFDesk server is required before this client can be used.')}<br />{translate('Your administrator can give you a setup string instead, which also fills in the server addresses.')}</div>
         <div style="text-align:center">
-            <button .button #gate-import-devkey style="padding:11px 44px; background:#0b7285; color:#fff; border:none; border-radius:6px; font-size:15px; font-weight:bold">{translate('Import device key')}</button>
+            <button .button #gate-import-devkey style="padding:11px 44px; background:#0b7285; color:#fff; border:none; border-radius:6px; font-size:15px; font-weight:bold">{translate('Import setup string or device key')}</button>
         </div>
     </div>;
 }
@@ -1103,7 +1103,7 @@ function nemoClaimGateCard(denied) {
             ? translate('Your administrator refused this device key. Ask them to clear the request or to issue a new key for this machine.')
             : translate('This device has asked to be registered with its device key. Your administrator has to confirm it once; this screen clears by itself within a minute of that.')}</div>
         <div style="text-align:center">
-            <button .button #gate-import-devkey style="padding:9px 30px; background:#fff; color:#0b7285; border:1px solid #0b7285; border-radius:6px; font-size:13px">{translate('Import device key')}</button>
+            <button .button #gate-import-devkey style="padding:9px 30px; background:#fff; color:#0b7285; border:1px solid #0b7285; border-radius:6px; font-size:13px">{translate('Import setup string or device key')}</button>
         </div>
     </div>;
 }
@@ -1439,7 +1439,7 @@ var NEMO_SETTING_TIPS = {
     "custom-server": "Choose which server this client uses to find and reach other computers.",
     "nemo-management": "Central management server settings (address and key).",
     "nemo-alias": "Give this computer a friendly name shown instead of its number.",
-    "import-device-key": "Import a key issued by your administrator so the server trusts this device.",
+    "import-device-key": "Import a setup string (server settings + key) or a bare device key issued by your administrator, so the server trusts this device.",
     "whitelist": "Only accept incoming connections from these specific IP addresses.",
     "socks5-server": "Send TBFDesk traffic through a proxy server.",
     "allow-websocket": "Connect using WebSocket, which can help get through strict firewalls.",
@@ -1557,7 +1557,7 @@ class NemoSettingsDialog: Reactor.Component {
         if (!disable_settings) {
             if (!hide_server_settings) sec.push(this.aRow("custom-server", translate('ID/Relay Server') + ((nemoExeServerSettingsLocked() || nemoManagementServerSettingsLocked()) ? " (locked)" : "")));
             if (!hide_server_settings && nemo_management_settings) sec.push(this.aRow("nemo-management", "Management"));
-            sec.push(this.aRow("import-device-key", translate('Import device key')));
+            sec.push(this.aRow("import-device-key", translate('Import setup string or device key')));
             sec.push(this.aRow("whitelist", translate('IP Whitelisting')));
             // TODO 12: direct IP access opens a listening port on this machine and
             // bypasses the server entirely - an exposure setting, so it sits next to
@@ -1867,7 +1867,7 @@ class App: Reactor.Component
                         </div>
                         <div #gate-error style="color:#d4380d; font-size:12px; margin-top:16px; text-align:center"></div>
                         {nemoCertBoxVnode()}
-                        <div .link #gate-import-devkey style="text-align:center; margin-top:14px; font-size:12px; color:#0b7285; text-decoration:underline; cursor:pointer">{translate('Import device key')}</div>
+                        <div .link #gate-import-devkey style="text-align:center; margin-top:14px; font-size:12px; color:#0b7285; text-decoration:underline; cursor:pointer">{translate('Import setup string or device key')}</div>
                     </div>
                     <div .nemo-build-id title={translate('Identifies the exact running build (git commit and date).')}>{"Build " + handler.get_build_id()}</div>
                 </div>;
