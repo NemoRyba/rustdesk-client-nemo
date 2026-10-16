@@ -27,6 +27,10 @@ type Status = (i32, bool, i64, String);
 lazy_static::lazy_static! {
     // stupid workaround for https://sciter.com/forums/topic/crash-on-latest-tis-mac-sdk-sometimes/
     static ref STUPID_VALUES: Mutex<Vec<Arc<Vec<Value>>>> = Default::default();
+    /// What the last imported setup string changed, for the dialog to show. Held here
+    /// rather than returned from the apply call so the TIS side can read it after the
+    /// dialog has closed and reopened the gate.
+    static ref NEMO_SETUP_SUMMARY: Mutex<String> = Default::default();
 }
 
 #[cfg(not(any(feature = "flutter", feature = "cli")))]
@@ -967,6 +971,53 @@ impl UI {
         crate::common::nemo_device_key_present()
     }
 
+    // The first-run setup string: does this paste look like one, what would it do, and
+    // apply it. The import dialog accepts either this or a bare device key, so it has to
+    // be able to tell them apart before deciding what to validate.
+    fn nemo_is_setup_string(&self, text: String) -> bool {
+        crate::nemo_setup::looks_like_setup(&text)
+    }
+
+    /// "" on success, otherwise the reason. On success the summary of what changed goes
+    /// to the log (and is read back by nemo_setup_summary for the dialog).
+    fn nemo_apply_setup_string(&self, text: String) -> String {
+        match crate::nemo_setup::parse_setup(&text) {
+            Ok(bundle) => {
+                let applied = crate::nemo_setup::apply_setup(&bundle);
+                *NEMO_SETUP_SUMMARY.lock().unwrap() = applied.join("\n");
+                String::new()
+            }
+            Err(err) => err.to_string(),
+        }
+    }
+
+    /// What the last successful import changed, newline separated, for the dialog to
+    /// show. Not derived from the config afterwards: "ID server: x (was y)" is only
+    /// knowable at the moment of the write.
+    fn nemo_setup_summary(&self) -> String {
+        NEMO_SETUP_SUMMARY.lock().unwrap().clone()
+    }
+
+    /// Read a setup file the operator downloaded from the dashboard. Text only, and
+    /// bounded: this is fed to the parser, not executed, but a wrong pick in a file
+    /// dialog should not pull a gigabyte into memory.
+    fn nemo_read_text_file(&self, path: String) -> String {
+        match std::fs::metadata(&path) {
+            Ok(md) if md.len() > 64 * 1024 => {
+                log::warn!("nemo_read_text_file: {} is too large to be a setup file", path);
+                return String::new();
+            }
+            _ => {}
+        }
+        match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(e) => {
+                log::error!("nemo_read_text_file failed for {}: {}", path, e);
+                String::new()
+            }
+        }
+    }
+
     // M1-CLAIM: "" / "pending" / "denied" -- whether the server is refusing this
     // machine because its (valid, issued) device key is still waiting for an
     // administrator to confirm the pairing. Set by the policy poll, which carries the
@@ -1141,6 +1192,10 @@ impl sciter::EventHandler for UI {
         fn nemo_seal_envelope(String);
         fn nemo_sealed_request_enabled();
         fn nemo_device_key_present();
+        fn nemo_is_setup_string(String);
+        fn nemo_apply_setup_string(String);
+        fn nemo_setup_summary();
+        fn nemo_read_text_file(String);
         fn nemo_claim_status();
         fn nemo_device_key_candidate_valid(String);
         fn nemo_cert_info_start(String);

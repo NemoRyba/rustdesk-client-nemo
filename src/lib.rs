@@ -43,6 +43,10 @@ mod auth_2fa;
     not(any(target_os = "android", target_os = "ios"))
 ))]
 mod nemo_management_client;
+// First-run provisioning in one importable string (device key + the server settings a
+// fresh client cannot reach the server without). Unconditional: the CLI import path and
+// the UI binding both need it, on every platform.
+pub mod nemo_setup;
 // Server-distributed direct endpoints + the optional SPA knock. Unconditional: the
 // controller path in client.rs reads it on every platform, and a workstation with no
 // endpoint pushed to it simply finds an empty map.

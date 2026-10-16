@@ -185,6 +185,15 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         // TODO 18: these three keys were missing from de.rs, so the German UI fell back
         // to the key text and read "RustDesk".
         ("About RustDesk", "Über TBFDesk"),
+        // The first-run setup string (device key + server settings in one paste).
+        ("Load from file", "Aus Datei laden"),
+        ("TBFDesk setup", "TBFDesk-Einrichtung"),
+        ("Paste the device key or the setup string from your TBFDesk server. A setup string also configures the server addresses, so nothing else has to be typed in here.", "Fügen Sie den Geräteschlüssel oder die Einrichtungszeichenfolge Ihres TBFDesk-Servers ein. Eine Einrichtungszeichenfolge setzt auch die Serveradressen – dann muss hier nichts weiter eingetragen werden."),
+        ("That is not a valid device key or setup string. Check you copied the whole thing with nothing else attached.", "Das ist kein gültiger Geräteschlüssel und keine gültige Einrichtungszeichenfolge. Prüfen Sie, ob Sie alles vollständig und ohne Zusätze kopiert haben."),
+        ("That file could not be read, or it is empty.", "Diese Datei konnte nicht gelesen werden oder ist leer."),
+        ("Settings imported", "Einstellungen übernommen"),
+        ("This client was already configured this way.", "Dieser Client war bereits so eingerichtet."),
+        ("Your administrator can give you a setup string instead, which also fills in the server addresses.", "Ihr Administrator kann Ihnen stattdessen eine Einrichtungszeichenfolge geben – diese setzt auch die Serveradressen."),
         ("Keep RustDesk background service", "TBFDesk-Hintergrunddienst aktiv halten"),
         ("Show RustDesk", "TBFDesk anzeigen"),
         ("Let the person connecting control this computer's keyboard and mouse.", "Erlaubt der verbindenden Person, Tastatur und Maus dieses Computers zu steuern."),

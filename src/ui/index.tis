@@ -595,42 +595,105 @@ function open_nemo_alias_dialog() {
             }, 200, get_msgbox_width());
 }
 
+// Load a setup file (or a device-key file) the operator downloaded from the dashboard
+// into the dialog's field. This is also the paste-proof route: Ctrl+V is broken in this
+// masked field on the installed Windows client (OPEN-TODOS 16), and a 44-character
+// secret - let alone a whole setup string - is not something to retype.
+function nemoLoadSetupFileInto(input) {
+    if (!input) return;
+    var url = view.selectFile(#open,
+        translate("TBFDesk setup") + " (*.tbfsetup,*.txt,*.json)", "tbfsetup", "",
+        translate("Import device key"));
+    if (!url) return;
+    var text = handler.nemo_read_text_file(URL.toPath(url));
+    if (!text || !text.trim()) {
+        // Empty, unreadable, or too large to be one of our files - the Rust side logged
+        // which. Say so here rather than leaving the field mysteriously unchanged.
+        msgbox("custom-nocancel-nook-hasclose", translate("Import device key"),
+            translate("That file could not be read, or it is empty."), "", null, 160, get_msgbox_width());
+        return;
+    }
+    input.value = text.trim();
+    view.focus = input;
+}
+
 // S-DUALKEY: import the private device key generated on the TBFDesk server, so
 // this client authenticates to the server with its own key. Saved to config
 // (nemo-device-key); the poll signs with it.
+//
+// It also accepts a SETUP STRING (tbfdesk-setup-v1:...), which carries that key plus the
+// six server values a fresh client cannot reach the server without. One field for both,
+// because an operator handed one string should not have to know which kind it is - and
+// because the alternative, a second dialog, is a second place to get provisioning wrong.
 function open_import_device_key_dialog() {
     // Never read the key back to show it: the field starts empty and is masked. A
     // remote operator watching this screen could otherwise copy the machine's Layer 1
-    // identity straight out of the input.
+    // identity straight out of the input. The same applies to a setup string, which
+    // contains the key.
     var configured = handler.nemo_device_key_present();
     msgbox("custom-server", translate("Import device key"),
             <div .form .set-password>
-                <div><span>{translate('Device key')}: </span><input|password .outline-focus name='devkey' value='' /></div>
-                <div style="margin-top:6px;opacity:0.7;font-size:0.9em">{configured ? translate('A device key is already configured. Paste a new one to replace it; leave empty to keep the current key.') : translate('Paste the private key generated on your TBFDesk server.')}</div>
+                <div><span>{translate('Device key')}: </span><input|password .outline-focus #devkey-input name='devkey' value='' /></div>
+                <div style="margin-top:5px"><button .custom-event #pick-setup-file style="padding:4px 12px">{translate('Load from file') + "..."}</button></div>
+                <div style="margin-top:6px;opacity:0.7;font-size:0.9em">{translate('Paste the device key or the setup string from your TBFDesk server. A setup string also configures the server addresses, so nothing else has to be typed in here.')}</div>
+                {configured ? <div style="margin-top:4px;opacity:0.7;font-size:0.9em">{translate('A device key is already configured. Paste a new one to replace it; leave empty to keep the current key.')}</div> : <div />}
             </div>,
             "", function(res=null, show_progress) {
                 if (!res) return;
+                // A .custom-event click (the file button) arrives on this same callback
+                // as the element itself, not as the form's values.
+                if (res.tag) {
+                    if (res.id == "pick-setup-file") nemoLoadSetupFileInto(self.$(#devkey-input));
+                    return;
+                }
                 if (typeof show_progress === 'function') show_progress();
                 // Empty now means "no change", not "remove". With no pre-fill an empty
                 // submit would otherwise wipe the key and lock this machine out of the
                 // fleet, since Layer 1 is mandatory.
                 var entered = (res.devkey || "").trim();
-                if (entered && !handler.nemo_device_key_candidate_valid(entered)) {
+                var summary = null;
+                if (entered && handler.nemo_is_setup_string(entered)) {
+                    // One call: it parses, validates and applies - or changes nothing
+                    // and returns why. A half-applied bundle would leave the machine
+                    // pointed at one server with another server's key.
+                    var err = handler.nemo_apply_setup_string(entered);
+                    if (err) {
+                        if (typeof show_progress === 'function') show_progress(-1);
+                        return err;
+                    }
+                    summary = handler.nemo_setup_summary();
+                } else if (entered && !handler.nemo_device_key_candidate_valid(entered)) {
                     // R6-14: used to be written unconditionally, so a bad paste closed
                     // the dialog as if it had worked and only showed up later as the
                     // provisioning gate silently reappearing, with nothing saying why.
                     // Returning a string here keeps the dialog open with the error
                     // instead (same contract the IP-whitelist dialog uses).
-                    return translate("That is not a valid device key. Check you copied the whole key with nothing else attached.");
+                    if (typeof show_progress === 'function') show_progress(-1);
+                    return translate("That is not a valid device key or setup string. Check you copied the whole thing with nothing else attached.");
+                } else if (entered) {
+                    handler.set_option("nemo-device-key", entered);
                 }
-                if (entered) handler.set_option("nemo-device-key", entered);
                 if (typeof show_progress === 'function') show_progress(-1);
                 // Layer 1: leave (or re-enter) the provisioning gate right away
                 // instead of waiting for the 3 s watcher tick. show_progress(-1) has
                 // already closed the msgbox, so this re-render never runs under it.
                 nemoLastDevKeyGate = null;   // let nemoEnforceLogin treat the next tick as a transition
                 if (app) app.update();
-            }, 200, get_msgbox_width());
+                // Say what the setup string actually changed. Provisioning that
+                // succeeds silently is unsupportable over the phone - and "it says
+                // nothing" is indistinguishable from "it did nothing".
+                if (summary !== null) {
+                    var lines = (summary || "").trim();
+                    self.timer(120ms, function() {
+                        msgbox("custom-nocancel-nook-hasclose", translate("Import device key"),
+                            "<div style='line-height:1.6em'>" +
+                            "<div><b>" + translate("Settings imported") + "</b></div>" +
+                            (lines ? "<div style='margin-top:4px;white-space:pre-wrap'>" + lines + "</div>"
+                                   : "<div style='margin-top:4px;opacity:0.75'>" + translate("This client was already configured this way.") + "</div>") +
+                            "</div>", "", null, 200, get_msgbox_width());
+                    });
+                }
+            }, 240, get_msgbox_width());
 }
 
 function open_whitelist_dialog() {
@@ -1017,7 +1080,7 @@ function nemoDevKeyGateCard() {
     return <div style="margin:*; width:340px; padding:40px 42px; background:#fff; border:1px solid #e2e6ea; border-radius:10px; flow:vertical">
         <div style="text-align:center; font-size:30px; font-weight:bold; color:#0b7285; margin-bottom:6px">TBFDesk</div>
         <div style="text-align:center; font-size:16px; font-weight:bold; color:#334; margin-bottom:10px">{translate('This device is not set up yet')}</div>
-        <div style="text-align:center; color:#667; margin-bottom:26px; font-size:13px">{translate('A device key issued by your TBFDesk server is required before this client can be used.')}</div>
+        <div style="text-align:center; color:#667; margin-bottom:26px; font-size:13px">{translate('A device key issued by your TBFDesk server is required before this client can be used.')}<br />{translate('Your administrator can give you a setup string instead, which also fills in the server addresses.')}</div>
         <div style="text-align:center">
             <button .button #gate-import-devkey style="padding:11px 44px; background:#0b7285; color:#fff; border:none; border-radius:6px; font-size:15px; font-weight:bold">{translate('Import device key')}</button>
         </div>

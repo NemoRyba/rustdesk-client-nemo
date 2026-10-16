@@ -56,6 +56,9 @@ CONFIGURATION
     --option <key> [value] [--force]  read or write a config option
     --config <path|host=..,key=..>  import a configuration
     --import-config <path>        import a configuration file
+    --import-setup <path|string>  import a TBFDesk setup string: the device key AND
+                                  the server settings, in one value from the
+                                  dashboard. Everything a fresh client needs.
 
     Most CONFIGURATION and SERVICE commands require an installed client and
     administrative privileges.
@@ -656,6 +659,29 @@ pub fn core_main() -> Option<Vec<String>> {
                 }
             }
             return None;
+        } else if args[0] == "--import-setup" {
+            // Unattended provisioning: the same string the UI's import dialog takes,
+            // from a file (the dashboard's download) or inline. Deliberately NOT gated
+            // on an installed client - the point is to configure a machine before
+            // anyone logs into its UI, which is also why it prints what it changed
+            // instead of succeeding silently.
+            let Some(arg) = args.get(1).filter(|a| !a.trim().is_empty()) else {
+                println!("Usage: --import-setup <file|string>. See --help.");
+                return None;
+            };
+            match crate::nemo_setup::import_setup(arg) {
+                Ok(applied) if applied.is_empty() => {
+                    println!("Setup string applied: this client was already configured this way.");
+                }
+                Ok(applied) => {
+                    println!("Setup string applied:");
+                    for line in applied {
+                        println!("  {}", line);
+                    }
+                }
+                Err(err) => println!("Could not import that setup string: {}", err),
+            }
+            return None;
         } else if args[0] == "--option" {
             if config::is_disable_settings() {
                 println!("Settings are disabled!");
@@ -1151,6 +1177,7 @@ fn is_user_main_ipc_scope_cli_command(args: &[String]) -> bool {
             | Some("--get-id")
             | Some("--set-id")
             | Some("--config")
+            | Some("--import-setup")
             | Some("--option")
             | Some("--assign")
             | Some("--deploy")
@@ -1173,6 +1200,10 @@ mod tests {
             "--get-id",
             "--set-id",
             "--config",
+            // Writes the same config options --config does (and a device key), so
+            // `sudo tbfdesk --import-setup ...` has to land in the USER's config rather
+            // than root's - the same routing bug --option was fixed for.
+            "--import-setup",
             "--option",
             "--assign",
             "--deploy",
