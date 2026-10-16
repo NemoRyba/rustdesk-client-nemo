@@ -53,11 +53,22 @@ window and in the Rust connection path. `nemo-outbound-targets` limits outgoing
 connections to exact target IDs separated by comma, semicolon, or whitespace;
 `*` allows every target.
 
-Updated clients also identify their local RustDesk ID and UUID during
-rendezvous using existing protocol fields. That lets a Nemo hbbs reject a
-blocked controller or disallowed target before the connection reaches the
-password prompt, while keeping the upstream `hbb_common` protobuf schema
-unchanged.
+Updated clients also identify their local TBFDesk ID and UUID during rendezvous, which
+lets hbbs reject a blocked controller or a disallowed target before the connection
+reaches the password prompt.
+
+**Changed 2026-10-16 (OPEN-TODOS 8):** that identity now travels in a real protobuf
+field, `NemoSource {id, uuid, token}` on `PunchHoleRequest` and `RequestRelay`, in the
+forked `hbb_common`. It used to be smuggled inside `PunchHoleRequest.version` and
+`RequestRelay.licence_key` precisely to keep the upstream schema unchanged — which also
+meant every controller gate depended on the server carving up a string, and a client that
+left the marker out read as "anonymous" rather than as a protocol error. The client sends
+both for now, and the server prefers the field, so an un-updated peer on either end keeps
+working. Either way the identity is **asserted, not proved**: what proves a controller is
+the device-key handshake, which the server prefers over both.
+
+How a fresh client gets configured in the first place — the device key and the one-paste
+setup string — is in [`nemo-provisioning.md`](nemo-provisioning.md).
 
 The advanced policy editor can also set other recognized global, local, and
 display option keys such as server settings, proxy settings, theme/language,
