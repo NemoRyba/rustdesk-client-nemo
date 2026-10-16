@@ -2663,6 +2663,22 @@ pub fn nemo_claim_status() -> String {
         .unwrap_or_default()
 }
 
+// Settings: a NON-SECRET fingerprint of the imported device key, so the operator can
+// confirm WHICH key this machine holds without the private seed ever crossing to
+// script. The public half (bytes 32..64 of the Ed25519 secret) is exactly what the
+// server pins/binds -- it matches the value shown in the dashboard's Device keys panel
+// and in the server's "device_key_pub" rejection log -- so it is safe to display and
+// useful to compare. Empty when no (valid) device key is imported. This is deliberately
+// the ONE device-key value the UI may read back; get_option still filters the secret
+// seed (see nemo_is_script_secret), so a remote operator watching the screen cannot
+// clone the machine's identity from it.
+pub fn nemo_device_key_fingerprint() -> String {
+    match nemo_device_ed25519() {
+        Some((pk, _sk)) => encode64(pk.as_ref()),
+        None => String::new(),
+    }
+}
+
 // R6-14: the "Import device key" dialog used to hand whatever was pasted straight to
 // set_option with no check at all. A typo or a copy-paste mistake (wrong field, a
 // trailing space eaten by a browser, half the key) still closed the dialog as if it

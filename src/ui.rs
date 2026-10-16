@@ -1033,6 +1033,13 @@ impl UI {
         crate::common::nemo_device_key_candidate_valid(&candidate)
     }
 
+    // Settings: the non-secret public-half fingerprint of the imported device key, so
+    // the dialog can show WHICH key is loaded (match it against the dashboard) without
+    // ever reading the secret seed back to script. "" when none is imported.
+    fn nemo_device_key_fingerprint(&self) -> String {
+        crate::common::nemo_device_key_fingerprint()
+    }
+
     // Login-gate certificate probe (accept-invalid; diagnostic only).
     fn nemo_cert_info_start(&self, url: String) {
         crate::common::nemo_cert_info_start(url);
@@ -1198,6 +1205,7 @@ impl sciter::EventHandler for UI {
         fn nemo_read_text_file(String);
         fn nemo_claim_status();
         fn nemo_device_key_candidate_valid(String);
+        fn nemo_device_key_fingerprint();
         fn nemo_cert_info_start(String);
         fn nemo_cert_info_result();
         fn nemo_save_text_file(String, String);
