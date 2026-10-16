@@ -65,10 +65,16 @@ fn make_tray() -> hbb_common::ResultType<()> {
         None
     };
     let open_i = MenuItem::new(translate("Open".to_owned()), true, None);
+    // Close the tray itself. The right-click menu had no way out: "Stop service" stops
+    // the background service (and so unattended access), which is not what a user who
+    // only wants the icon gone is asking for - and the two are not the same decision,
+    // so they are two entries. Exiting leaves the service running; the tray comes back
+    // the next time the client is started.
+    let exit_i = MenuItem::new(translate("Exit".to_owned()), true, None);
     if let Some(quit_i) = &quit_i {
-        tray_menu.append_items(&[&open_i, quit_i]).ok();
+        tray_menu.append_items(&[&open_i, quit_i, &exit_i]).ok();
     } else {
-        tray_menu.append_items(&[&open_i]).ok();
+        tray_menu.append_items(&[&open_i, &exit_i]).ok();
     }
     let tooltip = |count: usize| {
         if count == 0 {
@@ -168,22 +174,26 @@ fn make_tray() -> hbb_common::ResultType<()> {
         }
 
         if let Ok(event) = menu_channel.try_recv() {
-            if let Some(quit_i) = &quit_i {
-                if event.id == quit_i.id() {
-                    /* failed in windows, seems no permission to check system process
-                    if !crate::check_process("--server", false) {
-                        *control_flow = ControlFlow::Exit;
-                        return;
-                    }
-                    */
-                    if !crate::platform::uninstall_service(false, false) {
-                        *control_flow = ControlFlow::Exit;
-                    }
-                } else if event.id == open_i.id() {
-                    open_func();
-                }
-            } else if event.id == open_i.id() {
+            // Flat, not nested per presence of `quit_i`: the nested form made each new
+            // entry a second branch to remember, and "Stop service" being absent (the
+            // hide-stop-service build option) must not change what the others do.
+            if event.id == open_i.id() {
                 open_func();
+            } else if event.id == exit_i.id() {
+                // Just the tray. The service, and therefore unattended access, keeps
+                // running - stopping that is the entry above, deliberately separate.
+                log::info!("Tray closed from its menu; the service is left running");
+                *control_flow = ControlFlow::Exit;
+            } else if quit_i.as_ref().map(|q| event.id == q.id()).unwrap_or(false) {
+                /* failed in windows, seems no permission to check system process
+                if !crate::check_process("--server", false) {
+                    *control_flow = ControlFlow::Exit;
+                    return;
+                }
+                */
+                if !crate::platform::uninstall_service(false, false) {
+                    *control_flow = ControlFlow::Exit;
+                }
             }
         }
 

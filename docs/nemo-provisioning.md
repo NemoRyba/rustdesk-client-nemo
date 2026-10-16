@@ -79,14 +79,19 @@ All the fields in both blocks are editable before anything is generated.
 
 Three routes, all landing in the same code (`src/nemo_setup.rs`):
 
-1. **The gate / settings dialog** — *Import device key*. The one field takes **either** a
-   bare device key **or** a setup string; an operator handed one string should not have to
-   know which kind it is. On success the dialog says what changed.
+1. **The gate / settings dialog** — *Import setup string or device key*. The one field
+   takes **either** a bare device key **or** a setup string; an operator handed one string
+   should not have to know which kind it is. On success the dialog says what changed, and
+   the applied values are pushed to the running service over IPC, so the live client
+   adopts the new server and key immediately instead of at the next restart.
+   The field is plain text, not masked: Sciter's masked input eats Ctrl+V
+   (`OPEN-TODOS` 16), and a setup string is far too long to retype.
 2. **Load from file…** in that dialog — pick the `.tbfsetup` downloaded from the
-   dashboard. Also the route that works while Ctrl+V is broken in that masked field
-   (`OPEN-TODOS` 16).
+   dashboard. Nothing to paste at all, which is also the route to use if the clipboard
+   is unavailable (an RDP session without clipboard redirection, a locked-down desktop).
 3. **Unattended:** `tbfdesk --import-setup <file|string>`. Runs before any UI exists and
-   prints what it changed. Under `sudo` it writes the *user's* config, not root's.
+   prints what it changed. Under `sudo` it writes the *user's* config, not root's. No IPC
+   push is needed or possible here — the service reads the config when it starts.
 
 A bundle with no device key in it does **not** clear a key the machine already has, and
 the device key is written last — a failure anywhere leaves the machine un-keyed rather
@@ -99,6 +104,85 @@ phone: not valid base64 (a truncated copy), damaged or incomplete JSON, a bundle
 **newer** server (format `v2+`), no ID server, an `api-server` that is not an `http(s)`
 URL, a server key that is not a valid Ed25519 public key, and a device key that does not
 pass the same check the key field applies. Nothing is applied unless all of it passes.
+
+## Removing the settings again (Windows)
+
+Where they are, because the client writes two copies and the second one is the one people
+miss:
+
+| Path | Whose |
+|---|---|
+| `%APPDATA%\RustDesk\config\` | the signed-in user's client |
+| `C:\Windows\ServiceProfiles\LocalService\AppData\Roaming\RustDesk\config\` | the **service** (`--server`), which keeps its own copy and syncs over IPC |
+
+In each: `RustDesk.toml` (ID, keypair, permanent password), `RustDesk2.toml` (**every**
+option — the device key `nemo-device-key`, the server addresses, the identity key, the
+certificate pin), `RustDesk_local.toml` (local state incl. the login token),
+`RustDesk_status.toml`, `RustDesk_lan_peers.toml`, plus `peers\*.toml`, the
+`RustDesk_ab` / `RustDesk_group` caches, and `%APPDATA%\RustDesk\log\`.
+
+`APP_NAME` is still `RustDesk` (see `RENAMING-PLAN.md`), so every path reads RustDesk even
+though the UI says TBFDesk.
+
+### Reset the settings, keep the install
+
+Elevated PowerShell. Also in the superproject as
+`scripts/reset-windows-client-config.ps1`:
+
+```powershell
+Stop-Service RustDesk -Force -EA 0; Start-Sleep 2
+foreach($d in @("$env:APPDATA\RustDesk\config",'C:\Windows\ServiceProfiles\LocalService\AppData\Roaming\RustDesk\config')){
+  if(Test-Path $d){ Get-ChildItem $d -Filter *.toml | %{ Copy-Item $_.FullName "$($_.FullName).bak" -Force; Remove-Item $_.FullName -Force } }
+}
+Start-Service RustDesk; (Get-Service RustDesk).Status
+```
+
+It clears the five `*.toml` in both directories and leaves a `.bak` of each. It does
+**not** touch `peers\*.toml` (a subdirectory, so the filter does not match it), the
+`RustDesk_ab` / `RustDesk_group` caches (no `.toml` extension), the logs, or anything
+outside the config directories.
+
+Three things to know afterwards:
+
+- **The backups are secrets.** `RustDesk2.toml.bak` still contains the device key — this
+  machine's Layer 1 identity — and `RustDesk.toml.bak` its keypair. That is exactly what
+  you want for a repair; for a decommission, delete them.
+- **The machine comes back with a new TBFDesk ID**, because the keypair is regenerated on
+  the next start.
+- **So the server now has a key bound to an ID that no longer exists.** Clear or re-point
+  that key's *Bound to ID* in the dashboard, or delete it and issue a new one; with
+  first-use claiming on, clearing the binding re-arms it and the machine's next attempt
+  files a fresh claim. Then import a setup string as above.
+
+### Remove everything (decommission)
+
+Uninstall first (`tbfdesk --uninstall`, or Apps & Features). That removes the install
+directory, the Start-menu folder and shortcuts (both the old `RustDesk*` and the current
+`TBFDesk*` names), the uninstall registry key, the `HKCR\.rustdesk` / `HKCR\rustdesk`
+entries, the `RustDesk` service, the `RustDesk Service` firewall rule, the printer
+driver, the Amyuni IDD and the test certificates. It deliberately does **not** remove the
+config, so that a reinstall keeps the ID and password. Then, elevated:
+
+```cmd
+rd /s /q "%APPDATA%\RustDesk"
+rd /s /q "C:\Windows\ServiceProfiles\LocalService\AppData\Roaming\RustDesk"
+rd /s /q "C:\Users\Public\Documents\RustDesk"
+rd /s /q "%ProgramFiles%\RustDesk"
+reg delete "HKCU\Software\Classes\rustdesk" /f 2>nul
+```
+
+Run the `%APPDATA%` line for **every** user profile that ran the client
+(`C:\Users\*\AppData\Roaming\RustDesk`), not just the one you are signed in as. The
+`Public\Documents\RustDesk` directory is the custom-client staging dir, which the
+uninstaller leaves on purpose. Installers downloaded by the updater sit in `%TEMP%`.
+
+### The tray menu
+
+Right-clicking the tray icon offers **Open**, **Stop service** and **Exit**. They are
+three different things: *Stop service* stops the background service and with it
+unattended access (the machine stops being reachable); *Exit* closes only the tray icon
+and leaves the service running — it returns the next time the client starts. A reset like
+the one above stops and starts the service itself, so neither entry is needed for it.
 
 ## Afterwards
 
