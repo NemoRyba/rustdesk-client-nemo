@@ -112,34 +112,42 @@ miss:
 
 | Path | Whose |
 |---|---|
-| `%APPDATA%\RustDesk\config\` | the signed-in user's client |
-| `C:\Windows\ServiceProfiles\LocalService\AppData\Roaming\RustDesk\config\` | the **service** (`--server`), which keeps its own copy and syncs over IPC |
+| `%APPDATA%\TBFDesk\config\` | the signed-in user's client |
+| `C:\Windows\ServiceProfiles\LocalService\AppData\Roaming\TBFDesk\config\` | the **service** (`--server`), which keeps its own copy and syncs over IPC |
 
-In each: `RustDesk.toml` (ID, keypair, permanent password), `RustDesk2.toml` (**every**
+In each: `TBFDesk.toml` (ID, keypair, permanent password), `TBFDesk2.toml` (**every**
 option — the device key `nemo-device-key`, the server addresses, the identity key, the
-certificate pin), `RustDesk_local.toml` (local state incl. the login token),
-`RustDesk_status.toml`, `RustDesk_lan_peers.toml`, plus `peers\*.toml`, the
-`RustDesk_ab` / `RustDesk_group` caches, and `%APPDATA%\RustDesk\log\`.
+certificate pin), `TBFDesk_local.toml` (local state incl. the login token),
+`TBFDesk_status.toml`, `TBFDesk_lan_peers.toml`, plus `peers\*.toml`, the
+`TBFDesk_ab` / `TBFDesk_group` caches, and `%APPDATA%\TBFDesk\log\`.
 
-`APP_NAME` is still `RustDesk` (see `RENAMING-PLAN.md`), so every path reads RustDesk even
-though the UI says TBFDesk.
+**On a machine upgraded from 1.4.7 there is a third and a fourth copy**, the
+`…\RustDesk\config\` directory of each profile. Since 1.4.8 `APP_NAME` is `TBFDesk` and a
+first start migrates a RustDesk-named config into the new location (RENAMING-PLAN Layer 2
+— the copy is deliberate, it is the rollback path). That means **clearing only the TBFDesk
+directories does not reset the machine**: the next start migrates the old identity straight
+back in. Clear all four, which is what the script below does.
 
 ### Reset the settings, keep the install
 
 Elevated PowerShell. Also in the superproject as
-`scripts/reset-windows-client-config.ps1`:
+`scripts/reset-windows-client-config.ps1`, which is the maintained copy — use it rather
+than pasting this:
 
 ```powershell
-Stop-Service RustDesk -Force -EA 0; Start-Sleep 2
-foreach($d in @("$env:APPDATA\RustDesk\config",'C:\Windows\ServiceProfiles\LocalService\AppData\Roaming\RustDesk\config')){
-  if(Test-Path $d){ Get-ChildItem $d -Filter *.toml | %{ Copy-Item $_.FullName "$($_.FullName).bak" -Force; Remove-Item $_.FullName -Force } }
+foreach ($n in @('TBFDesk','RustDesk')) { Stop-Service $n -Force -EA 0 }
+Start-Sleep 2
+foreach ($d in @("$env:APPDATA\TBFDesk\config", "$env:APPDATA\RustDesk\config",
+                 'C:\Windows\ServiceProfiles\LocalService\AppData\Roaming\TBFDesk\config',
+                 'C:\Windows\ServiceProfiles\LocalService\AppData\Roaming\RustDesk\config')) {
+  if (Test-Path $d) { Get-ChildItem $d -Filter *.toml | % { Copy-Item $_.FullName "$($_.FullName).bak" -Force; Remove-Item $_.FullName -Force } }
 }
-Start-Service RustDesk; (Get-Service RustDesk).Status
+Start-Service TBFDesk; (Get-Service TBFDesk).Status
 ```
 
-It clears the five `*.toml` in both directories and leaves a `.bak` of each. It does
+It clears the `*.toml` in all four directories and leaves a `.bak` of each. It does
 **not** touch `peers\*.toml` (a subdirectory, so the filter does not match it), the
-`RustDesk_ab` / `RustDesk_group` caches (no `.toml` extension), the logs, or anything
+`TBFDesk_ab` / `TBFDesk_group` caches (no `.toml` extension), the logs, or anything
 outside the config directories.
 
 Three things to know afterwards:
