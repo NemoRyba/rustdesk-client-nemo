@@ -276,20 +276,21 @@ div.remote-session .platform svg {
 
 /* TBFDesk: "direct access possible" on a peer tile. The relay costs about a third of
    the link, so which machines can be reached without it is the one property worth a
-   mark of its own. Green, top-right, out of the way of the platform glyph. */
+   mark of its own. The badge is a drawn icon (ab.tis svg_direct), so this only has to
+   place it -- no background, no padding: the disc is part of the artwork. */
 .nemo-direct-badge {
-    color: #ffffff;
-    background: #1a7a34;
-    border-radius: 0.6em;
-    font-size: 0.8em;
-    font-weight: bold;
-    padding: 1px 6px;
+    size: 18px;
+}
+
+.nemo-direct-badge svg {
+    width: 18px;
+    height: 18px;
 }
 
 div.remote-session .platform .nemo-direct-badge {
     position: absolute;
-    top: 6px;
-    right: 6px;
+    top: 7px;
+    right: 7px;
 }
 
 div.remote-session-list .nemo-direct-badge {
