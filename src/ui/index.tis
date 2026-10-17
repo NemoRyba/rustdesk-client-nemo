@@ -90,7 +90,24 @@ class ConnectStatus: Reactor.Component {
                 <span class={"connect-status-icon connect-status" + (service_stopped ? 0 : connect_status)} />
                 {this.getConnectStatusStr()}
                 {service_stopped ? <span .link #start-service>{translate('Start service')}</span> : ""}
+                {this.getRegistrationBadge()}
             </div>;
+    }
+
+    // Nemo: "Ready" alone does not say WHETHER this ID is registered, nor whether the
+    // server checked the device key. Shown only once the server is answering (status > 0):
+    // with require-device-key on, a connection without a valid proof is closed before any
+    // answer, so "answering + key_confirmed + device key present" means the server
+    // verified this machine's device key and registered its ID. key_confirmed is cleared
+    // by the mediator on NOT_DEPLOYED / a changed pk, so "Not registered" is the live case
+    // of an answered connection whose ID the server has not (or no longer) accepted.
+    function getRegistrationBadge() {
+        if (service_stopped || connect_status <= 0) return "";
+        if (!key_confirmed)
+            return <span class="nemo-reg nemo-reg-warn" title={translate('nemo_reg_not_tip')}>{translate('Not registered')}</span>;
+        if (handler.nemo_device_key_present())
+            return <span class="nemo-reg nemo-reg-ok" title={translate('nemo_reg_ok_tip')}>{translate('Registered')}</span>;
+        return <span class="nemo-reg nemo-reg-warn" title={translate('nemo_reg_nokey_tip')}>{translate('No device key')}</span>;
     }
 
     function getConnectStatusStr() {

@@ -242,6 +242,20 @@ span.connect-status0 {
     background: #F5853B;
 }
 
+/* Nemo: registration badge next to "Ready" (index.tis ConnectStatus.getRegistrationBadge) */
+span.nemo-reg {
+    margin-left: 0.6em;
+    font-weight: bold;
+}
+
+span.nemo-reg-ok {
+    color: #32bea6;
+}
+
+span.nemo-reg-warn {
+    color: #F5853B;
+}
+
 div.recent-sessions-content {
     border-spacing: 1em;
     flow: horizontal-flow;
