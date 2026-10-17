@@ -703,7 +703,7 @@ function open_import_device_key_dialog() {
                         msgbox("custom-nocancel-nook-hasclose", translate("Import setup string or device key"),
                             "<div style='line-height:1.6em'>" +
                             "<div><b>" + translate("Settings imported") + "</b></div>" +
-                            (lines ? "<div style='margin-top:4px;white-space:pre-wrap'>" + lines + "</div>"
+                            (lines ? "<div style='margin-top:4px;white-space:pre-wrap;word-break:break-all'>" + lines + "</div>"
                                    : "<div style='margin-top:4px;opacity:0.75'>" + translate("This client was already configured this way.") + "</div>") +
                             "</div>", "", null, 200, get_msgbox_width());
                     });
@@ -1135,6 +1135,10 @@ function nemoGateServerValue() {
     // setup string had just supplied. get_api_server() resolves it the same way the
     // request path does, so it is right whether or not the cache has caught up.
     if (!v) v = (handler.get_api_server() || "").trim();
+    // Last resort, and the one that is always right: the stored config. Seen on a freshly
+    // provisioned Windows machine, where both of the above were still empty when the gate
+    // first rendered.
+    if (!v) v = (handler.nemo_configured_api_server() || "").trim();
     return v;
 }
 // Derive the ID host and api-server URL from a user-typed server value.

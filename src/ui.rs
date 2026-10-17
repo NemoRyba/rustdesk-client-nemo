@@ -1033,6 +1033,22 @@ impl UI {
         NEMO_SETUP_SUMMARY.lock().unwrap().clone()
     }
 
+    /// The api-server as the CONFIG has it, not as the UI's option cache has it.
+    ///
+    /// That cache is seeded once at process start and refreshed over IPC, so on a machine
+    /// provisioned in THIS session it can still be empty — and the login gate then asked
+    /// the user for a server address the setup string had just supplied. Reading the
+    /// config is what the request path effectively does anyway.
+    fn nemo_configured_api_server(&self) -> String {
+        let api = hbb_common::config::Config::get_option("api-server");
+        if !api.trim().is_empty() {
+            return api.trim().to_owned();
+        }
+        hbb_common::config::Config::get_option("custom-rendezvous-server")
+            .trim()
+            .to_owned()
+    }
+
     /// Where this peer can be reached WITHOUT the relay, as `host:port`, or "" when the
     /// management server has published nothing for it — which is exactly when direct
     /// access is not possible. The address book marks the ones that are: the relay costs
@@ -1261,6 +1277,7 @@ impl sciter::EventHandler for UI {
         fn nemo_is_setup_string(String);
         fn nemo_apply_setup_string(String);
         fn nemo_setup_summary();
+        fn nemo_configured_api_server();
         fn nemo_direct_endpoint(String);
         fn nemo_force_direct(String);
         fn nemo_set_force_direct(String, bool);
