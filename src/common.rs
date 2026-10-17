@@ -1082,9 +1082,19 @@ pub fn get_display_name() -> String {
     DISPLAY_NAME.to_owned()
 }
 
+/// RENAMING-PLAN Layer 5. Its one caller is `lang::translate`, where a `false` turns on
+/// "rewrite the word RustDesk in every translated string into the app name". That rewrite
+/// is for custom-client builds whose name came from an embedded blob; this fork's own
+/// strings are already branded (892 values across 49 locales), and the handful that still
+/// say RustDesk say it on purpose -- the AGPL attribution and two upstream doc links. So
+/// the predicate is "nothing overrode the name", exactly as before Layer 1, rather than a
+/// literal that the rename would have flipped.
 #[inline]
 pub fn is_rustdesk() -> bool {
-    hbb_common::config::APP_NAME.read().unwrap().eq("RustDesk")
+    hbb_common::config::APP_NAME
+        .read()
+        .unwrap()
+        .eq(hbb_common::config::DEFAULT_APP_NAME)
 }
 
 #[inline]
@@ -3283,9 +3293,16 @@ pub fn get_builtin_option(key: &str) -> String {
         .unwrap_or_default()
 }
 
+/// RENAMING-PLAN Layer 5. This asks "did an embedded custom-client blob override the app
+/// name?" -- the only writer of `APP_NAME` besides the default is `read_custom_client()`.
+/// It was spelled `!= "RustDesk"` because that WAS the default; after Layer 1 that literal
+/// would make it unconditionally true, which silently turns on the "powered by" link and
+/// replaces five option defaults in `index.tis` (language, approve mode, whitelist, two
+/// Y/N pairs). Comparing against the compiled-in default keeps the original meaning and
+/// stays correct through any future rename.
 #[inline]
 pub fn is_custom_client() -> bool {
-    get_app_name() != "RustDesk"
+    get_app_name() != hbb_common::config::DEFAULT_APP_NAME
 }
 
 pub fn verify_login(_raw: &str, _id: &str) -> bool {
@@ -3912,6 +3929,12 @@ mod tests {
             }
         }
 
+        // This writes the process-global Config, so it has to serialise with the other
+        // config-writing tests: `nemo_setup`'s import test asserts on
+        // `custom-rendezvous-server` right after setting it, and would read this test's
+        // "1:2" instead. It restored the value but never took the lock, so the two raced
+        // and which one failed depended on thread scheduling.
+        let _config_guard = lock_config_for_test();
         let _restore = RestoreCustomRendezvousServer(Config::get_option(
             keys::OPTION_CUSTOM_RENDEZVOUS_SERVER,
         ));

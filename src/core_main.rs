@@ -149,6 +149,11 @@ pub fn core_main() -> Option<Vec<String>> {
         return None;
     }
     crate::load_custom_client();
+    // RENAMING-PLAN Layer 2. Has to run here: `load_custom_client()` above is the last
+    // thing that can still change APP_NAME, and the first config read is already a few
+    // lines below (the `pre-elevate-service` lookup), well before `init_log`. So the
+    // migration happens first and the report is logged once there is somewhere to log to.
+    let config_migration = config::Config::migrate_legacy_app_name();
     #[cfg(windows)]
     if !crate::platform::windows::bootstrap() {
         // return None to terminate the process
@@ -284,6 +289,15 @@ pub fn core_main() -> Option<Vec<String>> {
         }
     }
     hbb_common::init_log(false, &log_name);
+    if let Some(m) = config_migration {
+        log::info!(
+            "carried {} config file(s) from {:?} to {:?}: {}",
+            m.copied.len(),
+            m.from,
+            m.to,
+            m.copied.join(", ")
+        );
+    }
 
     // linux uni (url) go here.
     #[cfg(all(target_os = "linux", feature = "flutter"))]

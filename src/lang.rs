@@ -1,6 +1,9 @@
 use hbb_common::regex::Regex;
 use std::ops::Deref;
 
+/// The lookup key of the AGPL attribution. Kept verbatim in every locale on purpose.
+const ATTRIBUTION: &str = "Based on the open-source RustDesk project.";
+
 mod ar;
 mod be;
 mod bg;
@@ -201,6 +204,11 @@ pub fn translate_locale(name: String, locale: &str) -> String {
             if s.contains("RustDesk")
                 && !name.starts_with("upgrade_rustdesk_server_pro")
                 && name != "powered_by_me"
+                // The AGPL attribution names the upstream project, not this app. It has
+                // no value in en.rs, so `translate` falls back to the key -- which this
+                // rewrite would happily turn into "Based on the open-source TBFDesk
+                // project.", i.e. a false claim in place of the attribution we owe.
+                && name != ATTRIBUTION
             {
                 let app_name = crate::get_app_name();
                 if !app_name.contains("RustDesk") {
@@ -261,6 +269,24 @@ fn extract_placeholder(input: &str) -> (String, Option<String>) {
 }
 
 mod test {
+    /// RENAMING-PLAN Layer 5. `translate` rewrites the word "RustDesk" into the app name
+    /// for a custom-client build; the AGPL attribution must survive that, in every
+    /// locale, or the app claims to be based on itself.
+    #[test]
+    fn the_agpl_attribution_still_names_the_upstream_project() {
+        for lang in ["en", "de", "cn", "fr"] {
+            let s = super::translate_locale(super::ATTRIBUTION.to_owned(), lang);
+            assert!(
+                s.contains("RustDesk"),
+                "{lang} attribution lost the upstream name: {s}"
+            );
+            assert!(
+                !s.contains("TBFDesk"),
+                "{lang} attribution was rebranded: {s}"
+            );
+        }
+    }
+
     #[test]
     fn test_extract_placeholders() {
         use super::extract_placeholder as f;

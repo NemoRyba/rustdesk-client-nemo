@@ -86,10 +86,19 @@ div.sessions-bar {
     flow: horizontal;
 }
 
+/* TBFDesk: let the tab labels wrap. An installed client shows four tabs, and in German
+   ("Letzte Sitzungen", "Favoriten", "Im LAN erkannt", "Adressbuch") they do not fit on
+   one line beside the search box -- so the measuring code that used to live in ab.tis
+   ellipsised all four at once. With no max-width forced on them these are ordinary
+   inline-blocks and the row wraps to a second line, which costs one row and keeps every
+   label readable. */
 div.sessions-tab span {
     display: inline-block;
     padding: 6px 8px;
     cursor: pointer;
+    /* The ellipsis is now a last resort: it can only bite a single label that is wider
+       than the whole row on its own. */
+    max-width: 100%;
     @ELLIPSIS;
 }
 

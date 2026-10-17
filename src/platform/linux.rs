@@ -26,6 +26,22 @@ use std::{
 use terminfo::{capability as cap, Database};
 use wallpaper;
 
+/// RENAMING-PLAN: the name of the **package and the binary** on Linux, which Layer 1 did
+/// NOT change and Layer 3 explicitly recommends keeping: the crate is `rustdesk`, so the
+/// built executable is `rustdesk` whatever `APP_NAME` says, and the packages install
+/// `rustdesk.service`, `rustdesk.desktop`, `/etc/rustdesk/xorg.conf`,
+/// `/etc/rustdesk/startwm.sh` and `/etc/pam.d/rustdesk`.
+///
+/// Everything here used to be spelled `get_app_name().to_lowercase()`, which happened to
+/// give the right answer only while the app name and the package name were the same word.
+/// Since Layer 1 they differ, and following `APP_NAME` would make an installed client
+/// look for a systemd unit, a desktop entry and an Xorg config that no package ever
+/// wrote - and grep for a process name that no build ever produces.
+///
+/// The config directory is NOT one of these: it follows `APP_NAME`, and
+/// `Config::migrate_legacy_app_name()` moves it.
+pub const PACKAGE_NAME: &str = "rustdesk";
+
 pub const PA_SAMPLE_RATE: u32 = 48000;
 static mut UNMODIFIED: bool = true;
 
@@ -699,7 +715,7 @@ fn set_x11_env(desktop: &Desktop) {
 fn stop_rustdesk_servers() {
     let _ = run_cmds(&format!(
         r##"ps -ef | grep -E '{} +--server' | awk '{{print $2}}' | xargs -r kill -9"##,
-        crate::get_app_name().to_lowercase(),
+        crate::platform::linux::PACKAGE_NAME.to_owned(),
     ));
 }
 
@@ -707,11 +723,11 @@ fn stop_rustdesk_servers() {
 fn stop_subprocess() {
     let _ = run_cmds(&format!(
         r##"ps -ef | grep '/etc/{}/xorg.conf' | grep -v grep | awk '{{print $2}}' | xargs -r kill -9"##,
-        crate::get_app_name().to_lowercase(),
+        crate::platform::linux::PACKAGE_NAME.to_owned(),
     ));
     let _ = run_cmds(&format!(
         r##"ps -ef | grep -E '{} +--cm-no-ui' | grep -v grep | awk '{{print $2}}' | xargs -r kill -9"##,
-        crate::get_app_name().to_lowercase(),
+        crate::platform::linux::PACKAGE_NAME.to_owned(),
     ));
 }
 
@@ -1684,7 +1700,7 @@ mod desktop {
         }
 
         fn get_display_xauth_xwayland(&mut self) {
-            let tray = format!("{} +--tray", crate::get_app_name().to_lowercase());
+            let tray = format!("{} +--tray", crate::platform::linux::PACKAGE_NAME.to_owned());
             for _ in 1..=10 {
                 let display_proc = vec![
                     XDG_DESKTOP_PORTAL,
@@ -1794,7 +1810,7 @@ mod desktop {
 
         fn get_xauth_x11(&mut self) {
             // try by direct access to window manager process by name
-            let tray = format!("{} +--tray", crate::get_app_name().to_lowercase());
+            let tray = format!("{} +--tray", crate::platform::linux::PACKAGE_NAME.to_owned());
             for _ in 1..=10 {
                 let display_proc = vec![
                     XWAYLAND,
@@ -1893,7 +1909,7 @@ mod desktop {
             self.is_rustdesk_subprocess = false;
             let cmd = format!(
                 "ps -ef | grep '{}/xorg.conf' | grep -v grep | wc -l",
-                crate::get_app_name().to_lowercase()
+                crate::platform::linux::PACKAGE_NAME.to_owned()
             );
             if let Ok(res) = run_cmds(&cmd) {
                 if res.trim() != "0" {
@@ -2039,6 +2055,9 @@ fn switch_service(stop: bool) -> String {
         .unwrap_or_default();
     Config::set_option("stop-service".into(), if stop { "Y" } else { "" }.into());
     if !home.is_empty() && home != "/root" && !Config::get().is_empty() {
+        // NOT PACKAGE_NAME: this copies the user's CONFIG over to root's, so both halves
+        // follow APP_NAME - the directory `directories_next` derives from it (lowercased
+        // on Linux) and the file names `Config::file_()` spells with it.
         let app_name_lower = crate::get_app_name().to_lowercase();
         let app_name0 = crate::get_app_name();
         let config_subdir = format!(".config/{}", app_name_lower);
@@ -2062,7 +2081,7 @@ pub fn uninstall_service(show_new_window: bool, _: bool) -> bool {
     }
     log::info!("Uninstalling service...");
     let cp = switch_service(true);
-    let app_name = crate::get_app_name().to_lowercase();
+    let app_name = crate::platform::linux::PACKAGE_NAME.to_owned();
     // systemctl kill rustdesk --tray, execute cp first
     if !run_cmds_privileged(&format!(
         "{cp} systemctl disable {app_name}; systemctl stop {app_name};"
@@ -2084,7 +2103,7 @@ pub fn install_service() -> bool {
     }
     log::info!("Installing service...");
     let cp = switch_service(false);
-    let app_name = crate::get_app_name().to_lowercase();
+    let app_name = crate::platform::linux::PACKAGE_NAME.to_owned();
     if !run_cmds_privileged(&format!(
         "{cp} systemctl enable {app_name}; systemctl start {app_name};"
     )) {
@@ -2095,7 +2114,7 @@ pub fn install_service() -> bool {
 
 fn check_if_stop_service() {
     if Config::get_option("stop-service".into()) == "Y" {
-        let app_name = crate::get_app_name().to_lowercase();
+        let app_name = crate::platform::linux::PACKAGE_NAME.to_owned();
         allow_err!(run_cmds(&format!(
             "systemctl disable {app_name}; systemctl stop {app_name}"
         )));
@@ -2112,7 +2131,7 @@ pub fn check_autostart_config() -> ResultType<()> {
             return Ok(());
         }
     };
-    let app_name = crate::get_app_name().to_lowercase();
+    let app_name = crate::platform::linux::PACKAGE_NAME.to_owned();
     let path = format!("{home}/.config/autostart");
     let file = format!("{path}/{app_name}.desktop");
     // https://github.com/rustdesk/rustdesk/issues/4863
@@ -2219,12 +2238,15 @@ fn get_shortcuts_inhibitor_app_id() -> String {
         match std::env::var("FLATPAK_ID") {
             Ok(id) if !id.is_empty() => format!("{}.desktop", id),
             _ => {
-                let app_name = crate::get_app_name();
-                format!("com.{}.{}.desktop", app_name.to_lowercase(), app_name)
+                // The flatpak manifest's app id, which is the PACKAGE's name - Layer 3,
+                // not Layer 1. Following APP_NAME here would guess "com.tbfdesk.TBFDesk"
+                // for a bundle that is still published as "com.rustdesk.RustDesk".
+                let pkg = hbb_common::config::LEGACY_APP_NAME;
+                format!("com.{}.{}.desktop", pkg.to_lowercase(), pkg)
             }
         }
     } else {
-        format!("{}.desktop", crate::get_app_name().to_lowercase())
+        format!("{}.desktop", crate::platform::linux::PACKAGE_NAME.to_owned())
     }
 }
 

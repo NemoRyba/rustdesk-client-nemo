@@ -1,8 +1,6 @@
 var selectTags = [];
 var ab = { tags: [], peers: [] };
 // Address-book reload icon (styled via .ab-reload-btn svg in index.css).
-// NOTE: MultipleSessions.onSize() must skip the icon's span — it sizes tabs by
-// text length, and a textless span would get max-width:0 (invisible icon).
 var svg_reload = <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 2v6h6M2.66 15.57a10 10 0 1 0 .57-8.38"/></svg>;
 // "Direct access possible" on a peer tile. A DRAWN icon, not a text glyph: a bare
 // ⇄ in a coloured box renders as a boxy smudge at badge size on Windows and reads as
@@ -630,7 +628,6 @@ class MultipleSessions: Reactor.Component {
         self.timer(60ms, function() {
             me.hidden = false;
             me.update();
-	    self.timer(30ms, function() { me.onSize(); });
         });
     }
 
@@ -642,27 +639,23 @@ class MultipleSessions: Reactor.Component {
         this.stupidUpdate();
     }
 
-    function onSize() {
-        var w = this.$(.sessions-bar .sessions-tab).box(#width);
-        var len = translate('Recent sessions').length;
-        var totalChars = 0;
-        var nEle = 0;
-        // The reload icon span has no text — the proportional width share below
-        // would give it max-width:0 and squash it invisible, so leave it alone.
-        for (var el in this.$$(#sessions-type span)) {
-            if (el.id == "nemo-refresh-ab") continue;
-            nEle += 1;
-            totalChars += el.text.length;
-        }
-        for (var el in this.$$(#sessions-type span)) {
-            if (el.id == "nemo-refresh-ab") continue;
-            var maxWidth = (w - nEle * 2 * 8) * el.text.length / totalChars;
-            if (maxWidth < 0) maxWidth = 36;
-            el.style.set{
-                "max-width": maxWidth + "px",
-            };
-        }
-    }
+    // Upstream sized the tabs here: it shared the row's width out between them in
+    // proportion to each label's character count and set a hard max-width, which with
+    // @ELLIPSIS meant that as soon as the labels did not fit, EVERY one of them was cut
+    // ("Letzte Sitz… / Favor… / Im LAN e… / Adres…") -- four unreadable tabs instead of
+    // the one that was actually too long. Four tabs appear on an installed client, and
+    // German needs more room than English, so that was the normal case, not an edge one.
+    //
+    // With nothing clamping them the spans are plain inline-blocks again, so the row
+    // wraps by itself: four German tabs come out as "Letzte Sitzungen | Favoriten |
+    // Im LAN erkannt" and "Adressbuch ⟳" on a second line, every label whole. Nothing
+    // left to measure, so no `onSize` and no `view.on("size")` handler -- which also
+    // means the tabs no longer depend on a size event arriving at all.
+    //
+    // Do NOT give this div a wrapping `flow` to "help": `.sessions-bar` is
+    // `flow: horizontal` and the tab div is `width:*`, and setting `horizontal-wrap`
+    // or `horizontal-flow` on it collapses it to zero width -- the tabs disappear
+    // entirely. Verified both ways in the lab.
 }
 
 function discover() {
@@ -696,7 +689,6 @@ class LanPeers: Reactor.Component {
     }
 }
 
-view.on("size", function() { if (app && app.multipleSessions) app.multipleSessions.onSize(); });
 
 /*
 {
