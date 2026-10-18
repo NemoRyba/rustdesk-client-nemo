@@ -589,6 +589,14 @@ function enterViewAll(shown = null) {
     }
     view_all_wrapper.content(<div class="tiles-holder">{vnodes}</div>);
     view_all_wrapper.style.set { display: "block" };
+    // The top edge is not always a tile: three remote screens across two monitors are
+    // letterboxed, so the top rows are background. The tiles reveal the header on their
+    // own (handleTileMouse); this covers the background, or span / window-per-display
+    // would leave no way back to the toolbar (found on Windows, 3 screens on 2 monitors).
+    view_all_wrapper.onMouse = function(evt) {
+        if (evt.type == Event.MOUSE_MOVE && headerAutoHide()) revealHeaderAt(evt.yView);
+        return false;
+    };
     var tiles = view_all_wrapper.$$(video.remote-tile);
     for (var t in tiles) {
         attachTileMouse(t, t.attributes["dispidx"].toInteger());
