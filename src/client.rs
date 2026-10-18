@@ -533,7 +533,14 @@ impl Client {
         Option<KcpStream>,
         &'static str,
     )> {
-        let endpoint = crate::nemo_direct::endpoint_for(peer_id)?;
+        let Some(endpoint) = crate::nemo_direct::endpoint_for(peer_id) else {
+            log::info!(
+                "TBFDesk direct: no direct endpoint for {}: {}. Using hole punch / relay.",
+                peer_id,
+                crate::nemo_direct::why_no_endpoint(peer_id)
+            );
+            return None;
+        };
         let budget = crate::nemo_direct::direct_timeout();
         let budget_ms = budget.as_millis() as u64;
         log::info!(

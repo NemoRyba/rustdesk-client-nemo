@@ -232,9 +232,19 @@ pub fn start(args: &mut [String]) {
         frame.register_behavior("native-remote", move || {
             let handler =
                 remote::SciterSession::new(cmd.clone(), id.clone(), pass.clone(), args.clone());
+            // CUR_SESSION is where every keystroke goes (keyboard.rs send_key_event).
+            // This factory runs for EVERY element with the native-remote behavior --
+            // including each "view all displays" tile, whose session is never started.
+            // Overwriting here pointed the keyboard at the last tile's dead session, so
+            // typing did nothing while all displays were shown. First instance wins (the
+            // page's own <video #handler> exists before any tile), and the real session
+            // re-asserts itself when its video surface binds (remote.rs VIDEO_BIND_RQ).
             #[cfg(not(any(feature = "flutter", feature = "cli")))]
             {
-                *CUR_SESSION.lock().unwrap() = Some(handler.inner());
+                let mut cur = CUR_SESSION.lock().unwrap();
+                if cur.is_none() {
+                    *cur = Some(handler.inner());
+                }
             }
             Box::new(handler)
         });
@@ -747,6 +757,76 @@ impl UI {
         get_build_id()
     }
 
+    // ⋮ menu → "Open log folder". The log root, which holds the main log and the
+    // `connect/` directory with the session logs.
+    fn nemo_open_log_folder(&self) -> String {
+        match crate::nemo_logs::open_folder(&hbb_common::config::Config::log_path()) {
+            Ok(()) => String::new(),
+            Err(err) => err.to_string(),
+        }
+    }
+
+    // ⋮ menu → "Copy recent log". Puts the redacted tail of the main log and of the
+    // newest session log on the clipboard. Returns "OK:<files>" or "ERR:<reason>" so
+    // the UI can say what was copied, or why nothing was.
+    fn nemo_copy_recent_log(&self) -> String {
+        let header = vec![
+            format!(
+                "TBFDesk {} (build {})  id {}  {}",
+                crate::VERSION,
+                get_build_id(),
+                hbb_common::config::Config::get_id(),
+                hbb_common::chrono::Local::now().format("%Y-%m-%d %H:%M:%S %z")
+            ),
+            format!("platform {} {}", std::env::consts::OS, std::env::consts::ARCH),
+            // The background service writes its own log, under a profile this user
+            // usually cannot read. Say where it is rather than pretending it is here.
+            "service log: not included (it lives in the service's own profile and needs \
+             administrator rights to read)"
+                .to_owned(),
+        ];
+        let (text, files) =
+            crate::nemo_logs::collect(&hbb_common::config::Config::log_path(), &header);
+        if files.is_empty() {
+            return format!(
+                "ERR:{}",
+                hbb_common::config::Config::log_path().display()
+            );
+        }
+        // Keep the Clipboard alive for the life of the process. On Windows and macOS the
+        // OS takes a copy and dropping it is harmless, but on X11/Wayland the clipboard
+        // is SERVED by its owner: arboard's serving thread stops when the last Clipboard
+        // is dropped, so a copy-then-drop puts nothing on the clipboard at all while
+        // reporting success. That is exactly what the first lab test of this button
+        // showed -- "copied" on screen, an empty clipboard underneath.
+        lazy_static::lazy_static! {
+            static ref NEMO_CLIPBOARD: std::sync::Mutex<Option<arboard::Clipboard>> =
+                std::sync::Mutex::new(None);
+        }
+        let mut guard = NEMO_CLIPBOARD.lock().unwrap();
+        if guard.is_none() {
+            match arboard::Clipboard::new() {
+                Ok(c) => *guard = Some(c),
+                Err(err) => return format!("ERR:{err}"),
+            }
+        }
+        let result = guard
+            .as_mut()
+            .map(|c| c.set_text(text))
+            .unwrap_or_else(|| Err(arboard::Error::ClipboardNotSupported));
+        match result {
+            Ok(()) => format!(
+                "OK:{}",
+                files
+                    .iter()
+                    .map(|f| f.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ),
+            Err(err) => format!("ERR:{err}"),
+        }
+    }
+
     fn get_fingerprint(&self) -> String {
         get_fingerprint()
     }
@@ -1238,6 +1318,8 @@ impl sciter::EventHandler for UI {
         fn get_new_version();
         fn get_version();
         fn get_build_id();
+        fn nemo_open_log_folder();
+        fn nemo_copy_recent_log();
         fn get_fingerprint();
         fn update_me(String);
         fn show_run_without_install();

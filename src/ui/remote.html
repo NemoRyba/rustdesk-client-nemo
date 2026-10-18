@@ -25,9 +25,50 @@
             position: absolute;
             background: #212121;
         }
-        header span#view-all.active {
-            background: #d9d9d9;
+        /* Display modes: one segmented control (header.tis renderDisplayModes). It
+           sits apart from its neighbours (margin) and its two halves -- this window /
+           my monitors -- are split by a thin rule, so the four buttons read as one
+           choice in two groups rather than four loose icons. */
+        header div#display-modes {
+            flow: horizontal;
+            margin: * 0.7em;
+            padding: 0 2px;
+            height: 22px;
+            border: #A9A9A9 1px solid;
             border-radius: 4px;
+            background: white;
+        }
+        header div#display-modes > span {
+            margin: * 1px;
+            padding: 3px 7px;
+            border-radius: 3px;
+        }
+        header div#display-modes > span.active {
+            background: #d6e6f5;
+        }
+        header div#display-modes > span.unavailable {
+            opacity: 0.3;
+            cursor: default;
+        }
+        header div#display-modes > span.unavailable:hover {
+            background: transparent;
+        }
+        /* The picker shows how many displays are on: "2/3", beside its icon (without
+           flow:horizontal the count wrapped under the icon and was clipped). */
+        header div#display-modes > span#display-pick {
+            flow: horizontal;
+            white-space: nowrap;
+        }
+        header div#display-modes span.pick-count {
+            padding: 0;
+            margin: * 0 * 3px;
+            font-size: 10px;
+        }
+        header div#display-modes > div.mode-sep {
+            width: 1px;
+            height: 14px;
+            margin: * 3px;
+            background: #c8c8c8;
         }
     </style>
     <script type="text/tiscript">

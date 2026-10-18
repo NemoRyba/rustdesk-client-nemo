@@ -244,7 +244,11 @@ span.connect-status0 {
 
 /* Nemo: registration badge next to "Ready" (index.tis ConnectStatus.getRegistrationBadge) */
 span.nemo-reg {
-    margin-left: 0.6em;
+    /* inline-block, or Sciter drops the horizontal margin of a plain inline span and the
+       badge renders glued to the status text ("BereitRegistriert"). Same 1em the icon
+       and the "Start service" link use, so the line reads as three evenly spaced parts. */
+    display: inline-block;
+    margin-left: 1em;
     font-weight: bold;
 }
 
@@ -527,9 +531,35 @@ textarea.grey-text {
     margin-bottom: 8px;
     padding-right: 20px;
 }
-.nemo-account-bar button#nemo-logoff {
+.nemo-account-bar button#nemo-logoff,
+.nemo-account-bar button#nemo-login {
     padding: 4px 14px;
     font-size: 0.85em;
+}
+/* Signed out: same bar, quieter name line, so the eye lands on the Anmelden button. */
+.nemo-account-name.nemo-signed-out {
+    color: #667;
+    font-weight: normal;
+    /* One line. Wrapped ("Nicht / angemeldet") the bar grows a line, the left pane
+       outgrows an 800x600 window, and the status line slides off the bottom edge --
+       seen in the lab on the first try. */
+    font-size: 0.95em;
+    white-space: nowrap;
+}
+html.darktheme .nemo-account-name.nemo-signed-out {
+    color: #9aa7b2;
+}
+/* The address book's signed-out prompt: the sentence and the button under it. */
+div.nemo-ab-signin {
+    margin: *;
+    flow: vertical;
+    border-spacing: 12px;
+    text-align: center;
+    color: color(lighter-text);
+}
+div.nemo-ab-signin button {
+    margin: 0 *;
+    padding: 6px 22px;
 }
 /* Dark-theme variants — the account bar's light colors are hardcoded, so they
    must be overridden explicitly (they don't read the html.darktheme vars). */

@@ -26,10 +26,18 @@ class AddressBook: Reactor.Component
     
     function render() {
         if (!handler.get_local_option("access_token")) {
-            // TBFDesk: no stock "Login" link here — signing in is handled only by our
-            // custom login gate (App.render, shown when the server requires login).
-            // When login isn't required this pane is simply idle (non-clickable hint).
-            return <div style="margin: *; text-align: center; color: color(lighter-text)">{translate("Please sign in to continue")}</div>;
+            // TBFDesk: the address book is served per account, so it is empty until
+            // someone signs in. This pane used to say "please sign in" with nothing to
+            // click, on the theory that the mandatory login gate would handle it -- but
+            // that gate only appears when the SERVER requires login, so on every other
+            // server the user was told to sign in and given no way to. The button opens
+            // the same form the gate uses (index.tis nemoOpenLogin).
+            if (disable_account)
+                return <div style="margin: *; text-align: center; color: color(lighter-text)">{translate("Please sign in to continue")}</div>;
+            return <div .nemo-ab-signin>
+                <div>{translate("nemo_ab_signin_tip")}</div>
+                <button .button #ab-login>{translate("Login")}</button>
+            </div>;
         }
         if (abLoading) {
             return <div style="margin: *"><progress style="color: #0071ff" /></div>;

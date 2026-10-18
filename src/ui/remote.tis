@@ -114,18 +114,334 @@ var view_all_wrapper = null;
 // view_all_layout[i] = { x: <virtual origin x>, y: <virtual origin y>, fit: <device-px per remote-px> }
 var view_all_layout = {};
 
+// ============================================================================
+// Display modes (the grouped buttons in the header, header.tis renderDisplayModes):
+//   "single"   one remote display in this window -- the classic view
+//   "all"      every remote display tiled in this window (the original view-all)
+//   "span"     this window stretched across ALL local monitors, each remote display
+//              fitted onto its own physical monitor
+//   "windows"  one window per remote display, each full screen on its own monitor;
+//              the extra windows are opened by remote.rs over this same connection
+// "span" and "windows" both stream every display at once over one connection, exactly
+// like "all"; they differ only in where the pictures are put.
+// ============================================================================
+var display_mode = "single";
+var window_restore = null;   // { rect: [x,y,w,h], state } to return to after span/windows
+var span_map = [];           // [{ disp, mon: {x,y,w,h} relative to the window }]
+var span_first_width = 0;    // where the toolbar is centred while spanning (not on the seam)
+
 function viewAllSupported() {
     // Gate on >1 display AND peer version >= 1.2.4 (multi-UI-session support).
     return (pi.displays || []).length > 1 && handler.version_cmp(pi.version, "1.2.4") >= 0;
 }
 
+// The local monitors, left to right (then top to bottom), in screen pixels -- the
+// units view.move() takes. Never empty: if the toolkit will not enumerate, the
+// monitor this window is on stands in for all of them.
+function localMonitors() {
+    var list = [];
+    var n = 1;
+    try { n = view.screens; } catch (e) { n = 1; }
+    if (!n || n < 1) n = 1;
+    for (var i = 0; i < n; ++i) {
+        try {
+            var (x, y, w, h) = view.screenBox(i, #frame, #rectw);
+            if (w > 0 && h > 0) list.push({ x: x, y: y, w: w, h: h });
+        } catch (e) {}
+    }
+    if (list.length == 0) {
+        var (x, y, w, h) = view.screenBox(#frame, #rectw);
+        list.push({ x: x, y: y, w: w, h: h });
+    }
+    list.sort(function(a, b) { return a.x != b.x ? a.x - b.x : a.y - b.y; });
+    if (!monitors_logged) {
+        monitors_logged = true;
+        var s = "";
+        for (var m in list) s += " [" + m.x + "," + m.y + " " + m.w + "x" + m.h + "]";
+        stdout.println("local monitors: view.screens=" + n + " ->" + s);
+    }
+    return list;
+}
+var monitors_logged = false;
+
+function multiMonitorAvailable() {
+    return localMonitors().length > 1;
+}
+
+// Which remote displays the multi-display modes show ("all", "span", "windows"), as a
+// sorted list of indices. Chosen in the header's display picker and remembered PER PEER,
+// so "only my two work screens of the three" sticks for that computer. Only the chosen
+// displays are streamed, which also saves the bandwidth and the encoders of the rest.
+// Empty / invalid / stale (display unplugged) -> all of them.
+const OPTION_DISPLAYS_SHOWN = "nemo-displays-shown";
+function selectedDisplays() {
+    var n = (pi.displays || []).length;
+    var sel = [];
+    var raw = (handler.get_option(OPTION_DISPLAYS_SHOWN) || "").trim();
+    if (raw) {
+        for (var part in raw.split(",")) {
+            var p = part.trim();
+            if (!p) continue;
+            var i = p.toInteger();
+            if (i >= 0 && i < n && sel.indexOf(i) < 0) sel.push(i);
+        }
+    }
+    if (sel.length == 0) for (var i = 0; i < n; ++i) sel.push(i);
+    sel.sort(function(a, b) { return a - b; });
+    return sel;
+}
+
+// Tick / untick one display. The last one cannot be unticked: a selection of nothing
+// would leave the window with nothing to show and no obvious way back.
+function toggleDisplaySelected(i) {
+    var n = (pi.displays || []).length;
+    var sel = selectedDisplays();
+    var next = [];
+    var had = false;
+    for (var s in sel) { if (s == i) had = true; else next.push(s); }
+    if (!had) next.push(i);
+    if (next.length == 0) return;
+    next.sort(function(a, b) { return a - b; });
+    handler.set_option(OPTION_DISPLAYS_SHOWN, next.length == n ? "" : next.join(","));
+    refreshDisplayMode();
+}
+
+function selectAllDisplays() {
+    handler.set_option(OPTION_DISPLAYS_SHOWN, "");
+    refreshDisplayMode();
+}
+
+// Re-run the current multi-display mode with the new selection.
+function refreshDisplayMode() {
+    var m = display_mode;
+    if (m != "single") {
+        display_mode = "single";      // so closing display windows is not taken as the user's doing
+        leaveDisplayMode(m);
+        setDisplayMode(m);
+    }
+    if (header) header.update();
+}
+
+// Remote display indices in the same left-to-right order, so "the left remote screen"
+// lands on "the left local screen" whatever order the peer numbered them in. Only the
+// displays picked in the display picker take part.
+function remoteDisplayOrder() {
+    var idx = selectedDisplays();
+    idx.sort(function(a, b) {
+        var da = pi.displays[a], db = pi.displays[b];
+        return da.x != db.x ? da.x - db.x : da.y - db.y;
+    });
+    return idx;
+}
+
+// Fit a remote display into a box, keeping its aspect ratio, centred. Returns the
+// tile rect (device px, box-relative) and the device-px-per-remote-px factor that
+// handleTileMouse needs to map positions back.
+function fitInto(d, bx, by, bw, bh) {
+    var fit = bw.toFloat() / d.width;           // float: see layoutViewAll
+    if (bh.toFloat() / d.height < fit) fit = bh.toFloat() / d.height;
+    var w = d.width * fit, h = d.height * fit;
+    return { x: bx + (bw - w) / 2, y: by + (bh - h) / 2, w: w, h: h, fit: fit };
+}
+
+function placeTile(t, i, r) {
+    t.style.set {
+        left: (r.x / scaleFactor) + "px",
+        top: (r.y / scaleFactor) + "px",
+        width: (r.w / scaleFactor) + "px",
+        height: (r.h / scaleFactor) + "px",
+    };
+    var d = pi.displays[i];
+    view_all_layout[i] = { x: d.x, y: d.y, fit: r.fit };
+}
+
+function headerAutoHide() {
+    return view.windowState == View.WINDOW_FULL_SCREEN
+        || display_mode == "span" || display_mode == "windows";
+}
+
+function setHeaderVisible(v) {
+    var h = $(header);
+    if (!h) return;
+    if (v) h.style.set { display: "block", padding: "0" };
+    else h.style.set { display: "none" };
+}
+
+function saveWindowPlacement() {
+    if (window_restore) return;   // keep the ORIGINAL placement across mode hops
+    var (x, y, w, h) = view.box(#rectw, #border, #screen);
+    window_restore = { rect: [x, y, w, h], state: view.windowState };
+}
+
+function restoreWindowPlacement() {
+    if (!window_restore) return;
+    var r = window_restore;
+    window_restore = null;
+    if (view.windowState != View.WINDOW_SHOWN) view.windowState = View.WINDOW_SHOWN;
+    view.move(r.rect[0], r.rect[1], r.rect[2], r.rect[3]);
+    if (r.state == View.WINDOW_MAXIMIZED || r.state == View.WINDOW_FULL_SCREEN)
+        view.windowState = r.state;
+    setHeaderVisible(true);
+}
+
+// Move + resize, then check where the window actually went and put it back if the
+// window manager moved it. A combined move+resize to a size larger than one monitor is
+// honoured for the size but not always for the position: in the lab (openbox) the
+// window grew to both monitors and was then shifted so that it STARTED on the second
+// one, which put remote display 1 on the right screen and display 2 off-screen. A plain
+// move once the size has landed is honoured, so re-assert it, twice at most.
+function placeWindowAt(x, y, w, h) {
+    view.move(x, y, w, h);
+    var tries = 2;
+    function check() {
+        var (cx, cy, cw, ch) = view.box(#rectw, #border, #screen);
+        if (cx == x && cy == y) return;
+        stdout.println("window placed at " + cx + "," + cy + " instead of " + x + "," + y + "; moving it back");
+        view.move(x, y, w, h);
+        if (--tries > 0) self.timer(400ms, check);
+    }
+    self.timer(250ms, check);
+}
+
+// "span": cover every local monitor with this one window and give each remote display
+// the monitor in the same position. With a different number of remote displays than
+// monitors, fall back to the proportional layout of "all", across the whole span.
+function enterSpan() {
+    var mons = localMonitors();
+    if (mons.length < 2) return false;
+    saveWindowPlacement();
+    var x0 = mons[0].x, y0 = mons[0].y, x1 = x0, y1 = y0;
+    for (var m in mons) {
+        if (m.x < x0) x0 = m.x;
+        if (m.y < y0) y0 = m.y;
+        if (m.x + m.w > x1) x1 = m.x + m.w;
+        if (m.y + m.h > y1) y1 = m.y + m.h;
+    }
+    span_map = [];
+    var order = remoteDisplayOrder();
+    if (order.length == mons.length) {
+        for (var k = 0; k < order.length; ++k)
+            span_map.push({ disp: order[k],
+                            mon: { x: mons[k].x - x0, y: mons[k].y - y0, w: mons[k].w, h: mons[k].h } });
+    }
+    span_first_width = mons[0].w;
+    if (view.windowState != View.WINDOW_SHOWN) view.windowState = View.WINDOW_SHOWN;
+    setHeaderVisible(false);
+    placeWindowAt(x0, y0, x1 - x0, y1 - y0);
+    enterViewAll();
+    stdout.println("display mode span: " + mons.length + " monitors, window " + x0 + "," + y0 +
+                   " " + (x1 - x0) + "x" + (y1 - y0) + (span_map.length ? ", 1:1 mapping" : ", proportional"));
+    return true;
+}
+
+// "windows": this window shows the leftmost remote display, full screen on the
+// leftmost monitor; every other remote display gets a window from remote.rs on the
+// next monitor. More remote displays than monitors: the extras share the last one.
+function enterDisplayWindows() {
+    var mons = localMonitors();
+    if (mons.length < 2) return false;
+    var order = remoteDisplayOrder();
+    if (order.length < 2) return false;
+    saveWindowPlacement();
+    var first = order[0];
+    pi.current_display = first;
+    enterViewAll([first]);
+    var m0 = mons[0];
+    if (view.windowState != View.WINDOW_SHOWN) view.windowState = View.WINDOW_SHOWN;
+    // Onto the first monitor FIRST, full screen only once it is there: full screen
+    // fills whichever monitor the window is on.
+    placeWindowAt(m0.x, m0.y, m0.w, m0.h);
+    self.timer(700ms, function() {
+        if (display_mode != "windows") return;
+        view.windowState = View.WINDOW_FULL_SCREEN;
+        if (is_linux) self.timer(150ms, function() { view.windowState = View.WINDOW_FULL_SCREEN; });
+    });
+    for (var k = 1; k < order.length; ++k) {
+        var i = order[k];
+        var d = pi.displays[i];
+        var m = mons[k < mons.length ? k : mons.length - 1];
+        var title = get_id() + " – " + translate("nemo_display") + " " + (i + 1);
+        // Plain concatenation: TIScript does not accept a method call on an array
+        // literal ([..].join(...)), and a single parse error disables ALL of remote.tis
+        // -- found in the lab as a session that never got past "waiting for screen".
+        var rrect = d.x + "," + d.y + "," + d.width + "," + d.height;
+        var mrect = m.x + "," + m.y + "," + m.w + "," + m.h;
+        var ok = handler.open_display_window(i, rrect, mrect, title);
+        stdout.println("display mode windows: display " + (i + 1) + " -> monitor " + m.x + "," + m.y + (ok ? "" : " FAILED"));
+    }
+    return true;
+}
+
+function leaveDisplayMode(mode) {
+    if (mode == "windows") handler.close_display_windows();
+    if (mode == "all" || mode == "span" || mode == "windows") exitViewAll();
+    if (mode == "span" || mode == "windows") {
+        span_map = [];
+        restoreWindowPlacement();
+    }
+}
+
+function setDisplayMode(mode) {
+    if (mode == display_mode) return;
+    if (mode != "single" && !viewAllSupported()) return;
+    if ((mode == "span" || mode == "windows") && !multiMonitorAvailable()) return;
+    var prev = display_mode;
+    // Set first: closing display windows calls back into onDisplayWindowClosed, which
+    // must see that the user left "windows" on purpose and not treat it as one window
+    // being closed by hand.
+    display_mode = mode;
+    leaveDisplayMode(prev);
+    var ok = true;
+    if (mode == "all") enterViewAll();
+    else if (mode == "span") ok = enterSpan();
+    else if (mode == "windows") ok = enterDisplayWindows();
+    if (!ok) { display_mode = "single"; restoreWindowPlacement(); }
+    if (header) header.update();
+}
+
+// A display window was closed. On purpose (we left "windows"), nothing to do. By hand,
+// that remote display would otherwise be streamed into nothing -- so the whole session
+// returns to a single window showing all displays, which is what the user can still see.
+handler.onDisplayWindowClosed = function(disp) {
+    if (display_mode != "windows") return;
+    stdout.println("display window " + (disp + 1) + " closed by the user");
+    self.timer(1ms, function() { setDisplayMode("all"); });
+}
+
+// Where each shown display sits in the "all" layout. With every display shown, exactly
+// where the remote has them (so a stacked or L-shaped setup looks like itself). With a
+// subset, packed left to right in the remote's order: keeping the real positions left the
+// unpicked display's slot as an empty hole -- picking 1 and 3 of three put a third of the
+// window's width between them.
+function shownLayout() {
+    var sel = selectedDisplays();
+    var rects = {};
+    if (sel.length == (pi.displays || []).length) {
+        for (var i in sel) {
+            var d = pi.displays[i];
+            rects[i] = { x: d.x, y: d.y, w: d.width, h: d.height };
+        }
+        return rects;
+    }
+    var cur = 0;
+    for (var i in remoteDisplayOrder()) {
+        var d = pi.displays[i];
+        rects[i] = { x: cur, y: 0, w: d.width, h: d.height };
+        cur += d.width;
+    }
+    return rects;
+}
+
 function computeDisplaysBBox() {
     var x0 = 9999999, y0 = 9999999, x1 = -9999999, y1 = -9999999;
-    for (var d in pi.displays) {
-        if (d.x < x0) x0 = d.x;
-        if (d.y < y0) y0 = d.y;
-        if (d.x + d.width > x1) x1 = d.x + d.width;
-        if (d.y + d.height > y1) y1 = d.y + d.height;
+    var rects = shownLayout();
+    for (var k in selectedDisplays()) {
+        var r = rects[k];
+        if (!r) continue;
+        if (r.x < x0) x0 = r.x;
+        if (r.y < y0) y0 = r.y;
+        if (r.x + r.w > x1) x1 = r.x + r.w;
+        if (r.y + r.h > y1) y1 = r.y + r.h;
     }
     return { x0: x0, y0: y0, w: x1 - x0, h: y1 - y0 };
 }
@@ -138,21 +454,48 @@ function layoutViewAll() {
     if (bbox.w <= 0 || bbox.h <= 0) return;
     var availW = $(body).box(#width, #border);
     var availH = $(body).box(#height, #border);
+    var tiles = holder.$$(video.remote-tile);
     if (availW <= 0 || availH <= 0) return;
-    var fit = availW / bbox.w;
-    var fit_y = availH / bbox.h;
+    // "span" with one remote display per monitor: each tile fills its own monitor.
+    if (display_mode == "span" && span_map.length > 0) {
+        for (var t in tiles) {
+            var i = t.attributes["dispidx"].toInteger();
+            var d = pi.displays[i];
+            if (!d) continue;
+            for (var s in span_map) {
+                if (s.disp != i) continue;
+                placeTile(t, i, fitInto(d, s.mon.x, s.mon.y, s.mon.w, s.mon.h));
+            }
+        }
+        return;
+    }
+    // "windows": this window shows exactly one display; give it the whole window.
+    if (display_mode == "windows") {
+        for (var t in tiles) {
+            var i = t.attributes["dispidx"].toInteger();
+            var d = pi.displays[i];
+            if (d) placeTile(t, i, fitInto(d, 0, 0, availW, availH));
+        }
+        return;
+    }
+    // toFloat(): in TIScript int / int is INTEGER division, so 1280 / 2560 was 0 and
+    // every tile came out 0x0 -- "view all displays" only ever worked in a window
+    // larger than the remote's whole desktop. Found in the lab, two 1280x900 displays.
+    var fit = availW.toFloat() / bbox.w;
+    var fit_y = availH.toFloat() / bbox.h;
     if (fit_y < fit) fit = fit_y;
     var totalW = bbox.w * fit;
     var totalH = bbox.h * fit;
     var offX = (availW - totalW) / 2;
     var offY = (availH - totalH) / 2;
-    var tiles = holder.$$(video.remote-tile);
+    var rects = shownLayout();
     for (var t in tiles) {
         var i = t.attributes["dispidx"].toInteger();
         var d = pi.displays[i];
-        if (!d) continue;
-        var left = (offX + (d.x - bbox.x0) * fit) / scaleFactor;
-        var top = (offY + (d.y - bbox.y0) * fit) / scaleFactor;
+        var r = rects[i];
+        if (!d || !r) continue;
+        var left = (offX + (r.x - bbox.x0) * fit) / scaleFactor;
+        var top = (offY + (r.y - bbox.y0) * fit) / scaleFactor;
         var w = (d.width * fit) / scaleFactor;
         var h = (d.height * fit) / scaleFactor;
         t.style.set {
@@ -192,6 +535,7 @@ function handleTileMouse(evt, dispIndex) {
       case Event.MOUSE_ENTER:
         entered = true;
         handler.enter(handler.get_keyboard_mode());
+        holdKeyboardGrab();
         return keyboard_enabled;
       case Event.MOUSE_LEAVE:
         entered = false;
@@ -200,6 +544,12 @@ function handleTileMouse(evt, dispIndex) {
       default:
         return false;
     }
+    // The header is hidden while full screen, spanning or one-window-per-display; the
+    // main surface reveals it when the pointer rests on the top edge (handler.onMouse),
+    // but tiles sit on top of that surface and swallow the pointer -- without this the
+    // toolbar, and with it the way back out of these modes, was unreachable.
+    if (mask == 0 && headerAutoHide()) revealHeaderAt(evt.yView);
+    if (mask == 0 && entered) holdKeyboardGrab();
     if (!keyboard_enabled) return false;
     var rx = 0;
     var ry = 0;
@@ -220,17 +570,23 @@ function attachTileMouse(tile, dispIndex) {
     };
 }
 
-function enterViewAll() {
+// `shown` = the displays to tile in THIS window (default: the picked ones). The peer is
+// asked for every PICKED display: in "windows" mode the rest are drawn by the other
+// windows, which bind into the same per-display frame routing.
+function enterViewAll(shown = null) {
     if (view_all_mode) return;
     if (!viewAllSupported()) return;
     view_all_wrapper = $(#video-all-wrapper);
     if (!view_all_wrapper) return;
     view_all_mode = true;
     view_all_layout = {};
-    // Build one <video dispidx="i"> tile per display inside a relative holder.
-    var vnodes = pi.displays.map(function(d, i) {
-        return <video class="remote-tile" dispidx={i.toString()} />;
-    });
+    var picked = selectedDisplays();
+    if (!shown) shown = picked;
+    var vnodes = [];
+    for (var i = 0; i < pi.displays.length; ++i) {
+        if (shown.indexOf(i) < 0) continue;
+        vnodes.push(<video class="remote-tile" dispidx={i.toString()} />);
+    }
     view_all_wrapper.content(<div class="tiles-holder">{vnodes}</div>);
     view_all_wrapper.style.set { display: "block" };
     var tiles = view_all_wrapper.$$(video.remote-tile);
@@ -238,10 +594,8 @@ function enterViewAll() {
         attachTileMouse(t, t.attributes["dispidx"].toInteger());
     }
     layoutViewAll();
-    // Ask the peer (and Rust routing) to stream every display at once.
-    var idx = [];
-    for (var i = 0; i < pi.displays.length; ++i) idx.push(i.toString());
-    handler.set_view_all(idx.join(","));
+    // Ask the peer (and Rust routing) to stream the picked displays at once.
+    handler.set_view_all(picked.join(","));
 }
 
 function exitViewAll() {
@@ -259,8 +613,49 @@ function exitViewAll() {
 }
 
 function toggleViewAll() {
-    if (view_all_mode) exitViewAll();
-    else enterViewAll();
+    setDisplayMode(display_mode == "all" ? "single" : "all");
+}
+
+// The keyboard grab follows enter/leave. With ONE window that is all it needs. With a
+// display window per monitor, moving from one window of this session to the other can
+// deliver the old window's "leave" AFTER the new window's "enter"; the grab sees the
+// enter as "already the owner, nothing to do" and then the late leave releases it --
+// mouse still works, every keystroke goes nowhere (found in the lab). So re-assert the
+// enter shortly after entering, and every 250 ms while the pointer moves: whichever
+// window actually holds the pointer wins, whatever order the events came in.
+var grab_refresh_pending = false;
+function holdKeyboardGrab() {
+    if (grab_refresh_pending) return;
+    grab_refresh_pending = true;
+    self.timer(250ms, function() {
+        grab_refresh_pending = false;
+        if (entered) handler.enter(handler.get_keyboard_mode());
+    });
+}
+
+var reveal_pending = false;
+// Show the header while the pointer rests on the window's top edge, hide it once the
+// pointer moves away -- the same gesture full screen has always used.
+function revealHeaderAt(y) {
+    var h = $(header);
+    if (!h) return;
+    // A few pixels, not exactly the top row: outside full screen the window has a 1px
+    // border, so the topmost row the tiles ever see is y=1..3 (lab, spanning window).
+    if (y <= 4) {
+        if (reveal_pending || h.style#display == "block") return;
+        reveal_pending = true;
+        self.timer(300ms, function() {
+            if (!reveal_pending) return;
+            reveal_pending = false;
+            if (headerAutoHide()) {
+                h.style.set { display: "block", padding: (2 * workarea_offset) + "px 0 0 0" };
+                updateWindowToolbarPosition();
+            }
+        });
+    } else {
+        reveal_pending = false;
+        if (y > 40 && h.style#display != "none") h.style.set { display: "none" };
+    }
 }
 
 // https://sciter.com/event-handling/

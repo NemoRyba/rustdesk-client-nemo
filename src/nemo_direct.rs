@@ -204,6 +204,47 @@ pub fn direct_capable_ids() -> Vec<String> {
     ids
 }
 
+/// Why there is no direct endpoint for `peer_id`, in words a log reader can act on.
+///
+/// The direct attempt used to return silently when no endpoint was known, so the
+/// session log of a controller that never received one said nothing about direct at
+/// all -- indistinguishable from an old build, or from the feature being off. The
+/// three causes need three different fixes (turn the managed poll on, find out why the
+/// poll never got a policy, publish the endpoint in the dashboard), so name which one
+/// it is.
+pub fn why_no_endpoint(peer_id: &str) -> String {
+    if Config::get_option("nemo-management-enabled") != "Y" {
+        return "the managed policy poll is OFF on this client, so it never receives \
+                endpoints (import the setup string again, or enable it)"
+            .to_owned();
+    }
+    let issued = Config::get_option("nemo-policy-issued-ts");
+    if issued.trim().is_empty() {
+        return "this client has not received a policy from the management server yet \
+                (check that it can reach the API and that its device key is approved)"
+            .to_owned();
+    }
+    let ids = direct_capable_ids();
+    let known: Vec<&String> = ids.iter().filter(|i| i.as_str() != peer_id).collect();
+    if known.is_empty() {
+        format!(
+            "the last policy (issued {issued}) published no direct endpoints at all; \
+             set 'Reachable at' for {peer_id} in the dashboard"
+        )
+    } else {
+        format!(
+            "the last policy (issued {issued}) has endpoints for {} other peer(s) ({}) \
+             but none for {peer_id}; set 'Reachable at' for it in the dashboard",
+            known.len(),
+            known
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    }
+}
+
 pub fn direct_timeout() -> Duration {
     let ms = Config::get_option(OPTION_DIRECT_TIMEOUT_MS)
         .trim()

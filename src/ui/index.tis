@@ -1085,6 +1085,12 @@ var nemoLastGate = null;
 // transition-only re-render rule as nemoLastGate.
 var nemoLastDevKeyGate = null;
 var nemoLastAbVersion = null;   // #3-push: last server address-book version seen
+// The user asked to sign in although the server does not require it (the Anmelden
+// button in the account bar, or the one on the address book's prompt). Until this
+// existed, a client whose server does not force login had NO way to sign in at all:
+// the login form only ever appeared as the mandatory gate, and the address book just
+// said "please sign in" with nothing to click.
+var nemoLoginOptional = false;
 
 // Identity-based access helpers. These MUST be defined before class App: App is
 // mounted below via $(body).content(<App/>), and its render() calls these on the
@@ -1097,6 +1103,60 @@ function nemoLoginRequired() {
 }
 function nemoIsLoggedIn() {
     return !!handler.get_local_option("access_token");
+}
+// Whether the login form is on screen: because the server demands it, or because the
+// user asked for it. One predicate, used by App.render and by the gate watcher, so the
+// two can never disagree about which screen is showing.
+function nemoShowLoginForm() {
+    return (nemoLoginRequired() || nemoLoginOptional) && !nemoIsLoggedIn();
+}
+// Account bar / address book → "Anmelden". Shows the same form the mandatory gate
+// uses (server field, TLS choice, certificate check, sealed login), so there is one
+// sign-in path to keep working, not two.
+function nemoOpenLogin() {
+    if (disable_account || nemoIsLoggedIn()) return;
+    nemoLoginOptional = true;
+    nemoLastGate = true;               // we are doing the transition here, not the watcher
+    nemoInitInsecureTlsDefault();      // seed accept-self-signed before render, as the gate does
+    if (app) app.update();
+    self.timer(60ms, function() {
+        var u = $(#gate-username); if (u) view.focus = u;
+        nemoRefreshCertInfo();
+    });
+}
+function nemoCancelLogin() {
+    if (nemoLoginRequired()) return;   // a mandatory gate has no way out but signing in
+    nemoLoginOptional = false;
+    nemoLastGate = false;
+    if (app) app.update();
+}
+// The ⋮ menu. It used to open the Settings dialog directly, which left nowhere to put
+// anything that is not a setting -- and the two things a user is asked for most when
+// something goes wrong are where the logs are and what they say.
+function nemoMoreMenuPopup() {
+    return <popup>
+        <menu.context #nemo-more-menu>
+            <li #nemo-more-settings>{translate('Settings') + " …"}</li>
+            <div .separator />
+            <li #nemo-more-open-log>{translate('Open log folder')}</li>
+            <li #nemo-more-copy-log title={translate('nemo_copy_log_tip')}>{translate('Copy recent log')}</li>
+        </menu>
+    </popup>;
+}
+function nemoCopyRecentLog() {
+    var r = handler.nemo_copy_recent_log() || "";
+    if (r.indexOf("OK:") == 0) {
+        var files = r.substr(3).split("\n");
+        var list = files.map(function(f) { return <div style="font-family:monospace; font-size:11px; color:#556; word-break:break-all">{f}</div>; });
+        msgbox("custom-nocancel", translate('Copy recent log'),
+            <div style="line-height:1.6em">
+                <div>{translate('nemo_copy_log_done')}</div>
+                <div style="margin-top:8px">{list}</div>
+            </div>, "", null, 230, get_msgbox_width());
+    } else {
+        msgbox("custom-error", translate('Copy recent log'),
+            translate('nemo_copy_log_failed') + " " + r.substr(4));
+    }
 }
 // Layer 1: a usable (well-formed) device key is mandatory; App.render asks this
 // FIRST, before the login gate. The Rust side validates the key, so a pasted
@@ -1902,7 +1962,7 @@ class App: Reactor.Component
         // in, hide the entire UI (ID, connect field, address book) and show only
         // a login screen. render() must stay pure — the login modal is opened by
         // nemoEnforceLogin (view context), not here.
-        if (nemoLoginRequired() && !nemoIsLoggedIn()) {
+        if (nemoShowLoginForm()) {
             return
                 <div style="background:#f0f2f5; size:*">
                     <div style="margin:*; width:340px; padding:40px 42px; background:#fff; border:1px solid #e2e6ea; border-radius:10px; flow:vertical">
@@ -1921,6 +1981,7 @@ class App: Reactor.Component
                             <button .button #gate-login style="padding:11px 44px; background:#0b7285; color:#fff; border:none; border-radius:6px; font-size:15px; font-weight:bold">{translate('Login')}</button>
                         </div>
                         <div #gate-error style="color:#d4380d; font-size:12px; margin-top:16px; text-align:center"></div>
+                        {nemoLoginRequired() ? "" : <div .link #gate-cancel style="text-align:center; margin-top:10px; font-size:13px; color:#667; cursor:pointer">{translate('Cancel')}</div>}
                         {nemoCertBoxVnode()}
                         <div .link #gate-import-devkey style="text-align:center; margin-top:14px; font-size:12px; color:#0b7285; text-decoration:underline; cursor:pointer">{translate('Import setup string or device key')}</div>
                     </div>
@@ -1932,17 +1993,25 @@ class App: Reactor.Component
             <div .app>
                     <div .left-pane style={incoming_only ? "width:*" : ""}>
                     <div>
+                        {nemoMoreMenuPopup()}
                         {!outgoing_only && nemoIsLoggedIn() && <div .nemo-account-bar>
-                            <span .link #open-settings title={translate('Settings')} style="position:absolute; right:4px; top:4px; transform:scale(0.72); transform-origin:right top; opacity:0.75">{svg_menu}</span>
+                            <span .link #open-settings title={translate('Menu')} style="position:absolute; right:4px; top:4px; transform:scale(0.72); transform-origin:right top; opacity:0.75">{svg_menu}</span>
                             <div .nemo-account-name>{nemoAccountName()}</div>
                             <div style="flow:horizontal">
                                 <button .button .outline #nemo-logoff>{translate('Logout')}</button>
                             </div>
                         </div>}
+                        {!outgoing_only && !nemoIsLoggedIn() && !disable_account && <div .nemo-account-bar>
+                            <span .link #open-settings title={translate('Menu')} style="position:absolute; right:4px; top:4px; transform:scale(0.72); transform-origin:right top; opacity:0.75">{svg_menu}</span>
+                            <div .nemo-account-name .nemo-signed-out>{translate('Not signed in')}</div>
+                            <div style="flow:horizontal">
+                                <button .button #nemo-login>{translate('Login')}</button>
+                            </div>
+                        </div>}
                         {is_custom_client && handler.get_builtin_option("hide-powered-by-me") != "Y" ? <div .link #powered-by style="opacity:0.5;font-size:0.8em;text-decoration:underline">{translate('powered_by_me')}</div> : ""}
                         <div .title style="flow:horizontal; position:relative; height:1.6em; line-height:1.6em">
                             <span>{translate('Your Desktop')}</span>
-                            {(outgoing_only || !nemoIsLoggedIn()) ? <span .link #open-settings title={translate('Settings')} style="position:absolute; right:0; bottom:-2px; transform:scale(0.8); transform-origin:right bottom; opacity:0.8">{svg_menu}</span> : ""}
+                            {(outgoing_only || (!nemoIsLoggedIn() && disable_account)) ? <span .link #open-settings title={translate('Menu')} style="position:absolute; right:0; bottom:-2px; transform:scale(0.8); transform-origin:right bottom; opacity:0.8">{svg_menu}</span> : ""}
                         </div>
                         <div .lighter-text>{outgoing_only ? translate('outgoing_only_desk_tip') : translate('desk_tip')}</div>
                         {outgoing_only ? <div style="position:absolute; left:-10000px; top:-10000px; width:0; height:0; overflow:hidden"><MyIdMenu /></div> : ""}
@@ -2580,7 +2649,32 @@ event click $(#powered-by) {
 }
 
 event click $(#open-settings) (_, me) {
-    showSettings();
+    var menu = $(menu#nemo-more-menu);
+    if (menu) me.popup(menu);
+    else showSettings();             // never leave the icon dead if the popup is missing
+}
+
+event click $(menu#nemo-more-menu > li) (_, me) {
+    if (me.id == "nemo-more-settings") {
+        showSettings();
+    } else if (me.id == "nemo-more-open-log") {
+        var err = handler.nemo_open_log_folder();
+        if (err) msgbox("custom-error", translate('Open log folder'), err);
+    } else if (me.id == "nemo-more-copy-log") {
+        nemoCopyRecentLog();
+    }
+}
+
+event click $(button#nemo-login) {
+    nemoOpenLogin();
+}
+
+event click $(button#ab-login) {
+    nemoOpenLogin();
+}
+
+event click $(#gate-cancel) {
+    nemoCancelLogin();
 }
 
 // Event handlers for outgoing_only mode (when menu items are in main UI, not in MyIdMenu)
@@ -2827,7 +2921,7 @@ function nemoEnforceLogin() {
         if (app) app.update();
     }
     if (devGate) { self.timer(3s, nemoEnforceLogin); return; }
-    var gate = nemoLoginRequired() && !nemoIsLoggedIn();
+    var gate = nemoShowLoginForm();
     if (gate !== nemoLastGate) {                 // shown<->hidden transition only
         nemoLastGate = gate;
         if (gate) nemoInitInsecureTlsDefault();   // seed accept-self-signed before render
@@ -2895,6 +2989,7 @@ function nemoGateSubmit() {
         handler.set_local_option("access_token", token);
         set_local_user_info(data.user);
         nemoGateShown = false;
+        nemoLoginOptional = false;
         nemoLastGate = false;
         if (app) app.update();               // reveal the app
         if (myIdMenu) myIdMenu.update();

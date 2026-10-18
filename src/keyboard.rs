@@ -947,6 +947,10 @@ pub fn event_to_key_events(
 
     update_modifiers_state(event);
 
+    if let Some(sas) = secure_attention_request(&peer, event) {
+        return sas;
+    }
+
     match event.event_type {
         EventType::KeyPress(key) => {
             TO_RELEASE.lock().unwrap().insert(key, event.clone());
@@ -988,6 +992,46 @@ pub fn event_to_key_events(
         }
     }
     key_events
+}
+
+/// Ctrl+Alt+Del for a WINDOWS peer, in every keyboard mode.
+///
+/// Windows will not treat injected keystrokes as the Secure Attention Sequence, so
+/// typing the three keys at a Windows remote does nothing; only the SAS request
+/// (`ControlKey::CtrlAltDel`, which the remote's service turns into `send_sas()`) opens
+/// the security screen or unlocks a locked session. Legacy mode always translated the
+/// combination; map mode -- the default -- sent the raw keys, so the combination simply
+/// did not work from a Linux or macOS controller.
+///
+/// And from a WINDOWS controller the real Ctrl+Alt+Del can never be captured: the OS
+/// takes it before any program sees it. So, like RDP, Ctrl+Alt+End stands in for it.
+///
+/// Returns the events to send instead (the SAS on the key press, nothing on the
+/// matching release), or None to let the event through unchanged. Linux and macOS peers
+/// are left alone: there the plain key combination is the correct thing to send.
+fn secure_attention_request(peer: &str, event: &Event) -> Option<Vec<KeyEvent>> {
+    if !peer.eq_ignore_ascii_case(OS_LOWER_WINDOWS) {
+        return None;
+    }
+    let (is_press, key) = match event.event_type {
+        EventType::KeyPress(k) => (true, k),
+        EventType::KeyRelease(k) => (false, k),
+        _ => return None,
+    };
+    if !matches!(key, Key::Delete | Key::End) {
+        return None;
+    }
+    let (alt, ctrl, _, _) = client::get_modifiers_state(false, false, false, false);
+    if !(ctrl && alt) {
+        return None;
+    }
+    if is_press {
+        log::info!("Ctrl+Alt+{:?}: sending the Secure Attention Sequence to the peer", key);
+        Some(vec![client::event_ctrl_alt_del()])
+    } else {
+        // The press was replaced by the SAS; its release must not reach the peer alone.
+        Some(Vec::new())
+    }
 }
 
 pub fn send_key_event(key_event: &KeyEvent) {
@@ -1594,5 +1638,51 @@ pub mod input_source {
                 CONFIG_INPUT_SOURCE_2_TIP.to_string(),
             ),
         ]
+    }
+}
+
+#[cfg(all(test, not(any(target_os = "android", target_os = "ios"))))]
+mod sas_tests {
+    use super::*;
+
+    fn ev(t: EventType) -> Event {
+        Event {
+            time: std::time::SystemTime::now(),
+            unicode: None,
+            platform_code: 0,
+            position_code: 0,
+            event_type: t,
+            usb_hid: 0,
+        }
+    }
+
+    #[test]
+    fn ctrl_alt_del_and_ctrl_alt_end_become_the_sas_for_a_windows_peer_only() {
+        update_modifiers_state(&ev(EventType::KeyPress(Key::ControlLeft)));
+        update_modifiers_state(&ev(EventType::KeyPress(Key::Alt)));
+
+        for key in [Key::Delete, Key::End] {
+            let sas = secure_attention_request("windows", &ev(EventType::KeyPress(key)))
+                .expect("Ctrl+Alt+{key:?} must turn into the SAS for a Windows peer");
+            assert_eq!(sas.len(), 1);
+            assert_eq!(
+                sas[0].union,
+                Some(key_event::Union::ControlKey(ControlKey::CtrlAltDel.into()))
+            );
+            // ...and its release must not reach the peer on its own.
+            assert_eq!(
+                secure_attention_request("windows", &ev(EventType::KeyRelease(key))),
+                Some(Vec::new())
+            );
+            // A Linux peer gets the plain key combination: no translation there.
+            assert!(secure_attention_request("linux", &ev(EventType::KeyPress(key))).is_none());
+        }
+        // Other keys are never touched.
+        assert!(secure_attention_request("windows", &ev(EventType::KeyPress(Key::KeyA))).is_none());
+
+        update_modifiers_state(&ev(EventType::KeyRelease(Key::Alt)));
+        // Ctrl+End without Alt is an ordinary editing shortcut and must pass through.
+        assert!(secure_attention_request("windows", &ev(EventType::KeyPress(Key::End))).is_none());
+        update_modifiers_state(&ev(EventType::KeyRelease(Key::ControlLeft)));
     }
 }
