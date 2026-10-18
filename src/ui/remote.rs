@@ -40,6 +40,10 @@ struct VideoSurfaces {
     single: Option<Video>,
     tiles: HashMap<usize, Video>,
     tile_dims: HashMap<usize, (i32, i32)>,
+    /// Who bound each tile: 0 = a tile in the main window, otherwise the id of the
+    /// display window. A window that goes away removes a tile only if it is still the
+    /// one it bound -- see DisplayWindowBehavior::detached.
+    tile_owner: HashMap<usize, u64>,
     view_all: bool,
 }
 
@@ -63,8 +67,26 @@ lazy_static::lazy_static! {
 // (no SW_MAIN).
 // ============================================================================
 thread_local! {
-    static DISPLAY_WINDOWS: std::cell::RefCell<HashMap<usize, sciter::Window>> =
+    /// display index -> (window id, window). The id tells a window that is still current
+    /// from one that has been replaced or closed on purpose.
+    static DISPLAY_WINDOWS: std::cell::RefCell<HashMap<usize, (u64, sciter::Window)>> =
         Default::default();
+}
+
+static NEXT_DISPLAY_WINDOW_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+thread_local! {
+    /// The session window's handle, recorded on the UI thread when the session element
+    /// attaches, so a display window can name its owner WITHOUT taking
+    /// `SciterHandler::element`. That mutex is held by other threads for the whole of a
+    /// script call, which Sciter runs on the UI thread and waits for; the UI thread
+    /// blocking on it from open_display_window deadlocked both until a timeout -- a
+    /// 20 s freeze, frames included, seen intermittently in the Windows VM.
+    static SESSION_HWND: std::cell::Cell<Option<sciter::types::HWINDOW>> =
+        std::cell::Cell::new(None);
+    /// The session's own `<video #handler>`, for the same reason: a display window the
+    /// user closed tells the script through it, not through `SciterHandler::call`.
+    static SESSION_ELEMENT: std::cell::RefCell<Option<Element>> = Default::default();
 }
 
 /// The behavior on the single <video> of a display window. It binds the surface into
@@ -72,6 +94,7 @@ thread_local! {
 struct DisplayWindowBehavior {
     session: Session<SciterHandler>,
     display: usize,
+    id: u64,
 }
 
 impl DisplayWindowBehavior {
@@ -106,18 +129,47 @@ impl sciter::EventHandler for DisplayWindowBehavior {
         Some(EVENT_GROUPS::HANDLE_BEHAVIOR_EVENT)
     }
 
+    // On Windows a window closes ASYNCHRONOUSLY: dismiss() posts the close and this
+    // runs later -- after a mode change has already opened the replacement window for
+    // the same display. Keyed by display index alone, the late call removed the NEW
+    // window's surface (black window) and reported a user close, which threw the
+    // session out of the mode (found in the Windows VM when changing the display
+    // selection in window-per-display mode). So everything here is checked against
+    // this window's id: it only undoes what is still its own.
     fn detached(&mut self, _root: HELEMENT) {
         {
             let mut lock = VIDEO.lock().unwrap();
-            lock.tiles.remove(&self.display);
-            lock.tile_dims.remove(&self.display);
+            if lock.tile_owner.get(&self.display) == Some(&self.id) {
+                lock.tiles.remove(&self.display);
+                lock.tile_dims.remove(&self.display);
+                lock.tile_owner.remove(&self.display);
+            }
         }
-        DISPLAY_WINDOWS.with(|w| w.borrow_mut().remove(&self.display));
-        // The main window decides what this means: if the user closed one display
-        // window by hand, the session falls back to showing that display there.
-        self.session
-            .ui_handler
-            .call("onDisplayWindowClosed", &make_args!(self.display as i32));
+        let closed_by_user = DISPLAY_WINDOWS.with(|w| {
+            let mut w = w.borrow_mut();
+            if matches!(w.get(&self.display), Some((id, _)) if *id == self.id) {
+                w.remove(&self.display);
+                true
+            } else {
+                false
+            }
+        });
+        log::info!(
+            "display window {} closed{}",
+            self.display,
+            if closed_by_user { " by the user" } else { "" }
+        );
+        // Only a window the user closed means anything to the main window: the session
+        // then falls back to showing that display there. Windows closed by a mode change
+        // were taken out of DISPLAY_WINDOWS before they were dismissed.
+        if closed_by_user {
+            let display = self.display as i32;
+            SESSION_ELEMENT.with(|e| {
+                if let Some(e) = e.borrow().as_ref() {
+                    allow_err!(e.call_method("onDisplayWindowClosed", &make_args!(display)));
+                }
+            });
+        }
     }
 
     fn on_event(
@@ -132,18 +184,39 @@ impl sciter::EventHandler for DisplayWindowBehavior {
         if phase != PHASE_MASK::BUBBLING {
             return false;
         }
-        if let BEHAVIOR_EVENTS::VIDEO_BIND_RQ = code {
-            if let EventReason::VideoBind(ptr) = reason {
-                if !ptr.is_null() {
-                    let site = AssetPtr::adopt(ptr as *mut video_destination);
-                    let mut lock = VIDEO.lock().unwrap();
-                    lock.tile_dims.remove(&self.display);
-                    lock.tiles.insert(self.display, site);
+        match code {
+            BEHAVIOR_EVENTS::VIDEO_BIND_RQ => {
+                if let EventReason::VideoBind(ptr) = reason {
+                    log::info!(
+                        "display window {}: video bind ({})",
+                        self.display,
+                        if ptr.is_null() { "unbind" } else { "surface" }
+                    );
+                    if !ptr.is_null() {
+                        let site = AssetPtr::adopt(ptr as *mut video_destination);
+                        {
+                            let mut lock = VIDEO.lock().unwrap();
+                            lock.tile_dims.remove(&self.display);
+                            lock.tiles.insert(self.display, site);
+                            lock.tile_owner.insert(self.display, self.id);
+                        }
+                        // Ask for a fresh frame of this display. The peer only sends a
+                        // frame when its screen changes, and the one requested when the
+                        // mode started can arrive before this window exists -- it is
+                        // then lost, and a static remote screen leaves the window black
+                        // for good. Found on Windows: the window bound ~30 ms after the
+                        // display's first frame, and stayed black.
+                        self.session.refresh_video(self.display as i32);
+                    }
                 }
+                true
             }
-            return true;
+            BEHAVIOR_EVENTS::VIDEO_STARTED | BEHAVIOR_EVENTS::VIDEO_STOPPED => {
+                log::info!("display window {}: {:?}", self.display, code);
+                true
+            }
+            _ => false,
         }
-        false
     }
 
     sciter::dispatch_script_call! {
@@ -160,7 +233,7 @@ impl sciter::EventHandler for DisplayWindowBehavior {
 /// RefCell double borrow -- a panic in the UI thread, i.e. the session window dying.
 fn close_all_display_windows() {
     let windows: Vec<sciter::Window> =
-        DISPLAY_WINDOWS.with(|w| w.borrow_mut().drain().map(|(_, win)| win).collect());
+        DISPLAY_WINDOWS.with(|w| w.borrow_mut().drain().map(|(_, (_, win))| win).collect());
     for win in windows {
         win.dismiss();
     }
@@ -548,11 +621,24 @@ impl InvokeUiSession for SciterHandler {
             if let Some(v) = lock.tiles.get_mut(&display) {
                 if need_restart {
                     v.stop_streaming().ok();
-                    v.start_streaming(dims, COLOR_SPACE::Rgb32, None).ok();
+                    let started = v.start_streaming(dims, COLOR_SPACE::Rgb32, None);
+                    // Once per (re)start, so a surface that never paints says why.
+                    log::info!("[video] tile {display} started at {dims:?}: {started:?}");
                 }
-                v.render_frame(&rgba.raw).ok();
+                if let Err(e) = v.render_frame(&rgba.raw) {
+                    if need_restart {
+                        log::warn!("[video] tile {display} render failed: {e:?}");
+                    }
+                }
             }
             return;
+        }
+        if lock.view_all && !lock.tile_dims.contains_key(&display) {
+            // A display is streaming but nothing is bound to draw it (its tile or
+            // display window never sent VIDEO_BIND_RQ). Said once: the marker is cleared
+            // when a surface binds, which also forces that surface's first restart.
+            lock.tile_dims.insert(display, (rgba.w as i32, rgba.h as i32));
+            log::warn!("[video] display {display} is streaming but has no surface bound");
         }
         // Default (legacy) behavior: blit into the single surface.
         lock.single
@@ -700,7 +786,13 @@ impl sciter::EventHandler for SciterSession {
     }
 
     fn attached(&mut self, root: HELEMENT) {
-        *self.element.lock().unwrap() = Some(Element::from(root));
+        let root = Element::from(root);
+        SESSION_HWND.with(|h| h.set(Some(root.get_hwnd(true))));
+        // Tiles get inert sessions of their own; only the session's real element is kept.
+        if root.get_attribute("id").as_deref() == Some("handler") {
+            SESSION_ELEMENT.with(|e| *e.borrow_mut() = Some(root.clone()));
+        }
+        *self.element.lock().unwrap() = Some(root);
     }
 
     fn detached(&mut self, _root: HELEMENT) {
@@ -714,6 +806,7 @@ impl sciter::EventHandler for SciterSession {
         });
         if started {
             close_all_display_windows();
+            SESSION_ELEMENT.with(|e| *e.borrow_mut() = None);
         }
     }
 
@@ -749,9 +842,16 @@ impl sciter::EventHandler for SciterSession {
                         Some(idx) => {
                             // A newly bound tile: store it and force a re-init on
                             // the next frame. Do NOT reconnect (session is live).
-                            let mut lock = VIDEO.lock().unwrap();
-                            lock.tile_dims.remove(&idx);
-                            lock.tiles.insert(idx, site);
+                            {
+                                let mut lock = VIDEO.lock().unwrap();
+                                lock.tile_dims.remove(&idx);
+                                lock.tiles.insert(idx, site);
+                                lock.tile_owner.insert(idx, 0);
+                            }
+                            // A fresh frame for the new surface: the one requested when
+                            // the mode started may already have gone by (see the display
+                            // window's bind), and a static remote screen sends no other.
+                            self.refresh_video(idx as i32);
                         }
                         None => {
                             VIDEO.lock().unwrap().single = Some(site);
@@ -1009,6 +1109,7 @@ impl SciterSession {
             lock.view_all = false;
             lock.tiles.clear();
             lock.tile_dims.clear();
+            lock.tile_owner.clear();
             return;
         }
         {
@@ -1043,19 +1144,15 @@ impl SciterSession {
             return false;
         }
         let display = display as usize;
-        // Re-opening the same display replaces its window rather than stacking two.
-        DISPLAY_WINDOWS.with(|w| {
-            if let Some(old) = w.borrow_mut().remove(&display) {
-                old.dismiss();
-            }
-        });
-        let parent = self
-            .ui_handler
-            .element
-            .lock()
-            .unwrap()
-            .as_ref()
-            .map(|e| e.get_hwnd(true));
+        // Re-opening the same display replaces its window rather than stacking two. Taken
+        // out of the map BEFORE it is dismissed: where closing is synchronous, dismiss()
+        // runs `detached`, which borrows the same map.
+        let old = DISPLAY_WINDOWS.with(|w| w.borrow_mut().remove(&display));
+        if let Some((_, old)) = old {
+            old.dismiss();
+        }
+        let id = NEXT_DISPLAY_WINDOW_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let parent = SESSION_HWND.with(|h| h.get());
         let mut builder = sciter::WindowBuilder::with_flags(
             sciter::types::SCITER_CREATE_WINDOW_FLAGS::SW_TITLEBAR,
         )
@@ -1072,6 +1169,7 @@ impl SciterSession {
             Box::new(DisplayWindowBehavior {
                 session: session.clone(),
                 display,
+                id,
             })
         });
         win.set_title(&title);
@@ -1090,7 +1188,7 @@ impl SciterSession {
             "display window: remote display {} ({},{} {}x{}) on monitor {},{} {}x{}",
             display + 1, r.0, r.1, r.2, r.3, m.0, m.1, m.2, m.3
         );
-        DISPLAY_WINDOWS.with(|w| w.borrow_mut().insert(display, win));
+        DISPLAY_WINDOWS.with(|w| w.borrow_mut().insert(display, (id, win)));
         true
     }
 
