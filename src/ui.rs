@@ -264,7 +264,12 @@ pub fn start(args: &mut [String]) {
         } else {
             inline::get_remote()
         };
-        frame.load_html(html.as_bytes(), Some(page));
+        // The UTF-8 BOM tells Sciter how to decode the page. Without it, Sciter on
+        // Windows decodes these bytes as the ANSI code page, so every non-ASCII literal
+        // in the .tis/.html (an em dash in the direct-access tooltip, the "·" in the
+        // display picker) came out as mojibake ("â€”"). Translations were unaffected
+        // because they arrive from Rust as strings, which is why it went unnoticed.
+        frame.load_html(format!("\u{feff}{html}").as_bytes(), Some(page));
     }
     #[cfg(not(feature = "inline"))]
     frame.load_file(&format!(

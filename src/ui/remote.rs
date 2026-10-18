@@ -1075,8 +1075,10 @@ impl SciterSession {
             })
         });
         win.set_title(&title);
+        // BOM: see the main window's load_html in ui.rs -- the title is in the page and
+        // may carry non-ASCII.
         if !win.load_html(
-            display_window_html(r, &title).as_bytes(),
+            format!("\u{feff}{}", display_window_html(r, &title)).as_bytes(),
             Some("display.html"),
         ) {
             log::error!("display window: failed to load page for display {display}");
