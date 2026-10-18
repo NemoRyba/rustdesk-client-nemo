@@ -7290,7 +7290,7 @@ dependencies = [
 
 [[package]]
 name = "rustdesk"
-version = "1.4.9"
+version = "1.4.10"
 dependencies = [
  "aes",
  "android-wakelock",

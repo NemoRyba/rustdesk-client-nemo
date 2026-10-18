@@ -213,6 +213,11 @@ pub fn direct_capable_ids() -> Vec<String> {
 /// poll never got a policy, publish the endpoint in the dashboard), so name which one
 /// it is.
 pub fn why_no_endpoint(peer_id: &str) -> String {
+    // The server also withholds a set endpoint, deliberately, so say so: a blocked peer's
+    // address is never handed out, and a controller only learns endpoints of targets its
+    // own outbound policy allows.
+    const WITHHELD: &str = " (if it is set, the server withholds it: the peer is blocked, \
+                            or it is not in this client's allowed outbound targets)";
     if Config::get_option("nemo-management-enabled") != "Y" {
         return "the managed policy poll is OFF on this client, so it never receives \
                 endpoints (import the setup string again, or enable it)"
@@ -229,12 +234,12 @@ pub fn why_no_endpoint(peer_id: &str) -> String {
     if known.is_empty() {
         format!(
             "the last policy (issued {issued}) published no direct endpoints at all; \
-             set 'Reachable at' for {peer_id} in the dashboard"
+             set 'Reachable at' for {peer_id} in the dashboard{WITHHELD}"
         )
     } else {
         format!(
             "the last policy (issued {issued}) has endpoints for {} other peer(s) ({}) \
-             but none for {peer_id}; set 'Reachable at' for it in the dashboard",
+             but none for {peer_id}; set 'Reachable at' for it in the dashboard{WITHHELD}",
             known.len(),
             known
                 .iter()
