@@ -34,6 +34,7 @@ const OPTION_NEMO_REQUIRE_SECURE_RENDEZVOUS: &str = "nemo-require-secure-rendezv
 // policy key — the stock `allow-auto-update` stays in POLICY_DENIED_KEYS, so the
 // upstream updater has no way in. "" (the default) = no updater at all.
 const OPTION_NEMO_AUTO_UPDATE: &str = "nemo-auto-update";
+const OPTION_NEMO_UPDATE_VERSION: &str = "nemo-update-version";
 const MANAGED_SECRET_PLACEHOLDER: &str = "<managed-secret>";
 const NEMO_MANAGEMENT_SETTINGS: &[&str] = &[
     OPTION_NEMO_MANAGEMENT_ENABLED,
@@ -67,6 +68,9 @@ const NEMO_MANAGEMENT_SETTINGS: &[&str] = &[
     OPTION_NEMO_REQUIRE_SECURE_RENDEZVOUS,
     // Auto-update: same reason — an unlisted key is dropped by option_scope().
     OPTION_NEMO_AUTO_UPDATE,
+    // The version the server publishes (server-driven rollout): a newer one makes a
+    // client with automatic updates check now rather than at its next daily check.
+    OPTION_NEMO_UPDATE_VERSION,
 ];
 
 /// Direct endpoints + the SPA knock. Kept as its own slice so the owning module
@@ -128,6 +132,8 @@ struct ClientPolicyRequest {
     /// response sealed to its device key. Empty when no device key is imported.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     sealed: String,
+    /// This build, for the dashboard's "who runs what" during an update rollout.
+    client_version: String,
 }
 
 // Device-key sign/unseal helpers live in crate::common (always compiled) so the
@@ -410,6 +416,7 @@ fn sync_policy() -> ResultType<()> {
         device_key_pub: String::new(),
         device_key_sig: String::new(),
         sealed: String::new(),
+        client_version: crate::VERSION.to_owned(),
     };
     let (device_key_pub, device_key_sig) = nemo_sign_poll(&id);
     // Layer 1: remembered so the server's refusal can be explained below. The poll
@@ -589,9 +596,16 @@ fn sync_policy() -> ResultType<()> {
         .get(crate::nemo_control::OPTION_CONTROL_TICKET)
         .cloned()
         .unwrap_or_default();
+    let published_version = payload
+        .policy
+        .options
+        .get(OPTION_NEMO_UPDATE_VERSION)
+        .cloned()
+        .unwrap_or_default();
     apply_policy(payload.policy)?;
     // This process polled with this OS user's token (or none): its ticket is that user's.
     crate::nemo_control::remember_user_ticket(&control_ticket);
+    nudge_updater(&published_version);
     // Stale-session self-heal: we polled WITH a token, yet the server signalled
     // require-login and did not recognise us (server restart wiped its in-memory
     // sessions, or the user was disabled/expired). Drop the dead token so the UI
@@ -609,6 +623,35 @@ fn sync_policy() -> ResultType<()> {
         crate::ui_interface::refresh_options();
     }
     Ok(())
+}
+
+/// Server-driven rollout: when the server publishes a version newer than this build and
+/// automatic updates are on, ask the updater to check now instead of at its next daily
+/// check. Once per published version per process; the updater itself fetches and
+/// verifies the signed manifest, hashes the file and installs only outside sessions.
+/// Only the installed Windows service process runs the updater (rendezvous_mediator).
+fn nudge_updater(published: &str) {
+    #[cfg(target_os = "windows")]
+    {
+        static LAST: Mutex<String> = Mutex::new(String::new());
+        if published.is_empty()
+            || Config::get_option(OPTION_NEMO_AUTO_UPDATE) != "Y"
+            || !crate::platform::is_installed()
+            || !crate::is_server()
+            || hbb_common::get_version_number(published) <= hbb_common::get_version_number(crate::VERSION)
+        {
+            return;
+        }
+        let Ok(mut last) = LAST.lock() else { return };
+        if *last == published {
+            return;
+        }
+        *last = published.to_owned();
+        log::info!("Nemo update {} published (this build {}): checking now", published, crate::VERSION);
+        hbb_common::allow_err!(crate::updater::manually_check_update());
+    }
+    #[cfg(not(target_os = "windows"))]
+    let _ = published;
 }
 
 fn verified_payload(

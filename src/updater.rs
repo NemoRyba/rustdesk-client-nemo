@@ -107,14 +107,23 @@ fn start_auto_update_check_(rx_msg: Receiver<UpdateMsg>) {
     const POLL_INTERVAL: Duration = Duration::from_secs(60 * 5);
     let mut last_check_time = Instant::now();
     let mut retry_not_before = Instant::now();
+    // A requested check (the server published a new version) that could not run yet --
+    // too soon after the last check, or a session was open -- stays pending and runs
+    // at the next wake-up that allows it, instead of waiting for the daily check.
+    let mut pending_manual = false;
     loop {
         let interval = get_check_interval();
         let recv_res = rx_msg.recv_timeout(POLL_INTERVAL.min(interval));
         match &recv_res {
             Ok(UpdateMsg::CheckUpdate) | Err(_) => {
-                let manually = matches!(recv_res, Ok(UpdateMsg::CheckUpdate));
+                if matches!(recv_res, Ok(UpdateMsg::CheckUpdate)) {
+                    pending_manual = true;
+                }
+                let manually = pending_manual;
                 if manually {
-                    if last_check_time.elapsed() < MIN_MANUAL_INTERVAL {
+                    if last_check_time.elapsed() < MIN_MANUAL_INTERVAL
+                        || Instant::now() < retry_not_before
+                    {
                         // log::debug!("Update check skipped due to minimum interval.");
                         continue;
                     }
@@ -128,9 +137,13 @@ fn start_auto_update_check_(rx_msg: Receiver<UpdateMsg>) {
                     retry_not_before = Instant::now() + interval.clamp(MIN_RETRY, MAX_RETRY);
                     continue;
                 }
+                pending_manual = false;
                 if let Err(e) = check_update(manually) {
                     log::error!("Error checking for updates: {}", e);
                     retry_not_before = Instant::now() + interval.clamp(MIN_RETRY, MAX_RETRY);
+                    // A pushed update that failed or had to wait for a session to end is
+                    // retried (at most every MAX_RETRY), not dropped until tomorrow.
+                    pending_manual = manually;
                 } else {
                     last_check_time = Instant::now();
                 }
@@ -243,10 +256,12 @@ fn check_update(manually: bool) -> ResultType<()> {
         // We have checked if the `conns` is empty before, but we need to check again.
         // No need to care about the downloaded file here, because it's rare case that the `conns` are empty
         // before the download, but not empty after the download.
-        if has_no_active_conns() {
-            #[cfg(target_os = "windows")]
-            update_new_version(update_msi, &version, &file_path);
+        if !has_no_active_conns() {
+            // Downloaded and verified; installed after the session (see the retry).
+            bail!("a session started during the download; installing {} later", version);
         }
+        #[cfg(target_os = "windows")]
+        update_new_version(update_msi, &version, &file_path);
     }
     Ok(())
 }

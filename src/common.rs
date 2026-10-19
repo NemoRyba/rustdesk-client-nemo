@@ -1045,7 +1045,16 @@ pub fn do_check_software_update() -> hbb_common::ResultType<()> {
             manifest.version,
             crate::VERSION
         );
-        nemo_set_update_offer(&manifest.url, &manifest.sha256);
+        // An installer hosted by the server (uploaded in the dashboard) is fetched from
+        // the management server THIS client is configured with: behind two NATs the
+        // server is one address inside the company and another on the internet, and the
+        // url can only name one of them. The signed sha256 is what makes it safe.
+        let download = match nemo_hosted_update_path(&manifest.url) {
+            Some(path) => format!("{server}{path}"),
+            None => manifest.url.clone(),
+        };
+        log::info!("Nemo update download: {}", download);
+        nemo_set_update_offer(&download, &manifest.sha256);
     } else {
         nemo_set_update_offer("", "");
     }
@@ -2977,6 +2986,23 @@ fn nemo_url_origin(url: &str) -> Option<String> {
     Some(origin.ascii_serialization())
 }
 
+/// The server's hosted-installer route.
+pub const NEMO_HOSTED_UPDATE_PREFIX: &str = "/nemo/api/update/file/";
+
+/// `/nemo/api/update/file/<name>` if `url` points at an installer the management server
+/// hosts itself (any host, no query or fragment, a plain file name), else None.
+pub fn nemo_hosted_update_path(url: &str) -> Option<String> {
+    let u = url::Url::parse(url.trim()).ok()?;
+    if !matches!(u.scheme(), "http" | "https") || u.query().is_some() || u.fragment().is_some() {
+        return None;
+    }
+    let name = u.path().strip_prefix(NEMO_HOSTED_UPDATE_PREFIX)?;
+    let plain = !name.is_empty()
+        && !name.starts_with('.')
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_');
+    plain.then(|| format!("{NEMO_HOSTED_UPDATE_PREFIX}{name}"))
+}
+
 // Auto-update: a verified update offer from the management server.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NemoUpdateManifest {
@@ -3021,8 +3047,10 @@ pub fn nemo_verify_update_manifest(
     if sha256.len() != 64 || !sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;
     }
-    // Same origin as the management server, by parsed origin (never a prefix test).
-    if nemo_url_origin(url)? != nemo_url_origin(server_origin)? {
+    // Same origin as the management server, by parsed origin (never a prefix test) --
+    // unless it is the server's own hosted installer, which the caller fetches from its
+    // own management server whatever host the url names (nemo_hosted_update_path).
+    if nemo_hosted_update_path(url).is_none() && nemo_url_origin(url)? != nemo_url_origin(server_origin)? {
         return None;
     }
     Some(NemoUpdateManifest {
@@ -4322,6 +4350,39 @@ mod tests {
             "file:///C:/tbfdesk.exe",                                      // opaque origin
             "not a url",
         ] {
+            let off = manifest("9.9.9", url, &sha, &mgmt_sk);
+            assert!(
+                nemo_verify_update_manifest(&off, &mgmt_pk_b64, origin).is_none(),
+                "{url}"
+            );
+        }
+
+        // The server's own hosted installer is accepted whatever host the url names: a
+        // server between two NATs has a different address on each side, and the client
+        // fetches the PATH from its own management server (do_check_software_update).
+        let hosted = manifest(
+            "9.9.9",
+            "https://203.0.113.7:31120/nemo/api/update/file/tbfdesk-9.9.9-x64-install.exe",
+            &sha,
+            &mgmt_sk,
+        );
+        assert!(nemo_verify_update_manifest(&hosted, &mgmt_pk_b64, origin).is_some());
+        assert_eq!(
+            nemo_hosted_update_path("https://203.0.113.7:31120/nemo/api/update/file/tbfdesk-9.9.9-x64-install.exe").as_deref(),
+            Some("/nemo/api/update/file/tbfdesk-9.9.9-x64-install.exe")
+        );
+        // ...but only a plain file name under that route: no query, no fragment, no
+        // traversal, no other route, no other scheme.
+        for url in [
+            "https://evil.example.com/nemo/api/update/file/x.exe?redirect=1",
+            "https://evil.example.com/nemo/api/update/file/x.exe#frag",
+            "https://evil.example.com/nemo/api/update/file/../latest",
+            "https://evil.example.com/nemo/api/update/file/",
+            "https://evil.example.com/nemo/api/update/file/.hidden",
+            "https://evil.example.com/nemo/api/update/latest",
+            "ftp://evil.example.com/nemo/api/update/file/x.exe",
+        ] {
+            assert!(nemo_hosted_update_path(url).is_none(), "{url}");
             let off = manifest("9.9.9", url, &sha, &mgmt_sk);
             assert!(
                 nemo_verify_update_manifest(&off, &mgmt_pk_b64, origin).is_none(),
