@@ -317,17 +317,40 @@ class AudioInputs: Reactor.Component {
     }
 };
 
+// TBFDesk languages: German first (Germany, then Austria -- the same texts for now),
+// then English. Drawn flags: emoji flags do not render on Windows.
+var svg_flag_de = <svg .flag-de viewBox="0 0 5 3" width="21" height="13"><rect x="0" y="0" width="5" height="1" fill="#000000"/><rect x="0" y="1" width="5" height="1" fill="#DD0000"/><rect x="0" y="2" width="5" height="1" fill="#FFCE00"/></svg>;
+var svg_flag_at = <svg .flag-at viewBox="0 0 3 2" width="21" height="14"><rect x="0" y="0" width="3" height="2" fill="#ED2939"/><rect x="0" y="0.667" width="3" height="0.667" fill="#FFFFFF"/></svg>;
+var svg_flag_gb = <svg .flag-gb viewBox="0 0 60 30" width="21" height="11"><rect x="0" y="0" width="60" height="30" fill="#012169"/><polygon points="0,0 7,0 60,26.5 60,30 53,30 0,3.5" fill="#FFFFFF"/><polygon points="60,0 53,0 0,26.5 0,30 7,30 60,3.5" fill="#FFFFFF"/><polygon points="0,0 2.5,0 60,28.75 60,30 57.5,30 0,1.25" fill="#C8102E"/><polygon points="60,0 57.5,0 0,28.75 0,30 2.5,30 60,1.25" fill="#C8102E"/><rect x="25" y="0" width="10" height="30" fill="#FFFFFF"/><rect x="0" y="10" width="60" height="10" fill="#FFFFFF"/><rect x="27" y="0" width="6" height="30" fill="#C8102E"/><rect x="0" y="12" width="60" height="6" fill="#C8102E"/></svg>;
+
+function nemoLangChoices() {
+    return [
+        ["de", translate("nemo_lang_de"), svg_flag_de],
+        ["de-at", translate("nemo_lang_de_at"), svg_flag_at],
+        ["en", translate("nemo_lang_en"), svg_flag_gb],
+    ];
+}
+
+// German is the default (lang.rs), so an unset option is German (Germany).
+function nemoCurrentLang() {
+    var v = (handler.get_local_option("lang") || "").toLowerCase();
+    return (v == "" || v == "default") ? "de" : v;
+}
+
+function nemoLangChoice(code) {
+    var all = nemoLangChoices();
+    for (var c in all) { if (c[0] == code) return c; }
+    return all[0];
+}
+
 class Languages: Reactor.Component {
     function render() {
-        var langs = JSON.parse(handler.get_langs());
         var me = this;
         self.timer(1ms, function() { try { me.toggleMenuState() } catch (e) {} });
         return <li>{translate('Language')}
-            <menu #languages key={langs.length}>
-                <li id="default"><span>{svg_checkmark}</span>Default</li>
-                <div .separator />
-                {langs.map(function(lang) {
-                return <li id={lang[0]}><span>{svg_checkmark}</span>{lang[1]}</li>;
+            <menu #languages>
+                {nemoLangChoices().map(function(c) {
+                return <li id={c[0]}><span>{svg_checkmark}</span><span .nemo-flag>{c[2]}</span>{c[1]}</li>;
                 })}
             </menu>
         </li>;
@@ -335,7 +358,7 @@ class Languages: Reactor.Component {
 
 
     function toggleMenuState() {
-        var cur = handler.get_local_option("lang") || "default";
+        var cur = nemoCurrentLang();
         var is_opt_fixed = handler.is_option_fixed("lang");
         for (var el in this.$$(menu#languages>li)) {
             var selected = cur == el.id;
@@ -501,7 +524,7 @@ function open_custom_server_dialog() {
     if (nemoExeServerSettingsLocked()) {
         msgbox("custom-nocancel-nook-hasclose", "ID/Relay Server",
             "<div style='line-height: 2em'>" +
-            "Server settings are locked by this executable name." +
+            translate("Server settings are locked by this executable name.") +
             handler.get_license() +
             "</div>",
             "", function() {}, 260, get_msgbox_width());
@@ -509,7 +532,7 @@ function open_custom_server_dialog() {
     }
     if (nemoManagementServerSettingsLocked()) {
         msgbox("custom-nocancel-nook-hasclose", "ID/Relay Server",
-            "<div style='line-height: 2em'>Server settings are locked by management policy.</div>",
+            "<div style='line-height: 2em'>" + translate("Server settings are locked by management policy.") + "</div>",
             "", function() {}, 220, get_msgbox_width());
         return;
     }
@@ -526,8 +549,8 @@ function open_custom_server_dialog() {
                 <div><span>{translate("Relay Server")}: </span><input|text name='relay' value={old_relay} /></div>
                 <div><span>{translate("API Server")}: </span><input|text name='api' value={old_api} /></div>
                 <div><span>{translate("Key")}: </span><input|text name='key' value={old_key} /></div>
-                {nemo_gui_server_settings ? <div><button|checkbox(company_only) {company_only_attrs}>Company network only</button></div> : ""}
-                {nemo_gui_server_settings ? <div style="font-size: 0.9em; color: #888; line-height: 1.4em;">Blocks public network IDs such as id@public. Clear ID Server and uncheck this to use the public network again.</div> : ""}
+                {nemo_gui_server_settings ? <div><button|checkbox(company_only) {company_only_attrs}>{translate('Company network only')}</button></div> : ""}
+                {nemo_gui_server_settings ? <div style="font-size: 0.9em; color: #888; line-height: 1.4em;">{translate("nemo_company_only_tip")}</div> : ""}
             </div>,
             "", function(res=null, show_progress) {
                 if (!res) return;
@@ -538,7 +561,7 @@ function open_custom_server_dialog() {
                 var key = (res.key || "").trim();
                 var company_only = res.company_only ? true : false;
                 if (company_only && !id) {
-                    return "Company network only requires an ID server";
+                    return translate("Company network only requires an ID server");
                 }
                 if (id == old_id && relay == old_relay && key == old_key && api == old_api && company_only == old_company_only) return;
                 if (id) {
@@ -572,9 +595,9 @@ function open_nemo_management_dialog() {
     var enabled_attrs = old_enabled ? { checked: true } : {};
     msgbox("custom-server", "Management",
             <div .form .set-password>
-                <div><span>Management Server: </span><input|text .outline-focus name='server' value={old_server} /></div>
-                <div><span>Public Key: </span><input|text name='public_key' value={old_public_key} /></div>
-                <div><button|checkbox(enabled) {enabled_attrs}>Enable management control</button></div>
+                <div><span>{translate('Management Server')}: </span><input|text .outline-focus name='server' value={old_server} /></div>
+                <div><span>{translate('Public Key')}: </span><input|text name='public_key' value={old_public_key} /></div>
+                <div><button|checkbox(enabled) {enabled_attrs}>{translate('Enable management control')}</button></div>
             </div>,
             "", function(res=null, show_progress) {
                 if (!res) return;
@@ -583,7 +606,7 @@ function open_nemo_management_dialog() {
                 var server = (res.server || "").trim();
                 var public_key = (res.public_key || "").trim();
                 if (enabled && !server) {
-                    return "Management Server is required";
+                    return translate("Management Server is required");
                 }
                 if (server && 0 != server.indexOf("https://") && 0 != server.indexOf("http://")) {
                     return "Management Server: " + translate("invalid_http");
@@ -849,7 +872,7 @@ class MyIdMenu: Reactor.Component {
                 {!disable_settings && <li #allow-remote-config-modification><span>{svg_checkmark}</span>{translate('Enable remote configuration modification')}</li>}
                 {!disable_settings && <div .separator />}
                 {!disable_settings && !hide_server_settings && <li #custom-server>{translate('ID/Relay Server')}{(nemoExeServerSettingsLocked() || nemoManagementServerSettingsLocked()) ? " (locked)" : ""}</li>}
-                {!disable_settings && !hide_server_settings && nemo_management_settings && <li #nemo-management>Management</li>}
+                {!disable_settings && !hide_server_settings && nemo_management_settings && <li #nemo-management>{translate('Management')}</li>}
                 {!disable_settings && nemo_management_settings && <li #nemo-alias>{translate('Alias')}</li>}
                 {!disable_settings && <li #import-device-key>{translate('Import setup string or device key')}</li>}
                 {!disable_settings && <li #whitelist title={translate('whitelist_tip')}>{translate('IP Whitelisting')}</li>}
@@ -1636,6 +1659,18 @@ class NemoSettingsDialog: Reactor.Component {
         </div>;
     }
 
+    // Language: a drop-down showing the current flag and name; the choices pop up
+    // anchored to it (menu#dlg-lang).
+    function langRow() {
+        var c = nemoLangChoice(nemoCurrentLang());
+        var fixed = handler.is_option_fixed("lang");
+        return <div class={"nemo-set-row nemo-set-action" + (fixed ? " fixed" : "")} data-action="language" title={settingTip("language")}>
+            <span .nemo-set-label>{translate('Language')}</span>
+            <span .nemo-lang-current><span .nemo-flag>{c[2]}</span>{c[1]}</span>
+            <span .nemo-set-arrow>{"▾"}</span>
+        </div>;
+    }
+
     function pEnable(arr, id, label) {
         arr.push(this.tRow(id, label, handler.get_option(id) != "N", handler.is_option_fixed(id), "enable"));
     }
@@ -1672,8 +1707,8 @@ class NemoSettingsDialog: Reactor.Component {
         // ---- Security & Network -------------------------------------------
         var sec = [];
         if (!disable_settings) {
-            if (!hide_server_settings) sec.push(this.aRow("custom-server", translate('ID/Relay Server') + ((nemoExeServerSettingsLocked() || nemoManagementServerSettingsLocked()) ? " (locked)" : "")));
-            if (!hide_server_settings && nemo_management_settings) sec.push(this.aRow("nemo-management", "Management"));
+            if (!hide_server_settings) sec.push(this.aRow("custom-server", translate('ID/Relay Server') + ((nemoExeServerSettingsLocked() || nemoManagementServerSettingsLocked()) ? " (" + translate("locked") + ")" : "")));
+            if (!hide_server_settings && nemo_management_settings) sec.push(this.aRow("nemo-management", translate("Management")));
             sec.push(this.aRow("import-device-key", translate('Import setup string or device key')));
             sec.push(this.aRow("whitelist", translate('IP Whitelisting')));
             // TODO 12: direct IP access opens a listening port on this machine and
@@ -1716,7 +1751,7 @@ class NemoSettingsDialog: Reactor.Component {
         }
         gen.push(this.aRow("audio", translate('Audio Input')));
         gen.push(this.aRow("enhancements", translate('Enhancements')));
-        gen.push(this.aRow("language", translate('Language')));
+        gen.push(this.langRow());
         gen.push(this.aRow("about", translate('About') + " TBFDesk"));
         if (!disable_change_id && !disable_settings && handler.is_ok_change_id() && key_confirmed && connect_status > 0) gen.push(this.aRow("change-id", translate('Change ID')));
 
@@ -1860,7 +1895,7 @@ class NemoSettingsDialog: Reactor.Component {
         else if (act == "logout") { this.close(); logout(); }
         else if (act == "audio") me.popup(this.$(menu#dlg-audio));
         else if (act == "enhancements") me.popup(this.$(menu#dlg-enh));
-        else if (act == "language") me.popup(this.$(menu#dlg-lang));
+        else if (act == "language") { if (!handler.is_option_fixed("lang")) me.popup(this.$(menu#dlg-lang)); }
         else if (act == "set-permanent-password") nemoSetPasswordDialog();
         else if (act == "clear-permanent-password") { handler.set_permanent_password(""); nemoRefreshPwUi(); this.update(); }
     }
@@ -1869,10 +1904,9 @@ class NemoSettingsDialog: Reactor.Component {
     // me.popup() works (same-component, like the config-options menu) — reusing the
     // same option keys/actions as the native submenus.
     event click $(menu#dlg-lang>li) (_, me) {
-        var v = me.id;
-        if (v == "default") v = default_option_lang;
-        handler.set_local_option("lang", v);
+        handler.set_local_option("lang", me.id);
         if (app) app.update();
+        this.update();
     }
 
     event click $(menu#dlg-audio>li) (_, me) {
@@ -1895,11 +1929,10 @@ class NemoSettingsDialog: Reactor.Component {
     }
 
     function renderDlgSubmenus() {
-        var langs = JSON.parse(handler.get_langs());
-        var curlang = handler.get_local_option("lang") || "default";
-        var langItems = [<li id="default" class={curlang == "default" ? "selected" : ""}><span>{svg_checkmark}</span>{translate('Default')}</li>];
-        // Only German + English are offered (this fork's supported languages).
-        for (var lg in langs) { if (lg[0] == "en" || lg[0] == "de") langItems.push(<li id={lg[0]} class={curlang == lg[0] ? "selected" : ""}><span>{svg_checkmark}</span>{lg[1]}</li>); }
+        var curlang = nemoCurrentLang();
+        var langItems = nemoLangChoices().map(function(c) {
+            return <li id={c[0]} class={curlang == c[0] ? "selected" : ""}><span>{svg_checkmark}</span><span .nemo-flag>{c[2]}</span>{c[1]}</li>;
+        });
 
         var ainputs = handler.get_sound_inputs();
         if (is_win) ainputs = ["System Sound"].concat(ainputs);

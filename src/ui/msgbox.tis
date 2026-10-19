@@ -1,4 +1,8 @@
 function translate_text(text) {
+    // A target's session refusal (nemo_control): "Not authorized: <reason>".
+    if (text.indexOf('Not authorized: ') == 0) {
+        return translate('Not authorized') + ': ' + translate(text.substring(16));
+    }
     if (text.indexOf('Failed') == 0 && text.indexOf(': ') > 0) {
         var fds = text.split(': ');
         for (var i = 0; i < fds.length; ++i) {

@@ -218,10 +218,13 @@ pub fn check(
         return Err(invalid("the connecting computer did not prove the authorization is its own"));
     }
     if !t.targets.iter().any(|x| x == "*" || x == my_id) {
-        return Err(Refusal::Denied(format!(
-            "{} is not permitted to control this computer",
-            if t.user.is_empty() { "this computer".to_owned() } else { format!("user '{}'", t.user) }
-        )));
+        // The controller shows this text translated; `{name}` is the translator's
+        // placeholder syntax (lang.rs), so the user name survives translation.
+        return Err(Refusal::Denied(if t.user.is_empty() {
+            "the connecting computer is not permitted to control this computer".to_owned()
+        } else {
+            format!("user {{{}}} is not permitted to control this computer", t.user)
+        }));
     }
     Ok(Some(Grant {
         user: t.user,

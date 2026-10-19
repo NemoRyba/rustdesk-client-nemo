@@ -147,7 +147,9 @@ pub fn translate_locale(name: String, locale: &str) -> String {
         "zh-cn" => cn::T.deref(),
         "it" => it::T.deref(),
         "zh-tw" => tw::T.deref(),
-        "de" => de::T.deref(),
+        // "de-at": the Austrian choice in Settings > Language. Same texts until there is a
+        // reason for Austrian ones; a code of its own so they can be added later.
+        "de" | "de-at" => de::T.deref(),
         "nb" => nb::T.deref(),
         "nl" => nl::T.deref(),
         "es" => es::T.deref(),
@@ -284,6 +286,26 @@ mod test {
                 !s.contains("TBFDesk"),
                 "{lang} attribution was rebranded: {s}"
             );
+        }
+    }
+
+    /// Texts built at runtime with a `{value}` placeholder (a target's session refusal,
+    /// a failed "connect directly") must still find their German entry, or the user
+    /// reads English with braces in it.
+    #[test]
+    fn runtime_messages_with_a_placeholder_have_german() {
+        use std::ops::Deref;
+        let de = super::de::T.deref();
+        for text in [
+            "user {usera} is not permitted to control this computer".to_owned(),
+            format!("{}{{91090423 (169.254.1.2:21218)}} failed. The relay was NOT used because you asked for a direct connection; see the log for the reason.", crate::client::FORCED_DIRECT_FAILED),
+            format!("{}{{91090423}} failed: this server has published no direct endpoint for it. Set 'Reachable at' for it in the dashboard, or connect normally.", crate::client::FORCED_DIRECT_FAILED),
+            format!("{}{{91090423 ('Use WebSocket' is on)}} failed: this client is set to use the relay only. Turn that off to test the direct path.", crate::client::FORCED_DIRECT_FAILED),
+        ] {
+            let (key, value) = super::extract_placeholder(&text);
+            let german = de.get(key.as_str()).unwrap_or_else(|| panic!("no German for {key:?}"));
+            assert!(german.contains("{}"), "German for {key:?} drops the value");
+            assert!(value.is_some());
         }
     }
 

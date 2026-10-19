@@ -432,8 +432,10 @@ impl Client {
         if other_server.is_empty() && interface.is_force_relay() {
             let why = relay_only_reason(&interface);
             if force_direct {
+                // `{..}` is the translator's placeholder (lang.rs): the message is
+                // shown translated, with the peer and the setting in it.
                 bail!(
-                    "{}{} failed: this client is set to use the relay only ({}). Turn \
+                    "{}{{{} ({})}} failed: this client is set to use the relay only. Turn \
                      that off to test the direct path.",
                     FORCED_DIRECT_FAILED,
                     peer,
@@ -461,7 +463,7 @@ impl Client {
                 let endpoint = crate::nemo_direct::endpoint_label(peer);
                 if endpoint.is_empty() {
                     bail!(
-                        "{}{} failed: this server has published no direct endpoint for \
+                        "{}{{{}}} failed: this server has published no direct endpoint for \
                          it. Set 'Reachable at' for it in the dashboard, or connect \
                          normally.",
                         FORCED_DIRECT_FAILED,
@@ -469,7 +471,7 @@ impl Client {
                     );
                 }
                 bail!(
-                    "{}{} failed ({}). The relay was NOT used because you asked for a \
+                    "{}{{{} ({})}} failed. The relay was NOT used because you asked for a \
                      direct connection; see the log for the reason.",
                     FORCED_DIRECT_FAILED,
                     peer,

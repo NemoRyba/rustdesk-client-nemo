@@ -759,3 +759,28 @@ html.darktheme .ab-reload-btn:hover svg { stroke: #4da6ff; }
     margin-left: 8px;
     vertical-align: middle;
 }
+
+/* Settings > Language: the current choice with its flag, as a drop-down. */
+.nemo-lang-current {
+    flow: horizontal;
+    vertical-align: middle;
+    color: color(text);
+    white-space: nowrap;
+}
+.nemo-flag {
+    display: inline-block;
+    vertical-align: middle;
+    margin: * 6px * 0;
+}
+/* Each flag keeps its own proportions (DE 5:3, AT 3:2, GB 2:1): the size comes from
+   the svg's width/height attributes in index.tis. */
+.nemo-flag > svg {
+    outline: 1px solid rgba(0,0,0,0.25);
+}
+.nemo-flag > svg.flag-de,
+menu.context li .nemo-flag > svg.flag-de { width: 21px; height: 13px; }
+.nemo-flag > svg.flag-at,
+menu.context li .nemo-flag > svg.flag-at { width: 21px; height: 14px; }
+.nemo-flag > svg.flag-gb,
+menu.context li .nemo-flag > svg.flag-gb { width: 21px; height: 11px; }
+menu.context li .nemo-flag { margin-left: 2px; }

@@ -311,5 +311,10 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("nemo_reset_prefs_none", "Nothing is stored for this computer yet."),
         ("Already connected", "Already connected"),
         ("nemo_already_connected_tip", "this connection is already open in its own window (see the taskbar). Connections to other computers at the same time are not affected."),
+        ("nemo_company_only_tip", "Blocks public network IDs such as id@public. Clear ID Server and uncheck this to use the public network again."),
+        ("user {} is not permitted to control this computer", "user '{}' is not permitted to control this computer"),
+        ("nemo_lang_de", "Deutsch (Deutschland)"),
+        ("nemo_lang_de_at", "Deutsch (Österreich)"),
+        ("nemo_lang_en", "English"),
     ].iter().cloned().collect();
 }
