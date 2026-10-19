@@ -2188,7 +2188,7 @@ class UpdateMe: Reactor.Component {
         return <div .install-me>
             <div>{translate('Status')}</div>
             <div>{translate(st.auto ? "nemo_update_ready_auto" : "nemo_update_ready_admin").replace("{}", v)}</div>
-            {st.auto ? <div #nemo-update-now .link>{translate("nemo_update_install_now")}</div> : ""}
+            {st.auto ? <div .nemo-update-now-wrap><span #nemo-update-now .link>{translate("nemo_update_install_now")}</span></div> : ""}
         </div>;
     }
 

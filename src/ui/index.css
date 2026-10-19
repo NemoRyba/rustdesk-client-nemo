@@ -464,6 +464,24 @@ div.install-me > div:nth-child(2) {
     margin-top: 0.5em;
 }
 
+/* The update banner sits in the narrow left column: its text must wrap, and the
+   "install now" link must not take the oversized nth-child(3) countdown styling. */
+div.install-me > div:nth-child(2) {
+    white-space: pre-wrap;
+    overflow: hidden;
+}
+div.install-me .nemo-update-now-wrap {
+    margin-top: 0.6em;
+    text-align: center;
+}
+div.install-me .nemo-update-now-wrap #nemo-update-now {
+    font-size: 1em;
+    font-weight: bold;
+    text-decoration: underline;
+    cursor: pointer;
+    color: white;
+}
+
 div.trust-me > div:nth-child(2) {
     font-size: 0.9em;
     margin-bottom: 1em;
