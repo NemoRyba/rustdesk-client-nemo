@@ -235,8 +235,22 @@ impl<T: InvokeUiSession> Session<T> {
         self.ui_handler.is_multi_ui_session()
     }
 
+    /// Until the user picks a style for this peer, "shrink": a remote screen larger
+    /// than the window is scaled down so the whole desktop is visible without
+    /// scrolling, and a smaller one stays at its original size -- "shrink" never
+    /// enlarges. Once the user picks one from the menu, that choice is used for this
+    /// peer from then on (save_view_style marks it).
     pub fn get_view_style(&self) -> String {
-        self.lc.read().unwrap().view_style.clone()
+        let lc = self.lc.read().unwrap();
+        let chosen = lc
+            .options
+            .get(crate::client::OPTION_NEMO_VIEW_STYLE_CHOSEN)
+            .map_or(false, |v| v == "Y");
+        if chosen {
+            lc.view_style.clone()
+        } else {
+            "shrink".to_owned()
+        }
     }
 
     pub fn get_scroll_style(&self) -> String {

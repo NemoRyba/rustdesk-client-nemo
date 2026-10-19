@@ -370,6 +370,7 @@ class SessionList: Reactor.Component {
                     <li #transfer>{translate('Transfer file')}</li>
                     <li #tunnel>{translate('TCP tunneling')}</li>
                     <li #force-always-relay><span>{svg_checkmark}</span>{translate('Always connect via relay')}</li>
+                    <li #reset-prefs>{translate('Reset preferences')}</li>
                     <li #rdp>RDP<EditRdpPort /></li>
                     <li #wol>{translate('WOL')}</li>
                     <div .separator />
@@ -501,6 +502,11 @@ class SessionList: Reactor.Component {
             // never a mode the peer gets stuck in.
             handler.nemo_set_force_direct(id, true);
             createNewConnect(id, "connect");
+        } else if (action == "reset-prefs") {
+            msgbox("custom-reset-prefs", translate("Reset preferences"), translate("nemo_reset_prefs_tip"), "", function(res=null) {
+                if (!res) return;
+                if (!handler.nemo_reset_peer_prefs(id)) msgbox("custom-error", "Error", translate("nemo_reset_prefs_none"));
+            });
         } else if (action == "connect-relay") {
             // One-shot as well: "<id>/r" is the client's own relay-for-this-session form
             // (handle_relay_id), unlike "Always connect via relay", which sticks.

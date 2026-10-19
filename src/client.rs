@@ -2450,6 +2450,12 @@ impl LoginConfigHandler {
     pub fn save_view_style(&mut self, value: String) {
         let mut config = self.load_config();
         config.view_style = value;
+        // Marks the style as the user's own choice. Every peer file carries a
+        // view_style from the moment it is created, so without this a stored "original"
+        // could not be told apart from "never chosen" (see Session::get_view_style).
+        config
+            .options
+            .insert(OPTION_NEMO_VIEW_STYLE_CHOSEN.to_owned(), "Y".to_owned());
         self.save_config(config);
     }
 
@@ -4411,6 +4417,9 @@ lazy_static::lazy_static! {
         ("LOCK_SCREEN", Key::ControlKey(ControlKey::LockScreen)),
     ].iter().cloned().collect();
 }
+
+/// Per-peer option: the view style in the peer file was picked by the user.
+pub const OPTION_NEMO_VIEW_STYLE_CHOSEN: &str = "nemo-view-style-chosen";
 
 /// Every "Connect directly" failure starts with this. Such a failure must never be retried
 /// automatically: the retry is an ordinary connection, which ends on the relay and shows

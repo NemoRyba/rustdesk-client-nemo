@@ -628,10 +628,20 @@ if (!(is_file_transfer || is_port_forward)) {
     }
 }
 
+var display_mode_restored = false;
 handler.updatePi = function(v) {
     pi = v;
     recording = handler.is_recording();
     header.update();
+    // The display mode the user last chose for this peer, once per session, after the
+    // window has settled. Single is the starting state, so only the others need it.
+    if (!display_mode_restored && !is_file_transfer && !is_port_forward) {
+        display_mode_restored = true;
+        var saved = handler.get_option(OPTION_DISPLAY_MODE) || "";
+        if (saved && saved != "single") self.timer(1200ms, function() {
+            if (display_mode == "single") setDisplayMode(saved, false);
+        });
+    }
     if (is_port_forward) {
         view.windowState = View.WINDOW_MINIMIZED;
     }

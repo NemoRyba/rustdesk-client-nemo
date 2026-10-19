@@ -306,5 +306,8 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("nemo_display", "Display"),
         ("nemo_pick_tip", "Choose which displays to show at once"),
         ("nemo_pick_all", "Show all displays"),
+        ("Reset preferences", "Reset preferences"),
+        ("nemo_reset_prefs_tip", "Reset everything remembered for this computer to the defaults: view style, image quality, keyboard mode, display mode and selection, relay preference, window size. The saved password and the alias stay. Takes effect from the next connection."),
+        ("nemo_reset_prefs_none", "Nothing is stored for this computer yet."),
     ].iter().cloned().collect();
 }

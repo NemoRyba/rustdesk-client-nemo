@@ -1146,6 +1146,30 @@ impl UI {
     /// Every id with a published endpoint, sorted and joined: a cheap fingerprint the
     /// main window compares once a second, so the address book redraws its Direct chips
     /// when the policy delivers or withdraws an endpoint (it was drawn once and went stale).
+    /// "Reset preferences" on a peer: everything this client remembered about how to
+    /// show and drive that machine goes back to the defaults -- view style, quality,
+    /// keyboard mode, toggles, display mode and picker, relay/direct preferences, window
+    /// sizes. Kept: the remembered password, the alias, the RDP / OS credentials and
+    /// the peer info the lists show. Takes effect from the next connection.
+    fn nemo_reset_peer_prefs(&self, id: String) -> bool {
+        let id = id.trim().to_owned();
+        if id.is_empty() || !hbb_common::config::PeerConfig::exists(&id) {
+            return false;
+        }
+        let old = hbb_common::config::PeerConfig::load(&id);
+        let mut fresh = hbb_common::config::PeerConfig::default();
+        fresh.password = old.password.clone();
+        fresh.info = old.info.clone();
+        for key in ["alias", "rdp_port", "rdp_username", "rdp_password", "os-username", "os-password"] {
+            if let Some(v) = old.options.get(key) {
+                fresh.options.insert(key.to_owned(), v.clone());
+            }
+        }
+        fresh.store(&id);
+        log::info!("peer {}: preferences reset to defaults", id);
+        true
+    }
+
     fn nemo_direct_ids(&self) -> String {
         let mut ids = crate::nemo_direct::direct_capable_ids();
         ids.sort();
@@ -1376,6 +1400,7 @@ impl sciter::EventHandler for UI {
         fn nemo_configured_api_server();
         fn nemo_direct_endpoint(String);
         fn nemo_direct_ids();
+        fn nemo_reset_peer_prefs(String);
         fn nemo_force_direct(String);
         fn nemo_set_force_direct(String, bool);
         fn nemo_read_text_file(String);

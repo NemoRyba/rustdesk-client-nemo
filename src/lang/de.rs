@@ -891,5 +891,8 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("nemo_display", "Bildschirm"),
         ("nemo_pick_tip", "Auswählen, welche Bildschirme gleichzeitig angezeigt werden"),
         ("nemo_pick_all", "Alle Bildschirme anzeigen"),
+        ("Reset preferences", "Einstellungen zurücksetzen"),
+        ("nemo_reset_prefs_tip", "Alles, was für diesen Computer gespeichert ist, auf die Standardwerte zurücksetzen: Ansicht, Bildqualität, Tastaturmodus, Anzeigemodus und Bildschirmauswahl, Relay-Einstellung, Fenstergröße. Gespeichertes Passwort und Alias bleiben erhalten. Wirkt ab der nächsten Verbindung."),
+        ("nemo_reset_prefs_none", "Für diesen Computer ist noch nichts gespeichert."),
     ].iter().cloned().collect();
 }
