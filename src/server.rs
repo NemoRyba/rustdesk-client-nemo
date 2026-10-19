@@ -181,18 +181,24 @@ async fn accept_connection_(
             addr,
             secure,
             control_permissions,
+            "punch",
         )
         .await?;
     }
     Ok(())
 }
 
+/// `path`: how the connection reached this machine -- "direct" (the direct-access
+/// listener, i.e. a published endpoint or a LAN IP), "relay", "punch" or "punch-udp".
+/// It goes into the connection's audit report, the only place the server learns that a
+/// session came in direct.
 pub async fn create_tcp_connection(
     server: ServerPtr,
     stream: Stream,
     addr: SocketAddr,
     secure: bool,
     control_permissions: Option<ControlPermissions>,
+    path: &'static str,
 ) -> ResultType<()> {
     let mut stream = stream;
     let id = server.write().unwrap().get_new_id();
@@ -291,6 +297,7 @@ pub async fn create_tcp_connection(
         id,
         Arc::downgrade(&server),
         control_permissions,
+        path,
     )
     .await;
     Ok(())
@@ -365,7 +372,7 @@ async fn create_relay_connection_(
     stream.send(&msg_out).await?;
     // Peer-to-peer payload follows; it is already end-to-end encrypted.
     stream.clear_key();
-    create_tcp_connection(server, stream, peer_addr, secure, control_permissions).await?;
+    create_tcp_connection(server, stream, peer_addr, secure, control_permissions, "relay").await?;
     Ok(())
 }
 

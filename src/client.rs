@@ -440,12 +440,14 @@ impl Client {
                     why
                 );
             }
-            if !crate::nemo_direct::endpoint_label(peer).is_empty() {
+            let endpoint = crate::nemo_direct::endpoint_label(peer);
+            if !endpoint.is_empty() {
                 log::info!(
                     "TBFDesk direct: endpoint for {} not tried, relay only: {}",
                     peer,
                     why
                 );
+                crate::nemo_direct::report_attempt(peer, &endpoint, "not-tried", None, why);
             }
         }
         if other_server.is_empty() && !interface.is_force_relay() {
@@ -603,6 +605,13 @@ impl Client {
                     endpoint.target(),
                     start.elapsed()
                 );
+                crate::nemo_direct::report_attempt(
+                    peer_id,
+                    &endpoint.target(),
+                    "established",
+                    Some(start.elapsed().as_millis()),
+                    "",
+                );
                 Some((conn, true, pk, None, "TCP"))
             }
             Ok(Err(e)) => {
@@ -611,6 +620,13 @@ impl Client {
                     endpoint.target(),
                     e
                 );
+                crate::nemo_direct::report_attempt(
+                    peer_id,
+                    &endpoint.target(),
+                    "failed",
+                    Some(start.elapsed().as_millis()),
+                    &e.to_string(),
+                );
                 None
             }
             Err(_) => {
@@ -618,6 +634,13 @@ impl Client {
                     "TBFDesk direct: {} did not complete within {}ms; falling back to hole punch / relay",
                     endpoint.target(),
                     budget_ms
+                );
+                crate::nemo_direct::report_attempt(
+                    peer_id,
+                    &endpoint.target(),
+                    "failed",
+                    Some(start.elapsed().as_millis()),
+                    &format!("did not complete within {budget_ms} ms"),
                 );
                 None
             }

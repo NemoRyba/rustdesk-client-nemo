@@ -25,7 +25,7 @@
 //! produced). Being wire-compatible means the audited `fwknopd` validates our packets;
 //! we never have to be the authority on whether a knock is genuine.
 
-use hbb_common::{anyhow::anyhow, config::Config, log, ResultType};
+use hbb_common::{anyhow::anyhow, config::Config, log, tokio, ResultType};
 use std::{collections::HashMap, time::Duration};
 
 use aes::Aes256;
@@ -247,6 +247,89 @@ pub fn why_no_endpoint(peer_id: &str) -> String {
                 .collect::<Vec<_>>()
                 .join(", ")
         )
+    }
+}
+
+/// How often the same (peer, outcome) is reported again. A TCP tunnel opens one
+/// connection per forwarded socket, a browser behind one opens dozens a minute; the
+/// server needs to know that it works, not to count every socket.
+const REPORT_REPEAT_AFTER: Duration = Duration::from_secs(600);
+
+/// Tell the management server about one attempt at a published direct endpoint.
+///
+/// A direct session never touches the rendezvous, so this report is the server's only
+/// record of it -- without it the dashboard showed no direct session at all, and a
+/// failed attempt left no trace anywhere but this machine's log. The controller sends
+/// it because only the controller knows the outcome: the target never sees an attempt
+/// that failed on the way.
+///
+/// Sparse by construction: at most one small HTTPS POST per attempt, never during a
+/// session, sent from its own thread so the connection never waits for it, and the
+/// same (peer, result) at most once per REPORT_REPEAT_AFTER. Signed with the device key
+/// like every client audit; no key or no management server = nothing is sent.
+/// `result`: "established" | "failed" | "not-tried".
+pub fn report_attempt(peer_id: &str, endpoint: &str, result: &str, ms: Option<u128>, detail: &str) {
+    lazy_static::lazy_static! {
+        static ref LAST: std::sync::Mutex<HashMap<(String, String), std::time::Instant>> =
+            Default::default();
+    }
+    if !due_for_report(&mut LAST.lock().unwrap(), peer_id, result, std::time::Instant::now()) {
+        return;
+    }
+    let url = crate::common::get_audit_server(
+        Config::get_option("api-server"),
+        Config::get_option("custom-rendezvous-server"),
+        "direct".to_owned(),
+    );
+    if url.is_empty() {
+        return;
+    }
+    let mut body = serde_json::json!({
+        "peer": peer_id,
+        "endpoint": endpoint,
+        "result": result,
+        "detail": detail.chars().take(200).collect::<String>(),
+        "version": crate::VERSION,
+    });
+    if let Some(ms) = ms {
+        body["ms"] = serde_json::json!(ms as u64);
+    }
+    std::thread::spawn(move || post_report(url, body));
+}
+
+/// True (and remembered) unless the same (peer, result) was reported within
+/// REPORT_REPEAT_AFTER. A different outcome is always reported at once.
+fn due_for_report(
+    last: &mut HashMap<(String, String), std::time::Instant>,
+    peer_id: &str,
+    result: &str,
+    now: std::time::Instant,
+) -> bool {
+    let key = (peer_id.to_owned(), result.to_owned());
+    if matches!(last.get(&key), Some(t) if now.duration_since(*t) < REPORT_REPEAT_AFTER) {
+        return false;
+    }
+    last.insert(key, now);
+    true
+}
+
+#[tokio::main(flavor = "current_thread")]
+async fn post_report(url: String, mut body: serde_json::Value) {
+    let me = Config::get_id();
+    let (pk, sig) = crate::common::nemo_device_sign("nemo-audit", &me);
+    if pk.is_empty() {
+        log::debug!("direct report not sent: no device key on this machine");
+        return;
+    }
+    body["id"] = serde_json::json!(me);
+    body["device_key_pub"] = serde_json::json!(pk);
+    body["device_key_sig"] = serde_json::json!(sig);
+    match crate::post_request(url.clone(), body.to_string(), "").await {
+        Ok(text) if text.contains("\"error\"") => {
+            log::warn!("direct report to {} refused: {:.200}", url, text)
+        }
+        Ok(_) => {}
+        Err(e) => log::debug!("direct report to {} not delivered: {}", url, e),
     }
 }
 
@@ -484,6 +567,25 @@ pub async fn knock(host: &str, port: u16, cfg: &KnockConfig) -> ResultType<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A tunnel opening a connection per socket must not turn into a report per socket,
+    /// but a change of outcome must reach the server at once.
+    #[test]
+    fn direct_reports_are_sparse_but_a_change_of_outcome_is_not_held_back() {
+        let mut last = HashMap::new();
+        let t0 = std::time::Instant::now();
+        assert!(due_for_report(&mut last, "352069946", "established", t0));
+        for s in [1, 30, 599] {
+            let t = t0 + Duration::from_secs(s);
+            assert!(!due_for_report(&mut last, "352069946", "established", t), "repeat at {s}s");
+        }
+        // A failure right after a success is news.
+        assert!(due_for_report(&mut last, "352069946", "failed", t0 + Duration::from_secs(2)));
+        // Another peer is independent.
+        assert!(due_for_report(&mut last, "91090423", "established", t0 + Duration::from_secs(2)));
+        // After the window the same outcome is reported again.
+        assert!(due_for_report(&mut last, "352069946", "established", t0 + REPORT_REPEAT_AFTER));
+    }
 
     // Base64 of the real fwknop 2.6.11 datagram captured with
     //   fwknop -A tcp/21118 -a 203.0.113.9 -D 127.0.0.1 --use-hmac --test -B <file>

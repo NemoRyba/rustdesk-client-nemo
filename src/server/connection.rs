@@ -306,6 +306,8 @@ pub struct Connection {
     // handle input messages
     video_ack_required: bool,
     server_audit_conn: String,
+    /// How this connection arrived (see server::create_tcp_connection), for its audit.
+    path: &'static str,
     server_audit_file: String,
     lr: LoginRequest,
     peer_argb: u32,
@@ -405,6 +407,7 @@ impl Connection {
         id: i32,
         server: super::ServerPtrWeak,
         control_permissions: Option<ControlPermissions>,
+        path: &'static str,
     ) {
         // Android is not supported yet, so we always set control_permissions to None.
         #[cfg(target_os = "android")]
@@ -489,6 +492,7 @@ impl Connection {
             tx_input,
             video_ack_required: false,
             server_audit_conn: "".to_owned(),
+            path,
             server_audit_file: "".to_owned(),
             lr: Default::default(),
             peer_argb: 0u32,
@@ -1366,6 +1370,9 @@ impl Connection {
         self.post_conn_audit(json!({
             "ip": addr.ip(),
             "action": "new",
+            // Direct sessions bypass the rendezvous; this is how the server learns one
+            // came in directly (the controller reports the same session from its side).
+            "path": self.path,
         }));
         true
     }

@@ -954,6 +954,7 @@ async fn direct_server(server: ServerPtr) {
                             // Client::_start), so that path is refused here too.
                             true,
                             None, // Direct connections don't have control_permissions
+                            "direct",
                         )
                         .await
                     );
@@ -1031,6 +1032,7 @@ async fn udp_nat_listen(
             peer_addr_v4,
             true,
             control_permissions,
+            "punch-udp",
         )
         .await?;
         Ok(())
