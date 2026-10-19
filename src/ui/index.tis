@@ -3101,6 +3101,8 @@ function on_2fa_check(last_msg) {
 
 function reset_token() {
     handler.set_local_option("access_token", "");
+    // The signed-out user's session authorization (nemo_control::LOCAL_USER_TICKET).
+    handler.set_local_option("nemo-user-control-ticket", "");
     handler.set_local_option("user_info", "");
     handler.set_local_option("selected-tags", "");
     myIdMenu.update();

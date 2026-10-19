@@ -77,7 +77,9 @@ const NEMO_MANAGEMENT_SETTINGS: &[&str] = &[
 use crate::nemo_direct::NEMO_DIRECT_SETTINGS;
 
 fn is_nemo_management_setting(key: &str) -> bool {
-    NEMO_MANAGEMENT_SETTINGS.contains(&key) || NEMO_DIRECT_SETTINGS.contains(&key)
+    NEMO_MANAGEMENT_SETTINGS.contains(&key)
+        || NEMO_DIRECT_SETTINGS.contains(&key)
+        || crate::nemo_control::NEMO_CONTROL_SETTINGS.contains(&key)
 }
 
 #[derive(Clone, Copy)]
@@ -581,7 +583,15 @@ fn sync_policy() -> ResultType<()> {
         .options
         .get("nemo-require-login")
         .map_or(false, |v| v == "Y");
+    let control_ticket = payload
+        .policy
+        .options
+        .get(crate::nemo_control::OPTION_CONTROL_TICKET)
+        .cloned()
+        .unwrap_or_default();
     apply_policy(payload.policy)?;
+    // This process polled with this OS user's token (or none): its ticket is that user's.
+    crate::nemo_control::remember_user_ticket(&control_ticket);
     // Stale-session self-heal: we polled WITH a token, yet the server signalled
     // require-login and did not recognise us (server restart wiped its in-memory
     // sessions, or the user was disabled/expired). Drop the dead token so the UI
@@ -595,6 +605,7 @@ fn sync_policy() -> ResultType<()> {
     {
         log::info!("Nemo management: session token rejected by server; clearing stale login");
         LocalConfig::set_option("access_token".to_owned(), String::new());
+        crate::nemo_control::remember_user_ticket("");
         crate::ui_interface::refresh_options();
     }
     Ok(())
@@ -906,6 +917,9 @@ fn apply_policy_option(
         return;
     }
     let (default_map, overwrite_map) = policy_maps(scope);
+    // Authorization keys are never user-adjustable (see nemo_control).
+    let allow_user_override =
+        allow_user_override && !crate::nemo_control::NEMO_CONTROL_SETTINGS.contains(&key);
     if allow_user_override {
         overwrite_map.write().unwrap().remove(key);
         default_map

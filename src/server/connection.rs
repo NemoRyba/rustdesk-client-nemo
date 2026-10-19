@@ -1923,6 +1923,14 @@ impl Connection {
         }
     }
 
+    fn other_remote_session_open(conn_id: i32) -> bool {
+        AUTHED_CONNS
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|c| c.conn_id != conn_id && c.conn_type == AuthConnType::Remote)
+    }
+
     #[inline]
     fn is_remote(&self) -> bool {
         self.file_transfer.is_none()
@@ -2322,6 +2330,90 @@ impl Connection {
         )
     }
 
+    /// Management authorization (crate::nemo_control) for this login. Returns false when
+    /// the session must be refused. Runs for every session, direct ones included: a
+    /// direct session never passes the server, so the permissions the admin set for the
+    /// connecting user can only be enforced here.
+    async fn apply_management_authorization(&mut self, lr: &LoginRequest) -> bool {
+        let required = crate::nemo_control::required();
+        match crate::nemo_control::authorize(
+            &lr.nemo_control_ticket,
+            &lr.nemo_control_sig,
+            &lr.my_id,
+            &self.hash.challenge,
+        ) {
+            Ok(Some(grant)) => {
+                crate::nemo_control::log_grant(&lr.my_id, &Some(grant.clone()));
+                self.apply_control_grant(&grant);
+                self.post_conn_audit(json!({
+                    "action": "authorized",
+                    "user": grant.user,
+                    "admin": grant.admin,
+                    "path": self.path,
+                }));
+                true
+            }
+            Ok(None) if !required => true,
+            Ok(None) => {
+                log::warn!("session from {} refused: no management authorization", lr.my_id);
+                self.post_conn_audit(json!({
+                    "action": "refused",
+                    "reason": "no management authorization presented",
+                    "path": self.path,
+                }));
+                self.send_login_error(
+                    "This computer only accepts sessions authorized by your TBFDesk server. Sign in to TBFDesk and connect again.",
+                )
+                .await;
+                sleep(1.).await;
+                false
+            }
+            Err(refusal) => {
+                let denied = matches!(refusal, crate::nemo_control::Refusal::Denied(_));
+                let reason = refusal.to_string();
+                log::warn!("session authorization from {} not accepted: {}", lr.my_id, reason);
+                if !required && !denied {
+                    // Not enforced: an invalid ticket grants nothing (the local settings
+                    // apply, as before tickets existed), so it is logged and ignored.
+                    return true;
+                }
+                self.post_conn_audit(json!({
+                    "action": "refused",
+                    "reason": reason,
+                    "path": self.path,
+                }));
+                self.send_login_error(&format!("Not authorized: {}", reason)).await;
+                sleep(1.).await;
+                false
+            }
+        }
+    }
+
+    /// Apply a ticket's permissions exactly as if the server had attached them at the
+    /// rendezvous. When it did attach some too, the stricter one wins per feature.
+    fn apply_control_grant(&mut self, grant: &crate::nemo_control::Grant) {
+        let merged = match &self.control_permissions {
+            Some(cp) => crate::nemo_control::merge_strict(cp.permissions, grant.permissions),
+            None => grant.permissions,
+        };
+        let cp = ControlPermissions {
+            permissions: merged,
+            ..Default::default()
+        };
+        raii::ControlPermissionsID::replace(self.inner.id, &cp);
+        self.control_permissions = Some(cp);
+        // These were computed once, when the connection was created -- before the login
+        // that carries the ticket. Recompute them, or the grant would change nothing.
+        self.keyboard = Self::permission(keys::OPTION_ENABLE_KEYBOARD, &self.control_permissions);
+        self.clipboard = Self::permission(keys::OPTION_ENABLE_CLIPBOARD, &self.control_permissions);
+        self.audio = Self::permission(keys::OPTION_ENABLE_AUDIO, &self.control_permissions);
+        self.file = Self::permission(keys::OPTION_ENABLE_FILE_TRANSFER, &self.control_permissions);
+        self.restart = Self::permission(keys::OPTION_ENABLE_REMOTE_RESTART, &self.control_permissions);
+        self.recording = Self::permission(keys::OPTION_ENABLE_RECORD_SESSION, &self.control_permissions);
+        self.block_input = Self::permission(keys::OPTION_ENABLE_BLOCK_INPUT, &self.control_permissions);
+        self.privacy_mode = Self::permission(keys::OPTION_ENABLE_PRIVACY_MODE, &self.control_permissions);
+    }
+
     fn permission(
         enable_prefix_option: &str,
         control_permissions: &Option<ControlPermissions>,
@@ -2447,6 +2539,9 @@ impl Connection {
         // After handling CloseReason messages, proceed to process other message types
         if let Some(message::Union::LoginRequest(lr)) = msg.union {
             self.handle_login_request_without_validation(&lr).await;
+            if !self.apply_management_authorization(&lr).await {
+                return false;
+            }
             if self.authorized {
                 return true;
             }
@@ -4699,7 +4794,19 @@ impl Connection {
         // But it's not necessary now and we have to consider two audio services(client, server).
         crate::audio_service::set_voice_call_input_device(None, true);
         log::info!("#{} Connection closed: {}", self.inner.id(), reason);
-        if lock && self.lock_after_session_end && self.keyboard {
+        // TBFDesk policy lock: also when the session ended by a network error (`lock` is
+        // false then -- a dropped link must not leave the desktop open), but not on
+        // "switch sides", which continues the session the other way round, and not while
+        // another remote-control session to this machine is still running.
+        let policy_lock = self.authorized
+            && self.is_remote()
+            && reason != "switch sides"
+            && crate::nemo_control::lock_after_session_end()
+            && !Self::other_remote_session_open(self.inner.id());
+        if policy_lock {
+            log::info!("#{} locking the desktop: lock-after-session-end policy", self.inner.id());
+        }
+        if (lock && self.lock_after_session_end && self.keyboard) || policy_lock {
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
             lock_screen().await;
         }
@@ -6200,13 +6307,20 @@ mod raii {
 
     impl Drop for ControlPermissionsID {
         fn drop(&mut self) {
-            if self.control_permissions.is_some() {
-                let mut lock = CONTROL_PERMISSIONS_ARRAY.lock().unwrap();
-                lock.retain(|(conn_id, _)| *conn_id != self.id);
-            }
+            // Unconditional: a management grant can register permissions for this
+            // connection after it was created with none (replace below).
+            let mut lock = CONTROL_PERMISSIONS_ARRAY.lock().unwrap();
+            lock.retain(|(conn_id, _)| *conn_id != self.id);
         }
     }
     impl ControlPermissionsID {
+        /// Register (or swap) this connection's permissions after creation -- the
+        /// management grant arrives with the login, not with the connection.
+        pub fn replace(id: i32, control_permissions: &ControlPermissions) {
+            let mut lock = CONTROL_PERMISSIONS_ARRAY.lock().unwrap();
+            lock.retain(|(conn_id, _)| *conn_id != id);
+            lock.push((id, control_permissions.clone()));
+        }
         pub fn new(id: i32, control_permissions: &Option<ControlPermissions>) -> Self {
             if let Some(s) = control_permissions {
                 CONTROL_PERMISSIONS_ARRAY

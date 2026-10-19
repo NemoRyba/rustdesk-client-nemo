@@ -51,6 +51,7 @@ pub mod nemo_setup;
 // controller path in client.rs reads it on every platform, and a workstation with no
 // endpoint pushed to it simply finds an empty map.
 pub mod nemo_direct;
+pub mod nemo_control;
 // "Open log folder" / "Copy recent log" in the ⋮ menu: the main log and the session log
 // together, redacted, so a support exchange is one paste.
 #[cfg(not(any(target_os = "android", target_os = "ios")))]

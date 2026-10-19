@@ -3235,6 +3235,14 @@ impl LoginConfigHandler {
             avatar,
             ..Default::default()
         };
+        // Management authorization: the target applies the permissions the admin set for
+        // this user and refuses the session when it requires authorization and none is
+        // presented. Sent on every path, direct sessions included -- those never pass
+        // the server, which is exactly why the target has to see this (nemo_control).
+        if let Some((ticket, sig)) = crate::nemo_control::login_proof(&lr.username, &self.hash.challenge) {
+            lr.nemo_control_ticket = ticket;
+            lr.nemo_control_sig = sig.into();
+        }
         match self.conn_type {
             ConnType::FILE_TRANSFER => lr.set_file_transfer(FileTransfer {
                 dir: self.get_remote_dir(),
