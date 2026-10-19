@@ -193,7 +193,20 @@ fn check_update(manually: bool) -> ResultType<()> {
         // Log-only: the artifact's file name stands in for the version string.
         let version = download_url.split('/').last().unwrap_or_default();
         log::debug!("New version available: {}", &version);
-        let client = create_http_client_with_url(&download_url);
+        // The installer comes from the management server. With its certificate pinned
+        // (nemo-api-cert-fingerprint) the download uses that pin like the policy poll and
+        // the manifest do, and never the accept-any-certificate fallback, so a man in the
+        // middle can neither read it nor serve it. Integrity still rests on the signed
+        // sha256 checked below; without a pin the old behaviour stands.
+        let pin = crate::common::nemo_pin_for_url(&download_url);
+        log::info!(
+            "Nemo update download over {} TLS",
+            if pin.is_some() { "PINNED" } else { "unpinned" }
+        );
+        let client = match pin {
+            Some(fp) => crate::hbbs_http::create_http_client_pinned(fp),
+            None => create_http_client_with_url(&download_url),
+        };
         let Some(file_path) = get_download_file_from_url(&download_url) else {
             bail!("Failed to get the file path from the URL: {}", download_url);
         };
