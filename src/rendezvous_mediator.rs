@@ -94,7 +94,9 @@ impl RendezvousMediator {
         // Config::set_options that bypassed option_scope()/POLICY_DENIED_KEYS. Presence is
         // the rendezvous-plane RegisterPeer (server PeerMap::runtime_snapshot); config and
         // session revocation ride the signed /nemo/api/client/policy poll.
-        #[cfg(target_os = "windows")]
+        // The installed service process runs the updater: on Windows it starts the
+        // installer with `--update`, on Linux the package manager (transient unit).
+        #[cfg(any(target_os = "windows", target_os = "linux"))]
         if crate::platform::is_installed() && crate::is_server() {
             crate::updater::start_auto_update();
         }

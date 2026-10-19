@@ -316,5 +316,14 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("nemo_lang_de", "Deutsch (Deutschland)"),
         ("nemo_lang_de_at", "Deutsch (Österreich)"),
         ("nemo_lang_en", "English"),
+        ("nemo_update_ready_auto", "TBFDesk {} is ready. It is installed automatically as soon as no session is running."),
+        ("nemo_update_ready_admin", "TBFDesk {} is available. Your administrator installs the update."),
+        ("nemo_update_install_now", "Install now"),
+        ("nemo_update_requested", "Requested: installs within a minute if no session is running."),
+        ("nemo_update_prompt_title", "TBFDesk update"),
+        ("nemo_update_prompt_text", "TBFDesk {} will now be installed. TBFDesk is unavailable for about a minute; your other work on this computer is not affected."),
+        ("nemo_update_now", "Update now"),
+        ("nemo_update_postpone", "Postpone 1 hour"),
+        ("nemo_update_countdown", "Starts automatically in {} s."),
     ].iter().cloned().collect();
 }

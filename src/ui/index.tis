@@ -2057,7 +2057,7 @@ class App: Reactor.Component
                         {!outgoing_only && <PasswordArea />}
                     </div>
                     {"" /* TBFDesk: UAC install nag removed */}
-                    {"" /* TBFDesk: upstream update banner removed */}
+                    {software_update_url ? <UpdateMe /> : ""}
                     {is_win && handler.is_installed() && !software_update_url && handler.is_installed_lower_version() && !disable_installation ? <UpgradeMe /> : ""}
                     {is_can_screen_recording ? "": <CanScreenRecording />}
                     {is_can_screen_recording && !handler.is_process_trusted(false) ? <TrustMe /> : ""}
@@ -2177,28 +2177,25 @@ class UpgradeMe: Reactor.Component {
 }
 
 class UpdateMe: Reactor.Component {
+    // An update from the TBFDesk server is on offer for this machine. Never a download
+    // link (upstream's opened rustdesk.com, a one-click route to stock RustDesk): either
+    // this machine installs it by itself -- outside sessions, after asking -- or the
+    // administrator does.
     function render() {
-        var update_or_download = "download"; // !is_win ? "download" : "update";
+        var st = {};
+        try { st = JSON.parse(handler.nemo_update_state()); } catch (e) {}
+        var v = st.version || handler.get_new_version();
         return <div .install-me>
             <div>{translate('Status')}</div>
-            <div>There is a newer version of TBFDesk ({handler.get_new_version()}) available.</div>
-            {// TBFDesk: never offer the upstream download. Upstream showed a
-             // "Click to download" link here whenever is_custom_client was false --
-             // and it IS false in this build, because APP_NAME is only overridden by a
-             // custom.txt that does not exist in this tree. That link opened
-             // rustdesk.com/download, i.e. a one-click route for a user to install
-             // stock RustDesk over the hardened build. Updates come from the TBFDesk
-             // server alone, so the only thing shown here is where to get one.
-             <div style="font-size: 1em; font-weight: normal; text-align: left; padding-top: 1em;">{translate('Enable \"Auto update\" or contact your administrator for the latest version.')}</div>}
-            <div #download-percent style="display:hidden; padding-top: 1em;" />
+            <div>{translate(st.auto ? "nemo_update_ready_auto" : "nemo_update_ready_admin").replace("{}", v)}</div>
+            {st.auto ? <div #nemo-update-now .link>{translate("nemo_update_install_now")}</div> : ""}
         </div>;
     }
 
-    // TBFDesk: the upstream handler here opened https://rustdesk.com/download (and
-    // https://rustdesk.com on non-Windows) before falling through to downloading the
-    // upstream artifact. Both are gone: this component no longer renders a clickable
-    // link, and updates are delivered only by the TBFDesk server through the signed +
-    // origin-pinned + sha256-checked manifest path.
+    event click $(#nemo-update-now) (_, me) {
+        handler.nemo_update_now();
+        me.text = translate("nemo_update_requested");
+    }
 }
 
 class SystemError: Reactor.Component {

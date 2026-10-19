@@ -194,6 +194,18 @@ pub fn start(args: &mut [String]) {
         frame.event_handler(UI {});
         frame.sciter_handler(UIHostHandler {});
         page = "install.html";
+    } else if args[0] == "--nemo-update-prompt" {
+        // Started by the service in the user's session before it installs an update
+        // (updater::prompt_user): <version> <postpone allowed 1|0> <seconds>.
+        *NEMO_UPDATE_PROMPT.lock().unwrap() = serde_json::json!({
+            "version": args.get(1).cloned().unwrap_or_default(),
+            "postpone": args.get(2).map(|a| a == "1").unwrap_or(false),
+            "secs": args.get(3).and_then(|a| a.parse::<u64>().ok()).unwrap_or(60),
+        })
+        .to_string();
+        frame.event_handler(UI {});
+        frame.sciter_handler(UIHostHandler {});
+        page = "update.html";
     } else if args[0] == "--cm" {
         frame.register_behavior("connection-manager", move || {
             Box::new(cm::SciterConnectionManager::new())
@@ -261,6 +273,8 @@ pub fn start(args: &mut [String]) {
             inline::get_cm()
         } else if page == "install.html" {
             inline::get_install()
+        } else if page == "update.html" {
+            inline::get_update()
         } else {
             inline::get_remote()
         };
@@ -290,6 +304,9 @@ pub fn start(args: &mut [String]) {
 }
 
 struct UI {}
+
+// The update prompt's arguments, as JSON for update.html.
+static NEMO_UPDATE_PROMPT: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
 
 // Options that script may write but must never read back. Keep this list tight and
 // keep the reason with it: an entry here is a secret whose value the GUI has no
@@ -752,6 +769,46 @@ impl UI {
 
     fn get_new_version(&self) -> String {
         get_new_version()
+    }
+
+    // What the main window says about an offered update: the version, and whether this
+    // machine installs it by itself (automatic updates on, installed from a package /
+    // installer this client can update) or the administrator has to.
+    fn nemo_update_state(&self) -> String {
+        let auto = hbb_common::config::Config::get_option("nemo-auto-update") == "Y"
+            && crate::common::nemo_update_platform().is_some()
+            && crate::platform::is_installed();
+        serde_json::json!({ "version": get_new_version(), "auto": auto }).to_string()
+    }
+
+    // "Install now" in the main window: the service's updater takes it within a minute
+    // (no prompt, but never during a session).
+    fn nemo_update_now(&self) {
+        let v = get_new_version();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        crate::ipc::set_option(crate::updater::OPTION_UPDATE_REQUEST, &format!("{v}:{now}"));
+    }
+
+    fn nemo_update_prompt_args(&self) -> String {
+        NEMO_UPDATE_PROMPT.lock().unwrap().clone()
+    }
+
+    // The prompt's answer ("now" / "postpone"), sent to the service's updater.
+    fn nemo_update_answer(&self, choice: String) {
+        let v: serde_json::Value =
+            serde_json::from_str(&NEMO_UPDATE_PROMPT.lock().unwrap()).unwrap_or_default();
+        let version = v["version"].as_str().unwrap_or_default().to_owned();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        crate::ipc::set_option(
+            crate::updater::OPTION_UPDATE_DECISION,
+            &format!("{choice}:{version}:{now}"),
+        );
     }
 
     fn get_version(&self) -> String {
@@ -1354,6 +1411,10 @@ impl sciter::EventHandler for UI {
         fn set_option(String, String);
         fn get_software_update_url();
         fn get_new_version();
+        fn nemo_update_state();
+        fn nemo_update_now();
+        fn nemo_update_prompt_args();
+        fn nemo_update_answer(String);
         fn get_version();
         fn get_build_id();
         fn nemo_open_log_folder();

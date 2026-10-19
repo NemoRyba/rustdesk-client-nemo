@@ -625,33 +625,36 @@ fn sync_policy() -> ResultType<()> {
     Ok(())
 }
 
-/// Server-driven rollout: when the server publishes a version newer than this build and
-/// automatic updates are on, ask the updater to check now instead of at its next daily
-/// check. Once per published version per process; the updater itself fetches and
-/// verifies the signed manifest, hashes the file and installs only outside sessions.
-/// Only the installed Windows service process runs the updater (rendezvous_mediator).
+/// Server-driven rollout: a published version newer than this build. Once per version
+/// per process:
+/// - the installed service process (Windows, Linux) with automatic updates on asks the
+///   updater to check now instead of at its next daily check; the updater fetches and
+///   verifies the signed manifest, hashes the file, asks the user, and installs only
+///   outside sessions;
+/// - any other process (the user's main window) refreshes the offer, so the window can
+///   say that an update exists.
 fn nudge_updater(published: &str) {
-    #[cfg(target_os = "windows")]
+    static LAST: Mutex<String> = Mutex::new(String::new());
+    if published.is_empty()
+        || hbb_common::get_version_number(published) <= hbb_common::get_version_number(crate::VERSION)
     {
-        static LAST: Mutex<String> = Mutex::new(String::new());
-        if published.is_empty()
-            || Config::get_option(OPTION_NEMO_AUTO_UPDATE) != "Y"
-            || !crate::platform::is_installed()
-            || !crate::is_server()
-            || hbb_common::get_version_number(published) <= hbb_common::get_version_number(crate::VERSION)
-        {
-            return;
-        }
-        let Ok(mut last) = LAST.lock() else { return };
-        if *last == published {
-            return;
-        }
-        *last = published.to_owned();
-        log::info!("Nemo update {} published (this build {}): checking now", published, crate::VERSION);
-        hbb_common::allow_err!(crate::updater::manually_check_update());
+        return;
     }
-    #[cfg(not(target_os = "windows"))]
-    let _ = published;
+    let Ok(mut last) = LAST.lock() else { return };
+    if *last == published {
+        return;
+    }
+    *last = published.to_owned();
+    drop(last);
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    if crate::platform::is_installed() && crate::is_server() {
+        if Config::get_option(OPTION_NEMO_AUTO_UPDATE) == "Y" {
+            log::info!("Nemo update {} published (this build {}): checking now", published, crate::VERSION);
+            hbb_common::allow_err!(crate::updater::manually_check_update());
+        }
+        return;
+    }
+    std::thread::spawn(|| hbb_common::allow_err!(crate::common::do_check_software_update()));
 }
 
 fn verified_payload(

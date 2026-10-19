@@ -101,6 +101,8 @@ lazy_static::lazy_static! {
     // cleared together with SOFTWARE_UPDATE_URL; updater.rs must compare the downloaded file
     // against it before handing anything to the installer. "" = no verified offer pending.
     pub static ref NEMO_UPDATE_SHA256: Mutex<String> = Mutex::new(String::new());
+    // The offered version itself (e.g. "1.4.16"), for what the user is shown.
+    pub static ref NEMO_UPDATE_VERSION: Mutex<String> = Mutex::new(String::new());
     pub static ref DEVICE_ID: Arc<Mutex<String>> = Default::default();
     pub static ref DEVICE_NAME: Arc<Mutex<String>> = Default::default();
     static ref PUBLIC_IPV6_ADDR: Arc<Mutex<(Option<SocketAddr>, Option<Instant>)>> = Default::default();
@@ -988,16 +990,16 @@ pub fn check_software_update() {
 pub fn do_check_software_update() -> hbb_common::ResultType<()> {
     let server = nemo_management_server_url();
     if server.is_empty() {
-        nemo_set_update_offer("", "");
+        nemo_set_update_offer("", "", "");
         return Ok(());
     }
     let mgmt_pk_b64 = Config::get_option("nemo-management-public-key");
     if mgmt_pk_b64.trim().is_empty() {
-        nemo_set_update_offer("", "");
+        nemo_set_update_offer("", "", "");
         bail!("nemo-management-public-key is not configured; cannot verify an update manifest");
     }
     let Some(server_origin) = nemo_url_origin(&server) else {
-        nemo_set_update_offer("", "");
+        nemo_set_update_offer("", "", "");
         bail!("nemo-management-server is not an http(s) URL: {}", server);
     };
     let headers = json!({ "Accept": "application/json" }).to_string();
@@ -1011,20 +1013,26 @@ pub fn do_check_software_update() -> hbb_common::ResultType<()> {
     let http: Value = serde_json::from_str(&raw)?;
     let status = http["status_code"].as_u64().unwrap_or(0);
     if status == 404 {
-        nemo_set_update_offer("", "");
+        nemo_set_update_offer("", "", "");
         return Ok(());
     }
     if status != 200 {
-        nemo_set_update_offer("", "");
+        nemo_set_update_offer("", "", "");
         bail!(
             "management server returned HTTP {} for the update manifest",
             status
         );
     }
     let body = http["body"].as_str().unwrap_or_default();
+    // Only the package for this platform counts; none published for it = no offer.
+    let Some(body) = nemo_update_platform().and_then(|p| nemo_platform_manifest(body, p)) else {
+        nemo_set_update_offer("", "", "");
+        return Ok(());
+    };
+    let body = body.as_str();
     let Some(manifest) = nemo_verify_update_manifest(body, mgmt_pk_b64.trim(), &server_origin)
     else {
-        nemo_set_update_offer("", "");
+        nemo_set_update_offer("", "", "");
         bail!(
             "update manifest from {} rejected (signature, shape or origin)",
             server
@@ -1054,18 +1062,80 @@ pub fn do_check_software_update() -> hbb_common::ResultType<()> {
             None => manifest.url.clone(),
         };
         log::info!("Nemo update download: {}", download);
-        nemo_set_update_offer(&download, &manifest.sha256);
+        nemo_set_update_offer(&manifest.version, &download, &manifest.sha256);
     } else {
-        nemo_set_update_offer("", "");
+        nemo_set_update_offer("", "", "");
     }
     Ok(())
 }
 
 // Auto-update: the offer is one unit — url and digest are always written together, so
 // updater.rs can never pair a fresh url with a stale digest (or the other way round).
-fn nemo_set_update_offer(url: &str, sha256: &str) {
+fn nemo_set_update_offer(version: &str, url: &str, sha256: &str) {
     *SOFTWARE_UPDATE_URL.lock().unwrap() = url.to_owned();
     *NEMO_UPDATE_SHA256.lock().unwrap() = sha256.to_owned();
+    *NEMO_UPDATE_VERSION.lock().unwrap() = version.to_owned();
+}
+
+/// Which published package this client installs: "windows-x64" (the manifest's top
+/// level), or "linux-deb" / "linux-rpm" / "linux-arch" by the package manager that owns
+/// the installed program. None = nothing can update this client in place (portable,
+/// not installed from a package, another OS). Asked once per process.
+pub fn nemo_update_platform() -> Option<&'static str> {
+    static PLATFORM: std::sync::OnceLock<Option<&'static str>> = std::sync::OnceLock::new();
+    *PLATFORM.get_or_init(|| {
+        #[cfg(windows)]
+        return Some("windows-x64");
+        #[cfg(target_os = "linux")]
+        {
+            if !crate::platform::is_installed() {
+                return None;
+            }
+            let exe = std::env::current_exe().ok()?;
+            let owned_by = |cmd: &str, flag: &str| {
+                std::process::Command::new(cmd)
+                    .arg(flag)
+                    .arg(&exe)
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false)
+            };
+            if owned_by("dpkg", "-S") {
+                return Some("linux-deb");
+            }
+            if owned_by("rpm", "-qf") {
+                return Some("linux-rpm");
+            }
+            if owned_by("pacman", "-Qo") {
+                return Some("linux-arch");
+            }
+            return None;
+        }
+        #[allow(unreachable_code)]
+        None
+    })
+}
+
+/// The {version,url,sha256,sig} object for `platform` out of the server's manifest, in
+/// the shape nemo_verify_update_manifest checks. Windows is the top level (empty when
+/// only Linux packages are published); the others come from `platforms`, signed over
+/// the same "version|url|sha256" string. None = nothing published for this platform.
+pub fn nemo_platform_manifest(body: &str, platform: &str) -> Option<String> {
+    let v: Value = serde_json::from_str(body).ok()?;
+    if platform == "windows-x64" {
+        let has = v.get("url").and_then(|u| u.as_str()).map_or(false, |u| !u.is_empty());
+        return has.then(|| body.to_owned());
+    }
+    let a = v.get("platforms")?.get(platform)?;
+    Some(
+        json!({
+            "version": v.get("version")?,
+            "url": a.get("url")?,
+            "sha256": a.get("sha256")?,
+            "sig": a.get("sig")?,
+        })
+        .to_string(),
+    )
 }
 
 #[inline]
@@ -4356,6 +4426,23 @@ mod tests {
                 "{url}"
             );
         }
+
+        // Per-platform packages: Windows is the top level, Linux packages come out of
+        // `platforms` re-shaped into the same signed object.
+        let multi = json!({
+            "version": "9.9.9", "url": "https://h/nemo/api/update/file/w.exe", "sha256": sha, "sig": "S1",
+            "platforms": {"linux-deb": {"url": "https://h/nemo/api/update/file/x.deb", "sha256": sha, "sig": "S2"}}
+        })
+        .to_string();
+        assert_eq!(nemo_platform_manifest(&multi, "windows-x64").as_deref(), Some(multi.as_str()));
+        let deb: Value = serde_json::from_str(&nemo_platform_manifest(&multi, "linux-deb").unwrap()).unwrap();
+        assert_eq!(deb["version"], "9.9.9");
+        assert_eq!(deb["url"], "https://h/nemo/api/update/file/x.deb");
+        assert_eq!(deb["sig"], "S2");
+        assert!(nemo_platform_manifest(&multi, "linux-rpm").is_none(), "no rpm published");
+        let linux_only = json!({"version": "9.9.9", "url": "", "sha256": "", "sig": "",
+            "platforms": {"linux-deb": {"url": "u", "sha256": sha, "sig": "S2"}}}).to_string();
+        assert!(nemo_platform_manifest(&linux_only, "windows-x64").is_none(), "no Windows installer");
 
         // The server's own hosted installer is accepted whatever host the url names: a
         // server between two NATs has a different address on each side, and the client

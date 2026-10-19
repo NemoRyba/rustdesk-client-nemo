@@ -28,6 +28,7 @@ remote = open('src/ui/remote.html').read() \
 
 chatbox = open('src/ui/chatbox.html').read()
 install = open('src/ui/install.html').read().replace('include "install.tis";', open('src/ui/install.tis').read())
+update = open('src/ui/update.html').read()
 
 cm = open('src/ui/cm.html').read() \
     .replace('@import url(cm.css);', open('src/ui/cm.css').read()) \
@@ -48,6 +49,7 @@ with open('src/ui/inline.rs', 'wt') as fh:
     fh.write('const _REMOTE: ' + compress(strip(remote)) + ';\n')
     fh.write('const _CHATBOX: ' + compress(strip(chatbox)) + ';\n')
     fh.write('const _INSTALL: ' + compress(strip(install)) + ';\n')
+    fh.write('const _UPDATE: ' + compress(strip(update)) + ';\n')
     fh.write('const _CONNECTION_MANAGER: ' + compress(strip(cm)) + ';\n')
     fh.write('''
 fn get(data: &[u8]) -> String {
@@ -70,6 +72,10 @@ pub fn get_remote() -> String {
 #[inline]
 pub fn get_install() -> String {
     replace(&_INSTALL[..])
+}
+#[inline]
+pub fn get_update() -> String {
+    replace(&_UPDATE[..])
 }
 #[inline]
 pub fn get_chatbox() -> String {

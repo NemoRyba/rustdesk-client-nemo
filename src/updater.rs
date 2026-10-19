@@ -22,6 +22,27 @@ lazy_static::lazy_static! {
 
 static CONTROLLING_SESSION_COUNT: AtomicUsize = AtomicUsize::new(0);
 
+// The user's side of an update, carried to this (service) process as options through the
+// UI's settings channel:
+// - the pre-install prompt's answer, "<now|postpone>:<version>:<unix ts>";
+// - the main window's "install now" button, "<version>:<unix ts>".
+pub const OPTION_UPDATE_DECISION: &str = "nemo-update-decision";
+pub const OPTION_UPDATE_REQUEST: &str = "nemo-update-request";
+const PROMPT_SECS: u64 = 60;
+const POSTPONE: Duration = Duration::from_secs(60 * 60);
+// After this many postponements of one version the prompt only informs: the update
+// still never runs during a session, but a user cannot hold it back for ever.
+const MAX_POSTPONES: u32 = 4;
+// (version, postponements so far, postponed until)
+static POSTPONED: Mutex<(String, u32, Option<Instant>)> = Mutex::new((String::new(), 0, None));
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 // User-configurable check interval (Settings → General → Auto update), stored
 // in SECONDS in the "auto-update-check-interval" option; default one day.
 // Allowed range: 1 to 30 days. NOTE: the whole feature is dormant until the
@@ -64,9 +85,46 @@ fn has_no_active_conns() -> bool {
     conns.is_empty() && has_no_controlling_conns()
 }
 
-#[cfg(any(not(target_os = "windows"), feature = "flutter"))]
+#[cfg(any(all(not(target_os = "windows"), not(target_os = "linux")), feature = "flutter"))]
 fn has_no_controlling_conns() -> bool {
     CONTROLLING_SESSION_COUNT.load(Ordering::SeqCst) == 0
+}
+
+// Linux: this root service process does not see the user's session windows (separate
+// processes), so look for them the way the Windows variant does.
+#[cfg(all(target_os = "linux", not(feature = "flutter")))]
+fn has_no_controlling_conns() -> bool {
+    const SESSION_ARGS: &[&str] = &[
+        "--connect",
+        "--play",
+        "--file-transfer",
+        "--view-camera",
+        "--port-forward",
+        "--rdp",
+    ];
+    let me = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+        .unwrap_or_default();
+    let Ok(dir) = std::fs::read_dir("/proc") else {
+        return true;
+    };
+    for e in dir.flatten() {
+        let Ok(cmdline) = std::fs::read(e.path().join("cmdline")) else {
+            continue;
+        };
+        let mut argv = cmdline.split(|b| *b == 0);
+        let (Some(a0), Some(a1)) = (argv.next(), argv.next()) else {
+            continue;
+        };
+        let a0 = String::from_utf8_lossy(a0);
+        let name = a0.rsplit('/').next().unwrap_or("");
+        let a1 = String::from_utf8_lossy(a1);
+        if (name == me || name == "rustdesk" || name == "tbfdesk") && SESSION_ARGS.contains(&a1.as_ref()) {
+            return false;
+        }
+    }
+    true
 }
 
 #[cfg(not(any(not(target_os = "windows"), feature = "flutter")))]
@@ -95,7 +153,7 @@ fn start_auto_update_check() -> Sender<UpdateMsg> {
 
 fn start_auto_update_check_(rx_msg: Receiver<UpdateMsg>) {
     std::thread::sleep(Duration::from_secs(30));
-    if let Err(e) = check_update(false) {
+    if let Err(e) = check_update(false, false) {
         log::error!("Error checking for updates: {}", e);
     }
 
@@ -103,14 +161,21 @@ fn start_auto_update_check_(rx_msg: Receiver<UpdateMsg>) {
     const MIN_RETRY: Duration = Duration::from_secs(60);
     const MAX_RETRY: Duration = Duration::from_secs(60 * 30);
     // Wake at least this often so a changed "auto-update-check-interval" takes
-    // effect without restarting; a check only runs when it is actually due.
-    const POLL_INTERVAL: Duration = Duration::from_secs(60 * 5);
+    // effect without restarting, and so the main window's "install now" is answered
+    // within a minute; a check only runs when it is actually due.
+    const POLL_INTERVAL: Duration = Duration::from_secs(60);
     let mut last_check_time = Instant::now();
     let mut retry_not_before = Instant::now();
     // A requested check (the server published a new version) that could not run yet --
     // too soon after the last check, or a session was open -- stays pending and runs
     // at the next wake-up that allows it, instead of waiting for the daily check.
     let mut pending_manual = false;
+    // "Install now" from the main window: asked by the user, so neither the 10-minute
+    // spacing nor the retry back-off applies, and no prompt is shown -- only the rule
+    // that no session may be open. A request left over from before a restart is not
+    // replayed.
+    let mut last_request = config::Config::get_option(OPTION_UPDATE_REQUEST);
+    let mut user_requested = false;
     loop {
         let interval = get_check_interval();
         let recv_res = rx_msg.recv_timeout(POLL_INTERVAL.min(interval));
@@ -119,8 +184,15 @@ fn start_auto_update_check_(rx_msg: Receiver<UpdateMsg>) {
                 if matches!(recv_res, Ok(UpdateMsg::CheckUpdate)) {
                     pending_manual = true;
                 }
+                let request = config::Config::get_option(OPTION_UPDATE_REQUEST);
+                if !request.is_empty() && request != last_request {
+                    log::info!("Update requested from the main window ({})", request);
+                    last_request = request;
+                    pending_manual = true;
+                    user_requested = true;
+                }
                 let manually = pending_manual;
-                if manually {
+                if manually && !user_requested {
                     if last_check_time.elapsed() < MIN_MANUAL_INTERVAL
                         || Instant::now() < retry_not_before
                     {
@@ -138,7 +210,8 @@ fn start_auto_update_check_(rx_msg: Receiver<UpdateMsg>) {
                     continue;
                 }
                 pending_manual = false;
-                if let Err(e) = check_update(manually) {
+                let asked = std::mem::take(&mut user_requested);
+                if let Err(e) = check_update(manually, asked) {
                     log::error!("Error checking for updates: {}", e);
                     retry_not_before = Instant::now() + interval.clamp(MIN_RETRY, MAX_RETRY);
                     // A pushed update that failed or had to wait for a session to end is
@@ -153,7 +226,7 @@ fn start_auto_update_check_(rx_msg: Receiver<UpdateMsg>) {
     }
 }
 
-fn check_update(manually: bool) -> ResultType<()> {
+fn check_update(manually: bool, user_requested: bool) -> ResultType<()> {
     #[cfg(target_os = "windows")]
     let update_msi = crate::platform::is_msi_installed()? && !crate::is_custom_client();
     // Auto-update: the ONLY switch for our updater is the Nemo policy key
@@ -193,6 +266,13 @@ fn check_update(manually: bool) -> ResultType<()> {
         // Log-only: the artifact's file name stands in for the version string.
         let version = download_url.split('/').last().unwrap_or_default();
         log::debug!("New version available: {}", &version);
+        let offered = crate::common::NEMO_UPDATE_VERSION.lock().unwrap().clone();
+        if !user_requested {
+            let p = POSTPONED.lock().unwrap();
+            if p.0 == offered && p.2.map_or(false, |until| Instant::now() < until) {
+                bail!("the user postponed {} (until about an hour after asking)", offered);
+            }
+        }
         // The installer comes from the management server. With its certificate pinned
         // (nemo-api-cert-fingerprint) the download uses that pin like the policy poll and
         // the manifest do, and never the accept-any-certificate fallback, so a man in the
@@ -273,8 +353,117 @@ fn check_update(manually: bool) -> ResultType<()> {
             // Downloaded and verified; installed after the session (see the retry).
             bail!("a session started during the download; installing {} later", version);
         }
+        // Ask whoever is at the computer first, unless they asked for it themselves.
+        if !user_requested {
+            if let PromptAnswer::Postpone = prompt_user(&offered) {
+                let mut p = POSTPONED.lock().unwrap();
+                let count = if p.0 == offered { p.1 + 1 } else { 1 };
+                *p = (offered.clone(), count, Some(Instant::now() + POSTPONE));
+                bail!("the user postponed {} by an hour ({} of {})", offered, count, MAX_POSTPONES);
+            }
+            if !has_no_active_conns() {
+                bail!("a session started while asking; installing {} later", offered);
+            }
+        }
         #[cfg(target_os = "windows")]
         update_new_version(update_msi, &version, &file_path);
+        #[cfg(target_os = "linux")]
+        update_new_version_linux(&file_path)?;
+    }
+    Ok(())
+}
+
+enum PromptAnswer {
+    Install,
+    Postpone,
+}
+
+/// Show the logged-in user a 60-second "TBFDesk will now be updated" prompt (a small
+/// window started in their session, `--nemo-update-prompt`) and wait for the answer it
+/// sends back as OPTION_UPDATE_DECISION. No user session, no answer, or the countdown
+/// running out all mean Install: an unattended machine must still update.
+fn prompt_user(version: &str) -> PromptAnswer {
+    let allow_postpone = {
+        let p = POSTPONED.lock().unwrap();
+        p.0 != version || p.1 < MAX_POSTPONES
+    };
+    let started = now_secs();
+    config::Config::set_option(OPTION_UPDATE_DECISION.to_owned(), String::new());
+    let secs = PROMPT_SECS.to_string();
+    let args = vec![
+        "--nemo-update-prompt",
+        version,
+        if allow_postpone { "1" } else { "0" },
+        &secs,
+    ];
+    #[cfg(target_os = "windows")]
+    let launched = crate::platform::run_as_user(args).map(|_| ());
+    #[cfg(target_os = "linux")]
+    let launched = crate::platform::run_as_user(args, None, None::<(&str, &str)>).map(|_| ());
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    let launched: ResultType<()> = {
+        let _ = args;
+        Err(hbb_common::anyhow::anyhow!("no update prompt on this platform"))
+    };
+    if let Err(e) = launched {
+        log::info!("Nobody to ask about update {} ({}); installing", version, e);
+        return PromptAnswer::Install;
+    }
+    log::info!("Asking the user about update {} ({} s)", version, PROMPT_SECS);
+    let deadline = Instant::now() + Duration::from_secs(PROMPT_SECS + 5);
+    while Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(500));
+        let answer = config::Config::get_option(OPTION_UPDATE_DECISION);
+        let mut parts = answer.splitn(3, ':');
+        if let (Some(choice), Some(v), Some(ts)) = (parts.next(), parts.next(), parts.next()) {
+            if v == version && ts.parse::<u64>().unwrap_or(0) >= started {
+                config::Config::set_option(OPTION_UPDATE_DECISION.to_owned(), String::new());
+                log::info!("The user answered '{}' for update {}", choice, version);
+                if choice == "postpone" && allow_postpone {
+                    return PromptAnswer::Postpone;
+                }
+                return PromptAnswer::Install;
+            }
+        }
+    }
+    log::info!("No answer about update {} within {} s; installing", version, PROMPT_SECS);
+    PromptAnswer::Install
+}
+
+/// Linux: install the verified package with the package manager that owns this client.
+/// The package's own scripts stop and restart this very service (deb prerm: systemctl
+/// stop rustdesk), which would kill an installer started as our child halfway; so it
+/// runs as a transient systemd unit of its own, and the package starts the new version.
+#[cfg(target_os = "linux")]
+fn update_new_version_linux(file_path: &PathBuf) -> ResultType<()> {
+    let platform = crate::common::nemo_update_platform()
+        .ok_or_else(|| hbb_common::anyhow::anyhow!("this client was not installed from a package"))?;
+    let file = file_path.to_string_lossy().to_string();
+    let find = |name: &str| {
+        ["/usr/bin/", "/bin/", "/usr/sbin/", "/sbin/"]
+            .iter()
+            .map(|d| format!("{d}{name}"))
+            .find(|p| std::path::Path::new(p).exists())
+    };
+    let cmd: Vec<String> = match platform {
+        "linux-deb" => vec![find("dpkg"), Some("-i".into()), Some("--force-confold".into()), Some(file)],
+        "linux-rpm" => vec![find("rpm"), Some("-U".into()), Some("--replacepkgs".into()), Some(file)],
+        "linux-arch" => vec![find("pacman"), Some("-U".into()), Some("--noconfirm".into()), Some(file)],
+        other => bail!("no installer for platform {}", other),
+    }
+    .into_iter()
+    .collect::<Option<Vec<_>>>()
+    .ok_or_else(|| hbb_common::anyhow::anyhow!("package manager for {} not found", platform))?;
+    let systemd_run = find("systemd-run")
+        .ok_or_else(|| hbb_common::anyhow::anyhow!("systemd-run not found; cannot install outside this service"))?;
+    let unit = format!("tbfdesk-update-{}", now_secs());
+    log::info!("Installing the update with {:?} as transient unit {}", cmd, unit);
+    let status = std::process::Command::new(systemd_run)
+        .args(["--unit", &unit, "--collect", "--quiet", "--"])
+        .args(&cmd)
+        .status()?;
+    if !status.success() {
+        bail!("could not start the package installer: {}", status);
     }
     Ok(())
 }

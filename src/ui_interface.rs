@@ -837,6 +837,10 @@ pub fn current_is_wayland() -> bool {
 
 #[inline]
 pub fn get_new_version() -> String {
+    let v = crate::common::NEMO_UPDATE_VERSION.lock().unwrap().clone();
+    if !v.is_empty() {
+        return v;
+    }
     (*SOFTWARE_UPDATE_URL
         .lock()
         .unwrap()
