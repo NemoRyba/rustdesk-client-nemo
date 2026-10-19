@@ -303,16 +303,13 @@ div.remote-session .platform svg {
 
 /* TBFDesk: "direct access possible" on a peer tile. The relay costs about a third of
    the link, so which machines can be reached without it is the one property worth a
-   mark of its own. The badge is a drawn icon (ab.tis svg_direct), so this only has to
-   place it -- no background, no padding: the disc is part of the artwork. */
-/* "Direct access possible": a green chip with the bolt and the word, so it reads at a
-   glance in the address book (the bare 18 px icon went unnoticed). */
+   mark of its own: one elongated green chip, bolt and word on the same line. */
 .nemo-direct-badge {
     display: inline-block;
     flow: horizontal;
     white-space: nowrap;
     height: 18px;
-    padding: 0 6px 0 0;
+    padding: 0 8px 0 7px;
     border-radius: 9px;
     background: #1a7a34;
     color: white;
@@ -320,14 +317,19 @@ div.remote-session .platform svg {
     font-weight: bold;
 }
 
-.nemo-direct-badge svg {
-    width: 18px;
-    height: 18px;
+/* The tile's `.platform svg` rule sizes the OS logo to 60 px and would catch the bolt
+   too (that was the big green disc); this selector is more specific. */
+.nemo-direct-badge svg,
+div.remote-session .platform .nemo-direct-badge svg {
+    width: 9px;
+    height: 13px;
+    margin: * 0;
+    background: none;
 }
 
 .nemo-direct-label {
     display: inline-block;
-    margin: * 0 * 3px;
+    margin: * 0 * 4px;
     line-height: 18px;
 }
 
@@ -338,7 +340,7 @@ div.remote-session .platform svg {
     color: #1a7a34;
 }
 #nemo-direct-hint > span { flow: horizontal; white-space: nowrap; }
-#nemo-direct-hint svg { width: 14px; height: 14px; margin-right: 4px; }
+#nemo-direct-hint svg { width: 8px; height: 12px; margin: * 5px * 1px; }
 
 div.remote-session .platform .nemo-direct-badge {
     position: absolute;
@@ -346,15 +348,26 @@ div.remote-session .platform .nemo-direct-badge {
     right: 7px;
 }
 
-div.remote-session-list .nemo-direct-badge {
+/* The chip sits on the second line, next to user@host: on the first line it took the
+   room the ID / alias needs, and "91 090 ..." was cut off in a card with space to spare. */
+div.remote-session-list .nemo-subline {
+    flow: horizontal;
+    margin-top: 3px;
+}
+
+div.remote-session-list .name .nemo-subline .username {
+    width: *;
     margin-top: *;
     margin-bottom: *;
-    margin-right: 4px;
+}
+
+div.remote-session-list .nemo-direct-badge {
+    margin: * 4px * 6px;
 }
 
 div.remote-session-list {
     background: color(bg);
-    width: 220px;
+    width: 270px;
     flow: horizontal;
 }
 
