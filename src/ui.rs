@@ -1143,6 +1143,15 @@ impl UI {
         crate::nemo_direct::endpoint_label(&id)
     }
 
+    /// Every id with a published endpoint, sorted and joined: a cheap fingerprint the
+    /// main window compares once a second, so the address book redraws its Direct chips
+    /// when the policy delivers or withdraws an endpoint (it was drawn once and went stale).
+    fn nemo_direct_ids(&self) -> String {
+        let mut ids = crate::nemo_direct::direct_capable_ids();
+        ids.sort();
+        ids.join(",")
+    }
+
     /// The per-peer "direct only, do not fall back" flag the Connect-directly menu entry
     /// sets. Kept as its own pair of calls rather than get/set_peer_option from script,
     /// so the option NAME lives in one place (nemo_direct) and script cannot typo it.
@@ -1366,6 +1375,7 @@ impl sciter::EventHandler for UI {
         fn nemo_setup_summary();
         fn nemo_configured_api_server();
         fn nemo_direct_endpoint(String);
+        fn nemo_direct_ids();
         fn nemo_force_direct(String);
         fn nemo_set_force_direct(String, bool);
         fn nemo_read_text_file(String);

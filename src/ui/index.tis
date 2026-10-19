@@ -839,7 +839,6 @@ class MyIdMenu: Reactor.Component {
                 {!disable_settings && <li #enable-remote-restart><span>{svg_checkmark}</span>{translate('Enable remote restart')}</li>}
                 {!disable_settings && <li #enable-tunnel><span>{svg_checkmark}</span>{translate('Enable TCP tunneling')}</li>}
                 {!disable_settings && is_win ? <li #enable-block-input><span>{svg_checkmark}</span>{translate('Enable blocking user input')}</li> : ""}
-                {!disable_settings && (handler.get_supported_privacy_mode_impls() != '[]') && <li #enable-privacy-mode><span>{svg_checkmark}</span>{translate('Enable privacy mode')}</li>}
                 {!disable_settings && <li #enable-lan-discovery><span>{svg_checkmark}</span>{translate('Enable LAN discovery')}</li>}
                 <AudioInputs />
                 <Enhancements />
@@ -1662,7 +1661,6 @@ class NemoSettingsDialog: Reactor.Component {
             this.pEnable(perm, "enable-remote-restart", translate('Enable remote restart'));
             this.pEnable(perm, "enable-tunnel", translate('Enable TCP tunneling'));
             if (is_win) this.pEnable(perm, "enable-block-input", translate('Enable blocking user input'));
-            if (handler.get_supported_privacy_mode_impls() != '[]') this.pEnable(perm, "enable-privacy-mode", translate('Enable privacy mode'));
             this.pEnable(perm, "enable-lan-discovery", translate('Enable LAN discovery'));
             this.pAllow(perm, "allow-remote-config-modification", translate('Enable remote configuration modification'));
         }
@@ -2038,6 +2036,7 @@ class App: Reactor.Component
                         <div .card-connect>
                             <div .title>{translate('Control Remote Desktop')}</div>
                             <ID @{this.remote_id} />
+                            <div #nemo-direct-hint />
                             <div .right-buttons>
                                 <button .button .outline #file-transfer disabled={nemoOutboundEnabled() ? "false" : "true"}>{translate('Transfer file')}</button>
                                 <button .button #connect disabled={nemoOutboundEnabled() ? "false" : "true"}>{translate('Connect')}</button>
@@ -2577,6 +2576,7 @@ class ID: Reactor.Component {
 
     // https://github.com/c-smile/sciter-sdk/blob/master/doc/content/sciter/Event.htm
     event change {
+        nemoUpdateDirectHint(this.value);
         var fid = formatId(this.value);
         var d = this.value.length - (this.old_value || "").length;
         this.old_value = this.value;
@@ -2591,6 +2591,20 @@ class ID: Reactor.Component {
         var n = fid.length - formatId(text_after_caret).length;
         this.xcall(#setSelection, n, n);
     }
+}
+
+// Under the remote ID box: whether the typed ID can be reached directly (published
+// endpoint) -- the same fact the address-book chip shows, for an ID typed by hand.
+function nemoUpdateDirectHint(raw) {
+    var el = $(#nemo-direct-hint);
+    if (!el) return;
+    var id = (raw || "").replace(/\s/g, "");
+    var ep = "";
+    if (id) { try { ep = handler.nemo_direct_endpoint(id) || ""; } catch (e) { ep = ""; } }
+    if ((el.attributes["ep"] || "") == ep) return;
+    el.attributes["ep"] = ep;
+    if (ep) el.content(<span>{svg_direct}<span>{translate("Direct access possible") + " \u2014 " + ep}</span></span>);
+    else el.content("");
 }
 
 var reg = /^\d+$/;
@@ -2787,9 +2801,19 @@ function showSettings() {
     nemoOpenSettingsDialog();
 }
 
+var nemo_direct_ids_seen = "";
 function checkConnectStatus() {
     handler.check_mouse_time(); // trigger connection status updater
     self.timer(1s, function() {
+        // The direct hint follows the box AND the policy (endpoints arrive with it), and
+        // the box is re-created when the login gate gives way to the main view.
+        var rid = $(#remote_id);
+        if (rid) nemoUpdateDirectHint(rid.value);
+        var dids = handler.nemo_direct_ids();
+        if (dids != nemo_direct_ids_seen) {
+            nemo_direct_ids_seen = dids;
+            if (app) app.update();
+        }
         var tmp = handler.get_option("stop-service") == "Y";
         if (tmp != service_stopped) {
             service_stopped = tmp;

@@ -366,6 +366,7 @@ class SessionList: Reactor.Component {
                 <menu.context #remote-context>
                     <li #connect>{translate('Connect')}</li>
                     <li #connect-direct>{translate('Connect directly (no relay)')}</li>
+                    <li #connect-relay>{translate('Connect via relay')}</li>
                     <li #transfer>{translate('Transfer file')}</li>
                     <li #tunnel>{translate('TCP tunneling')}</li>
                     <li #force-always-relay><span>{svg_checkmark}</span>{translate('Always connect via relay')}</li>
@@ -403,7 +404,8 @@ class SessionList: Reactor.Component {
         var directTip = directEp
             ? translate("Direct access possible") + " — " + directEp + ". " + translate("Right-click for a direct-only connection.")
             : "";
-        var directMark = directEp ? <span .nemo-direct-badge title={directTip}>{svg_direct}</span> : "";
+        // A labelled chip, not a bare icon: an 18 px glyph was not noticed in the field.
+        var directMark = directEp ? <span .nemo-direct-badge title={directTip}>{svg_direct}<span .nemo-direct-label>{translate("Direct")}</span></span> : "";
         var tileTitle = (alias ? "ID: " + id : "") + (directEp ? (alias ? "  •  " : "") + directTip : "");
         if (this.style == "list") {
             return <div .remote-session-link .remote-session-list id={id} platform={platform} title={tileTitle}>
@@ -499,6 +501,10 @@ class SessionList: Reactor.Component {
             // never a mode the peer gets stuck in.
             handler.nemo_set_force_direct(id, true);
             createNewConnect(id, "connect");
+        } else if (action == "connect-relay") {
+            // One-shot as well: "<id>/r" is the client's own relay-for-this-session form
+            // (handle_relay_id), unlike "Always connect via relay", which sticks.
+            createNewConnect(id + "/r", "connect");
         } else if (action == "transfer") {
             createNewConnect(id, "file-transfer");
         } else if (action == "wol") {
