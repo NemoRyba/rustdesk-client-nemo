@@ -1205,7 +1205,11 @@ pub fn recent_sessions_updated() -> bool {
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios", feature = "flutter")))]
-pub fn new_remote(id: String, remote_type: String, force_relay: bool) {
+/// Returns false when a session of this type to this peer is already open: nothing is
+/// started, its window is brought forward where the platform allows it, and the caller
+/// says so (it used to return silently, and a second click looked broken). Sessions to
+/// other peers are unaffected.
+pub fn new_remote(id: String, remote_type: String, force_relay: bool) -> bool {
     let mut lock = CHILDREN.lock().unwrap();
     let mut args = vec![format!("--{}", remote_type), id.clone()];
     if force_relay {
@@ -1223,7 +1227,9 @@ pub fn new_remote(id: String, remote_type: String, force_relay: bool) {
                 c.try_wait().ok();
                 lock.1.remove(&key);
             } else {
-                return;
+                #[cfg(windows)]
+                crate::platform::windows::raise_process_windows(c.id());
+                return false;
             }
         }
     }
@@ -1235,6 +1241,7 @@ pub fn new_remote(id: String, remote_type: String, force_relay: bool) {
             log::error!("Failed to spawn remote: {}", err);
         }
     }
+    true
 }
 
 // Make sure `SENDER` is inited here.

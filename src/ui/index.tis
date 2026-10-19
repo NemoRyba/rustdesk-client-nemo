@@ -208,7 +208,11 @@ function createNewConnect(id, type) {
         return;
     }
     handler.set_remote_id(id);
-    handler.new_remote(id, type, force_relay);
+    if (!handler.new_remote(id, type, force_relay)) {
+        // Already open (the window was brought forward where possible). Sessions to
+        // other computers are not affected.
+        msgbox("custom-nocancel", "Already connected", formatId(id) + " — " + translate("nemo_already_connected_tip"));
+    }
 }
 
 class ShareRdp: Reactor.Component {

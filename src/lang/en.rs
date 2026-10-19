@@ -309,5 +309,7 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("Reset preferences", "Reset preferences"),
         ("nemo_reset_prefs_tip", "Reset everything remembered for this computer to the defaults: view style, image quality, keyboard mode, display mode and selection, relay preference, window size. The saved password and the alias stay. Takes effect from the next connection."),
         ("nemo_reset_prefs_none", "Nothing is stored for this computer yet."),
+        ("Already connected", "Already connected"),
+        ("nemo_already_connected_tip", "this connection is already open in its own window (see the taskbar). Connections to other computers at the same time are not affected."),
     ].iter().cloned().collect();
 }

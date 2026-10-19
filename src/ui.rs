@@ -718,7 +718,7 @@ impl UI {
         crate::lan::send_wol(id)
     }
 
-    fn new_remote(&mut self, id: String, remote_type: String, force_relay: bool) {
+    fn new_remote(&mut self, id: String, remote_type: String, force_relay: bool) -> bool {
         new_remote(id, remote_type, force_relay)
     }
 

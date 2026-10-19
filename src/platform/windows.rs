@@ -4206,6 +4206,30 @@ fn nt_terminate_process(process_id: DWORD) -> ResultType<()> {
     }
 }
 
+/// Bring the visible top-level windows of process `pid` to the front (restoring a
+/// minimized one). For "connect again to a peer whose session is already open": the
+/// clicking process owns the foreground at that moment, so Windows lets it hand it over.
+pub fn raise_process_windows(pid: u32) -> bool {
+    unsafe extern "system" fn each(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        let state = &mut *(lparam as *mut (u32, bool));
+        let mut owner = 0u32;
+        GetWindowThreadProcessId(hwnd, &mut owner);
+        if owner == state.0 && IsWindowVisible(hwnd) != 0 && GetWindow(hwnd, GW_OWNER).is_null() {
+            if IsIconic(hwnd) != 0 {
+                ShowWindow(hwnd, SW_RESTORE);
+            }
+            SetForegroundWindow(hwnd);
+            state.1 = true;
+        }
+        TRUE
+    }
+    let mut state = (pid, false);
+    unsafe {
+        EnumWindows(Some(each), &mut state as *mut (u32, bool) as LPARAM);
+    }
+    state.1
+}
+
 pub fn try_set_window_foreground(window: HWND) {
     let env_key = SET_FOREGROUND_WINDOW;
     if let Ok(value) = std::env::var(env_key) {
