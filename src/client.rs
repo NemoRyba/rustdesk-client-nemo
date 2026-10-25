@@ -655,7 +655,7 @@ impl Client {
         endpoint: &crate::nemo_direct::DirectEndpoint,
         budget_ms: u64,
     ) -> ResultType<(Stream, Option<Vec<u8>>)> {
-        if let Some(cfg) = crate::nemo_direct::knock_config() {
+        if let Some(cfg) = crate::nemo_direct::knock_config_for(peer_id) {
             let cfg = crate::nemo_direct::KnockConfig {
                 // A per-endpoint knock port wins: a fleet behind several edges needs one
                 // SPA port per site, wherever that site's router forwards it.

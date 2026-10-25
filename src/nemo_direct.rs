@@ -46,9 +46,18 @@ pub const OPTION_KNOCK_ENABLED: &str = "nemo-knock-enabled";
 /// Default UDP port the SPA goes to, when an endpoint entry carries none.
 pub const OPTION_KNOCK_PORT: &str = "nemo-knock-port";
 /// base64 Rijndael (AES-256) key, shared with the fwknopd on the edge. SECRET.
+/// The fleet-wide fallback; a per-peer key in `nemo-knock-keys` overrides it.
 pub const OPTION_KNOCK_KEY: &str = "nemo-knock-key";
 /// base64 HMAC-SHA256 key, shared with the same fwknopd. SECRET.
 pub const OPTION_KNOCK_HMAC_KEY: &str = "nemo-knock-hmac-key";
+/// Per-peer SPA keys: `id,rijndael_b64,hmac_b64` entries joined by `;`. SECRET.
+///
+/// This is what gives each workstation its own knock key. The server hands a controller
+/// only the rows for peers it may reach, so a key leaked from one machine opens only the
+/// one port it belongs to — pc2's key can never knock pc7's edge open. A peer that has a
+/// row here uses it; a peer that does not falls back to the fleet-wide
+/// `nemo-knock-key`/`nemo-knock-hmac-key`, so the single-key deployment keeps working.
+pub const OPTION_KNOCK_KEYS: &str = "nemo-knock-keys";
 /// How long to wait after the knock before connecting.
 pub const OPTION_KNOCK_DELAY_MS: &str = "nemo-knock-delay-ms";
 /// Username stamped into the SPA payload (informational unless fwknopd requires it).
@@ -66,6 +75,7 @@ pub const NEMO_DIRECT_SETTINGS: &[&str] = &[
     OPTION_KNOCK_PORT,
     OPTION_KNOCK_KEY,
     OPTION_KNOCK_HMAC_KEY,
+    OPTION_KNOCK_KEYS,
     OPTION_KNOCK_DELAY_MS,
     OPTION_KNOCK_USER,
     OPTION_KNOCK_SOURCE_IP,
@@ -354,22 +364,37 @@ pub struct KnockConfig {
     pub source_ip: String,
 }
 
-/// Read the knock settings, or `None` when knocking is off or unusable.
+/// The knock settings for a connection to `peer_id`, or `None` when knocking is off or
+/// unusable.
 ///
-/// A half-configured knock (enabled, no keys) returns `None` and logs: the connection
-/// then goes out WITHOUT a knock, which either succeeds (the port was never gated) or
-/// fails and falls back to the relay. Refusing to connect would be the wrong call —
-/// the knock is a hardening layer over a port forward, not an authentication boundary
-/// for the session itself. That boundary is the Ed25519 handshake, which runs either way.
-pub fn knock_config() -> Option<KnockConfig> {
+/// The SPA keys come from the peer's own row in `nemo-knock-keys` when it has one, and
+/// otherwise from the fleet-wide `nemo-knock-key`/`nemo-knock-hmac-key`. That split is
+/// the whole point of per-peer keys: with a row per workstation, a key leaked from one
+/// machine opens only that machine's port; without any rows the client behaves exactly
+/// as before. When a peer has its own key the global key need not be set at all, so a
+/// deployment can distribute *only* per-peer keys.
+///
+/// A half-configured knock (enabled, no usable key for this peer and no global key)
+/// returns `None` and logs: the connection then goes out WITHOUT a knock, which either
+/// succeeds (the port was never gated) or fails and falls back to the relay. Refusing to
+/// connect would be the wrong call — the knock is a hardening layer over a port forward,
+/// not an authentication boundary for the session itself. That boundary is the Ed25519
+/// handshake, which runs either way.
+pub fn knock_config_for(peer_id: &str) -> Option<KnockConfig> {
     if Config::get_option(OPTION_KNOCK_ENABLED) != "Y" {
         return None;
     }
-    let key = decode_spa_key(&Config::get_option(OPTION_KNOCK_KEY), OPTION_KNOCK_KEY)?;
-    let hmac_key = decode_spa_key(
-        &Config::get_option(OPTION_KNOCK_HMAC_KEY),
-        OPTION_KNOCK_HMAC_KEY,
-    )?;
+    let (key, hmac_key) = match per_peer_knock_key(peer_id) {
+        Some(pair) => pair,
+        // No per-peer key: fall back to the fleet-wide pair, both required.
+        None => (
+            decode_spa_key(&Config::get_option(OPTION_KNOCK_KEY), OPTION_KNOCK_KEY)?,
+            decode_spa_key(
+                &Config::get_option(OPTION_KNOCK_HMAC_KEY),
+                OPTION_KNOCK_HMAC_KEY,
+            )?,
+        ),
+    };
     let port = Config::get_option(OPTION_KNOCK_PORT)
         .trim()
         .parse::<u16>()
@@ -395,6 +420,57 @@ pub fn knock_config() -> Option<KnockConfig> {
         user,
         source_ip,
     })
+}
+
+/// The fleet-wide knock settings, with no per-peer key override. Equivalent to
+/// `knock_config_for("")`: an empty id never matches a row in `nemo-knock-keys`.
+pub fn knock_config() -> Option<KnockConfig> {
+    knock_config_for("")
+}
+
+/// The (rijndael, hmac) SPA key pair the server published for `peer_id` in
+/// `nemo-knock-keys`, or `None` when that map is empty, has no row for this peer, or the
+/// row's keys do not decode. A row that fails to decode falls through to the global key
+/// rather than disabling the knock, which matches the lenient handling everywhere else
+/// on this path: a bad row must never cost a reachable workstation its connection.
+fn per_peer_knock_key(peer_id: &str) -> Option<(Vec<u8>, Vec<u8>)> {
+    if peer_id.is_empty() {
+        return None;
+    }
+    let raw = Config::get_option(OPTION_KNOCK_KEYS);
+    if raw.trim().is_empty() {
+        return None;
+    }
+    parse_knock_keys(&raw).remove(peer_id)
+}
+
+/// Parse `id,rijndael_b64,hmac_b64;...` into a per-peer SPA key map. Lenient by design,
+/// exactly like [`parse_endpoints`]: one malformed or undecodable row is skipped and
+/// never discards the rest, because the whole map arrives as a single policy string and
+/// a typo in one workstation's row must not take out the fleet.
+pub fn parse_knock_keys(raw: &str) -> HashMap<String, (Vec<u8>, Vec<u8>)> {
+    let mut out = HashMap::new();
+    for entry in raw.split(';') {
+        let entry = entry.trim();
+        if entry.is_empty() {
+            continue;
+        }
+        let mut fields = entry.split(',').map(str::trim);
+        let (Some(id), Some(k), Some(h)) = (fields.next(), fields.next(), fields.next()) else {
+            continue;
+        };
+        if id.is_empty() {
+            continue;
+        }
+        let (Some(key), Some(hmac_key)) = (
+            decode_spa_key(k, OPTION_KNOCK_KEYS),
+            decode_spa_key(h, OPTION_KNOCK_KEYS),
+        ) else {
+            continue;
+        };
+        out.insert(id.to_owned(), (key, hmac_key));
+    }
+    out
 }
 
 fn non_empty(value: String, fallback: &str) -> String {
@@ -779,5 +855,57 @@ mod tests {
         assert!(parse_endpoints("").is_empty());
         assert!(parse_endpoints("   ").is_empty());
         assert!(parse_endpoints(";;;").is_empty());
+    }
+
+    #[test]
+    fn knock_keys_parse_per_peer() {
+        let map = parse_knock_keys(&format!(
+            "123456789,{k},{h}; 987654321,{k},{h}",
+            k = REAL_KEY_B64,
+            h = REAL_HMAC_B64
+        ));
+        assert_eq!(map.len(), 2);
+        let (key, hmac_key) = &map["123456789"];
+        assert_eq!(key, &b64_decode(REAL_KEY_B64));
+        assert_eq!(hmac_key, &b64_decode(REAL_HMAC_B64));
+        assert!(map.contains_key("987654321"));
+    }
+
+    // Key isolation at the client layer: a controller handed only pc2's row holds no key
+    // for pc7, so `knock_config_for("pc7")` could never build pc7's SPA from this map.
+    // The server enforces the split by filtering the rows per controller; this proves the
+    // client does not invent a key for a peer it was not given one for.
+    #[test]
+    fn a_peer_absent_from_the_knock_key_map_has_no_key() {
+        let map = parse_knock_keys(&format!("pc2,{k},{h}", k = REAL_KEY_B64, h = REAL_HMAC_B64));
+        assert!(map.contains_key("pc2"));
+        assert!(!map.contains_key("pc7"));
+    }
+
+    // One bad row must not cost the fleet its per-peer keys: the map is a single policy
+    // string, so a typo in one workstation's row is skipped, not fatal.
+    #[test]
+    fn a_malformed_knock_key_row_does_not_discard_the_others() {
+        let map = parse_knock_keys(&format!(
+            "good,{k},{h};\
+             missinghmac,{k};\
+             badb64,not@@base64,{h};\
+             ,{k},{h};\
+             empty,,;\
+             ;  ;\
+             also-good,{k},{h}",
+            k = REAL_KEY_B64,
+            h = REAL_HMAC_B64
+        ));
+        assert_eq!(map.len(), 2);
+        assert!(map.contains_key("good"));
+        assert!(map.contains_key("also-good"));
+    }
+
+    #[test]
+    fn an_empty_knock_key_map_yields_nothing() {
+        assert!(parse_knock_keys("").is_empty());
+        assert!(parse_knock_keys("   ").is_empty());
+        assert!(parse_knock_keys(";;;").is_empty());
     }
 }
