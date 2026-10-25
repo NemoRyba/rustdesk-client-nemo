@@ -1200,6 +1200,31 @@ impl UI {
         crate::nemo_direct::endpoint_label(&id)
     }
 
+    /// A short, already-translated knock status line for `id`, or "" when this client
+    /// would not knock before dialling it (knocking off, or no endpoint). The UI shows it
+    /// under the direct-access line so an operator can see at a glance that the port is
+    /// gated and whether THIS machine holds the peer's own SPA key or the fleet-wide one.
+    /// Human-readable and self-contained so the script need not compose secrets or ports.
+    fn nemo_knock_hint(&self, id: String) -> String {
+        match crate::nemo_direct::knock_port_for(&id) {
+            None => String::new(),
+            Some(port) => {
+                let which = if crate::nemo_direct::has_peer_knock_key(&id) {
+                    crate::lang::translate("own key".to_owned())
+                } else {
+                    crate::lang::translate("fleet key".to_owned())
+                };
+                // e.g. "Knock :62201 · own key"
+                format!(
+                    "{} :{} \u{00B7} {}",
+                    crate::lang::translate("Knock".to_owned()),
+                    port,
+                    which
+                )
+            }
+        }
+    }
+
     /// Every id with a published endpoint, sorted and joined: a cheap fingerprint the
     /// main window compares once a second, so the address book redraws its Direct chips
     /// when the policy delivers or withdraws an endpoint (it was drawn once and went stale).
@@ -1460,6 +1485,7 @@ impl sciter::EventHandler for UI {
         fn nemo_setup_summary();
         fn nemo_configured_api_server();
         fn nemo_direct_endpoint(String);
+        fn nemo_knock_hint(String);
         fn nemo_direct_ids();
         fn nemo_reset_peer_prefs(String);
         fn nemo_force_direct(String);

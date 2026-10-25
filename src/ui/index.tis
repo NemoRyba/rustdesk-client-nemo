@@ -2635,10 +2635,19 @@ function nemoUpdateDirectHint(raw) {
     var id = (raw || "").replace(/\s/g, "");
     var ep = "";
     if (id) { try { ep = handler.nemo_direct_endpoint(id) || ""; } catch (e) { ep = ""; } }
-    if ((el.attributes["ep"] || "") == ep) return;
-    el.attributes["ep"] = ep;
-    if (ep) el.content(<span>{svg_direct}<span>{translate("Direct access possible") + " \u2014 " + ep}</span></span>);
-    else el.content("");
+    var knock = "";
+    if (id && ep) { try { knock = handler.nemo_knock_hint(id) || ""; } catch (e) { knock = ""; } }
+    var sig = ep + "\u0001" + knock;
+    if ((el.attributes["ep"] || "") == sig) return;
+    el.attributes["ep"] = sig;
+    if (ep) {
+        // Line 1: the direct endpoint (green). Line 2, only when the port is knock-gated:
+        // a lightning bolt + the SPA port + whether this machine holds the peer's own key
+        // or the fleet-wide one. Its own row so a long endpoint never pushes it off-screen.
+        var rows = [<span>{svg_direct}<span>{translate("Direct access possible") + " \u2014 " + ep}</span></span>];
+        if (knock) rows.push(<span .nemo-knock-line title={translate("The forwarded port stays closed until this machine sends a valid knock.")}>{"\u26a1 " + knock}</span>);
+        el.content.apply(el, rows);
+    } else el.content("");
 }
 
 var reg = /^\d+$/;

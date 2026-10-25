@@ -193,6 +193,28 @@ pub fn take_force_direct(peer_id: &str) -> bool {
     true
 }
 
+/// Does this client currently hold a per-peer SPA key for `peer_id` (as opposed to
+/// falling back to the fleet-wide key)? For the UI's knock status line.
+pub fn has_peer_knock_key(peer_id: &str) -> bool {
+    per_peer_knock_key(peer_id).is_some()
+}
+
+/// The SPA (knock) port that a connection to `peer_id` would use, or `None` when knocking
+/// is off on this client. The per-endpoint knock port wins, else the global one. For the
+/// UI only; the real send path computes the same value in `knock_config_for`.
+pub fn knock_port_for(peer_id: &str) -> Option<u16> {
+    if Config::get_option(OPTION_KNOCK_ENABLED) != "Y" {
+        return None;
+    }
+    let global = Config::get_option(OPTION_KNOCK_PORT)
+        .trim()
+        .parse::<u16>()
+        .ok()
+        .filter(|p| *p > 0)
+        .unwrap_or(DEFAULT_KNOCK_PORT);
+    Some(endpoint_for(peer_id).and_then(|e| e.knock_port).unwrap_or(global))
+}
+
 /// The endpoint for this id as plain `host:port`, for the UI. Empty when the management
 /// server has not published one, which is exactly when direct access is NOT possible.
 pub fn endpoint_label(peer_id: &str) -> String {

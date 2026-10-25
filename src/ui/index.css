@@ -339,8 +339,17 @@ div.remote-session .platform .nemo-direct-badge svg {
     font-size: 11px;
     color: #1a7a34;
 }
+#nemo-direct-hint { flow: vertical; }
 #nemo-direct-hint > span { flow: horizontal; white-space: nowrap; }
 #nemo-direct-hint svg { width: 8px; height: 12px; margin: * 5px * 1px; }
+/* The knock status sits on its own row, dimmer than the green endpoint, and may wrap
+   rather than overflow the narrow window. */
+#nemo-direct-hint > span.nemo-knock-line {
+    white-space: normal;
+    color: #7a6a1a;
+    margin: 2px 0 0 1px;
+    word-break: break-word;
+}
 
 div.remote-session .platform .nemo-direct-badge {
     position: absolute;
