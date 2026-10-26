@@ -51,12 +51,12 @@
     {
       "name": "mfx-dispatch",
       "host": true,
-      "platform": "((x86 | x64) & (android | linux)) | (windows & !uwp)"
+      "platform": "((x86 | x64) & linux) | (windows & !uwp)"
     },
     {
       "name": "mfx-dispatch",
       "host": false,
-      "platform": "((x86 | x64) & (android | linux)) | (windows & !uwp)"
+      "platform": "((x86 | x64) & linux) | (windows & !uwp)"
     },
     {
       "name": "ffmpeg",
