@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=TBFDesk Uninstaller
+GenericName=Uninstaller
+Comment=Remove TBFDesk and optionally wipe settings, device ID, keys and configuration
+Exec=tbfdesk-uninstall client
+Icon=rustdesk
+Terminal=false
+Categories=System;Settings;
+Keywords=uninstall;remove;reset;tbfdesk;
