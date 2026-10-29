@@ -1,6 +1,6 @@
 [package]
 name = "rustdesk"
-version = "1.4.16"
+version = "1.4.17"
 authors = ["rustdesk <info@rustdesk.com>"]
 edition = "2021"
 build= "build.rs"
@@ -128,6 +128,13 @@ winapi = { version = "0.3", features = [
     "cfgmgr32",
     "ioapiset",
     "winspool",
+    # attach_parent_console (debug runs print the log to the launching shell)
+    "wincon",
+    "processenv",
+    "fileapi",
+    "handleapi",
+    "winbase",
+    "winnt",
 ] }
 windows = { version = "0.61", features = [
     "Win32",

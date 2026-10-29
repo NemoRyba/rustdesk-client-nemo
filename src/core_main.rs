@@ -288,7 +288,23 @@ pub fn core_main() -> Option<Vec<String>> {
             log_name = name;
         }
     }
-    hbb_common::init_log(false, &log_name);
+    // TBFDesk: a debug run (RUST_LOG set) shows the log live in the shell it was started
+    // from, not only in the file. The release exe on Windows has no console of its own
+    // (windows_subsystem = "windows"), so attach the parent's first; stdout/stderr that
+    // were redirected (`> file`) are already valid and left alone.
+    let debug_run = std::env::var_os("RUST_LOG").is_some();
+    #[cfg(windows)]
+    if debug_run {
+        crate::platform::windows::attach_parent_console();
+    }
+    let log_handle = hbb_common::init_log(false, &log_name);
+    if debug_run {
+        if let Some(mut handle) = log_handle {
+            handle
+                .adapt_duplication_to_stderr(hbb_common::flexi_logger::Duplicate::All)
+                .ok();
+        }
+    }
     if let Some(m) = config_migration {
         log::info!(
             "carried {} config file(s) from {:?} to {:?}: {}",

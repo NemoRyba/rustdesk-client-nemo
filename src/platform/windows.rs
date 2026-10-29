@@ -3946,6 +3946,53 @@ pub fn try_remove_temp_update_files() {
     }
 }
 
+/// Debug runs only (RUST_LOG set, see core_main): give this GUI-subsystem process the
+/// launching shell's console, so the mirrored log and Sciter's script errors appear there
+/// instead of nowhere. Standard handles that are already valid -- redirected to a file,
+/// or a console the process already has -- are left untouched. Started from Explorer
+/// there is no parent console and this is a no-op.
+pub fn attach_parent_console() -> bool {
+    use winapi::um::{
+        fileapi::{CreateFileW, OPEN_EXISTING},
+        handleapi::INVALID_HANDLE_VALUE,
+        processenv::{GetStdHandle, SetStdHandle},
+        winbase::{STD_ERROR_HANDLE, STD_OUTPUT_HANDLE},
+        wincon::{AttachConsole, ATTACH_PARENT_PROCESS},
+        winnt::{FILE_SHARE_READ, FILE_SHARE_WRITE, GENERIC_READ, GENERIC_WRITE, HANDLE},
+    };
+    let usable = |h: HANDLE| !h.is_null() && h != INVALID_HANDLE_VALUE;
+    unsafe {
+        let out_ok = usable(GetStdHandle(STD_OUTPUT_HANDLE));
+        let err_ok = usable(GetStdHandle(STD_ERROR_HANDLE));
+        if out_ok && err_ok {
+            return true;
+        }
+        if AttachConsole(ATTACH_PARENT_PROCESS) == 0 {
+            return false;
+        }
+        let name: Vec<u16> = "CONOUT$\0".encode_utf16().collect();
+        let con = CreateFileW(
+            name.as_ptr(),
+            GENERIC_READ | GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            std::ptr::null_mut(),
+            OPEN_EXISTING,
+            0,
+            std::ptr::null_mut(),
+        );
+        if !usable(con) {
+            return false;
+        }
+        if !out_ok {
+            SetStdHandle(STD_OUTPUT_HANDLE, con);
+        }
+        if !err_ok {
+            SetStdHandle(STD_ERROR_HANDLE, con);
+        }
+        true
+    }
+}
+
 #[inline]
 pub fn try_kill_broker() {
     allow_err!(std::process::Command::new("cmd")

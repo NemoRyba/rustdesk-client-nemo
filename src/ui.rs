@@ -1507,6 +1507,39 @@ impl sciter::host::HostHandler for UIHostHandler {
     fn on_graphics_critical_failure(&mut self) {
         log::error!("Critical rendering error: e.g. DirectX gfx driver error. Most probably bad gfx drivers.");
     }
+
+    // TBFDesk: sciter-rs's default prints script errors and `stdout.println` to the
+    // process's stdout/stderr, which the release exe (windows_subsystem = "windows") does
+    // not have -- so a TIScript failure left no trace anywhere. The "Bad parse code" that
+    // silently killed the main window's "..." menu and status polling was invisible in
+    // the log for exactly this reason. Log it too, and keep the console output for runs
+    // that have one (a debug run attaches the parent console, see core_main).
+    fn on_debug_output(
+        &mut self,
+        subsystem: sciter::types::OUTPUT_SUBSYTEMS,
+        severity: sciter::types::OUTPUT_SEVERITY,
+        message: &str,
+    ) {
+        use sciter::types::OUTPUT_SEVERITY;
+        let message = message.trim_end();
+        if message.is_empty() {
+            return;
+        }
+        match severity {
+            OUTPUT_SEVERITY::ERROR => log::error!("sciter {:?}: {}", subsystem, message),
+            OUTPUT_SEVERITY::WARNING => log::warn!("sciter {:?}: {}", subsystem, message),
+            OUTPUT_SEVERITY::INFO => log::info!("sciter {:?}: {}", subsystem, message),
+        }
+        // A debug run (RUST_LOG set) already mirrors the log to stderr; printing the raw
+        // line as well would show every script message twice.
+        if std::env::var_os("RUST_LOG").is_none() {
+            if severity == OUTPUT_SEVERITY::INFO {
+                println!("{:?}:{:?}: {}", severity, subsystem, message);
+            } else {
+                eprintln!("{:?}:{:?}: {}", severity, subsystem, message);
+            }
+        }
+    }
 }
 
 #[cfg(not(target_os = "linux"))]

@@ -71,16 +71,15 @@
             background: #c8c8c8;
         }
     </style>
-    <script type="text/tiscript">
-            include "common.tis";
-            include "msgbox.tis";
-            include "remote.tis";
-            include "file_transfer.tis";
-            include "port_forward.tis";
-            include "grid.tis";
-            include "header.tis";
-            include "printer.tis";
-        </script>
+    <!-- One script element per file: see index.html (per-block TIScript limit in the inline build). -->
+    <script type="text/tiscript">include "common.tis";</script>
+    <script type="text/tiscript">include "msgbox.tis";</script>
+    <script type="text/tiscript">include "remote.tis";</script>
+    <script type="text/tiscript">include "file_transfer.tis";</script>
+    <script type="text/tiscript">include "port_forward.tis";</script>
+    <script type="text/tiscript">include "grid.tis";</script>
+    <script type="text/tiscript">include "header.tis";</script>
+    <script type="text/tiscript">include "printer.tis";</script>
 </head>
 <header>
     <div.window-icon role="window-icon">

@@ -5,12 +5,16 @@
         @import url(common.css);
         @import url(index.css);
     </style>
-    <script type="text/tiscript">
-            include "common.tis";
-            include "msgbox.tis";
-            include "ab.tis";
-            include "index.tis";
-        </script>
+    <!-- One script element per file, on purpose. The inline (release) build pastes each
+         include into its block (res/inline-sciter.py), and Sciter's TIScript parser has
+         a per-block limit: with all four files in ONE block, index.tis outgrew it and
+         everything after ~line 2707 failed with "Bad parse code": the dead "..." menu,
+         no status polling ("Generating ID" forever). Separate blocks share the global
+         namespace exactly like include, so source and inline builds behave the same. -->
+    <script type="text/tiscript">include "common.tis";</script>
+    <script type="text/tiscript">include "msgbox.tis";</script>
+    <script type="text/tiscript">include "ab.tis";</script>
+    <script type="text/tiscript">include "index.tis";</script>
 </head>
 
 <body>
