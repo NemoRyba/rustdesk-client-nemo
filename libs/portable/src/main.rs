@@ -193,11 +193,20 @@ fn main() {
     let quick_support = false;
 
     let mut ui = false;
+    let silent_install = args.contains(&"--silent-install".to_owned());
+    // TBFDesk: an unattended install reports back. Borrow the launching console so the
+    // client's report (and `--import-setup -` on stdin) gets through, then WAIT for the
+    // client and exit with its code -- deployment tools (GPO, Intune, PDQ) read the
+    // installer's exit code, which used to say "started" and nothing about the result.
+    #[cfg(windows)]
+    if silent_install {
+        win::attach_parent_console();
+    }
     let reader = BinaryReader::default();
     if let Some(exe) = setup(
         reader,
         None,
-        click_setup || args.contains(&"--silent-install".to_owned()),
+        click_setup || silent_install,
         &args,
         &mut ui,
     ) {
@@ -206,13 +215,87 @@ fn main() {
         } else if quick_support {
             args = vec!["--quick_support".to_owned()];
         }
+        if silent_install {
+            std::process::exit(execute_and_wait(exe, args));
+        }
         execute(exe, args, ui);
+    }
+}
+
+/// `--silent-install`: run the client with this process's stdio and return its exit code.
+/// (No CREATE_NO_WINDOW: the client is a GUI-subsystem exe, so no window appears anyway,
+/// and the flag would detach it from the console whose handles it inherits.)
+fn execute_and_wait(path: PathBuf, args: Vec<String>) -> i32 {
+    let exe = std::env::current_exe().unwrap_or_default();
+    let exe_name = exe.file_name().unwrap_or_default();
+    let mut cmd = Command::new(path);
+    cmd.args(args)
+        .env(APPNAME_RUNTIME_ENV_KEY, exe_name)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
+    match cmd.status() {
+        Ok(status) => status.code().unwrap_or(1),
+        Err(err) => {
+            eprintln!("could not start the installer payload: {err}");
+            1
+        }
     }
 }
 
 #[cfg(windows)]
 mod win {
     use std::{fs, os::windows::process::CommandExt, path::Path, process::Command};
+
+    /// `--silent-install`: take the launching console (when there is one and stdout/stderr
+    /// were not redirected), so the client this installer starts inherits it and its report
+    /// is visible. Same logic as the client's platform::windows::attach_parent_console.
+    pub fn attach_parent_console() {
+        use winapi::um::{
+            fileapi::{CreateFileW, OPEN_EXISTING},
+            handleapi::INVALID_HANDLE_VALUE,
+            processenv::{GetStdHandle, SetStdHandle},
+            winbase::{STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE},
+            wincon::{AttachConsole, ATTACH_PARENT_PROCESS},
+            winnt::{FILE_SHARE_READ, FILE_SHARE_WRITE, GENERIC_READ, GENERIC_WRITE, HANDLE},
+        };
+        let usable = |h: HANDLE| !h.is_null() && h != INVALID_HANDLE_VALUE;
+        unsafe {
+            let out_ok = usable(GetStdHandle(STD_OUTPUT_HANDLE));
+            let err_ok = usable(GetStdHandle(STD_ERROR_HANDLE));
+            let in_ok = usable(GetStdHandle(STD_INPUT_HANDLE));
+            if (out_ok && err_ok && in_ok) || AttachConsole(ATTACH_PARENT_PROCESS) == 0 {
+                return;
+            }
+            let open = |name: &str| {
+                let wide: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
+                CreateFileW(
+                    wide.as_ptr(),
+                    GENERIC_READ | GENERIC_WRITE,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE,
+                    std::ptr::null_mut(),
+                    OPEN_EXISTING,
+                    0,
+                    std::ptr::null_mut(),
+                )
+            };
+            let con_out = open("CONOUT$");
+            if usable(con_out) {
+                if !out_ok {
+                    SetStdHandle(STD_OUTPUT_HANDLE, con_out);
+                }
+                if !err_ok {
+                    SetStdHandle(STD_ERROR_HANDLE, con_out);
+                }
+            }
+            if !in_ok {
+                let con_in = open("CONIN$");
+                if usable(con_in) {
+                    SetStdHandle(STD_INPUT_HANDLE, con_in);
+                }
+            }
+        }
+    }
 
     // Used for privacy mode(magnifier impl).
     pub const RUNTIME_BROKER_EXE: &'static str = "C:\\Windows\\System32\\RuntimeBroker.exe";

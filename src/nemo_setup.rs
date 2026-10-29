@@ -339,16 +339,81 @@ pub fn apply_setup(bundle: &SetupBundle) -> SetupOutcome {
 
 /// Import from a string or a file path, for `--import-setup` and the UI's file picker.
 pub fn import_setup(arg: &str) -> ResultType<SetupOutcome> {
-    let arg = arg.trim();
-    // A path is the common case for the CLI (the dashboard's download), a string for a
-    // paste. Deciding by "does this file exist" rather than by shape keeps a path that
-    // happens to look like base64 working.
-    let text = match std::fs::read_to_string(arg) {
-        Ok(text) => text,
-        Err(_) => arg.to_owned(),
-    };
-    let bundle = parse_setup(&text)?;
+    let bundle = parse_setup(&read_setup_arg(arg)?)?;
     Ok(apply_setup(&bundle))
+}
+
+/// The text behind one `--import-setup` value: `-` reads standard input (a piped string or
+/// file), an existing file is read (the dashboard's `.tbfsetup` download), anything else is
+/// the string itself. Deciding by "does this file exist" rather than by shape keeps a path
+/// that happens to look like base64 working.
+pub fn read_setup_arg(arg: &str) -> ResultType<String> {
+    let arg = arg.trim();
+    if arg == "-" {
+        let mut text = String::new();
+        std::io::Read::read_to_string(&mut std::io::stdin(), &mut text)?;
+        if text.trim().is_empty() {
+            hbb_common::bail!("--import-setup -: nothing arrived on standard input");
+        }
+        return Ok(text);
+    }
+    Ok(std::fs::read_to_string(arg).unwrap_or_else(|_| arg.to_owned()))
+}
+
+/// Every value given to `--import-setup` in an argument list, in order. Repeatable, so a
+/// setup string and a separately handed-out bare device key can go in one call.
+pub fn import_setup_values(args: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        if a == "--import-setup" {
+            if let Some(v) = it.next() {
+                if !v.trim().is_empty() {
+                    out.push(v.clone());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The options a bundle provisions, WITHOUT writing them anywhere -- for pushing straight
+/// into the running service (unattended install). Same keys as apply_setup; empty values are
+/// left out (an empty relay means "the server's own", which apply_setup leaves untouched
+/// too), the override marker rides along, and the device key comes last.
+pub fn setup_option_values(bundle: &SetupBundle) -> Vec<(String, String)> {
+    let s = &bundle.server;
+    let mut values: Vec<(String, String)> = Vec::new();
+    let mut add = |key: &str, value: &str| {
+        let value = value.trim();
+        if !value.is_empty() {
+            values.push((key.to_owned(), value.to_owned()));
+        }
+    };
+    add("custom-rendezvous-server", &s.id_server);
+    add("api-server", &s.api_server);
+    add("nemo-management-server", &s.api_server);
+    add("key", &s.key);
+    add("nemo-management-public-key", &s.key);
+    add("relay-server", &s.relay_server);
+    add("nemo-api-cert-fingerprint", &s.api_cert_fingerprint);
+    add(OPTION_MANAGEMENT_ENABLED, "Y");
+    add(OPTION_SETUP_OVERRIDES_EXE, "Y");
+    add("nemo-device-key", &bundle.device_key);
+    values
+}
+
+/// The options behind one piece of provisioning text: a setup string/bundle, or a bare
+/// device key (what the import dialog also accepts).
+pub fn provisioning_values(text: &str) -> ResultType<Vec<(String, String)>> {
+    let text = text.trim();
+    if looks_like_setup(text) {
+        return Ok(setup_option_values(&parse_setup(text)?));
+    }
+    if crate::common::nemo_device_key_candidate_valid(text) {
+        return Ok(vec![("nemo-device-key".to_owned(), text.to_owned())]);
+    }
+    hbb_common::bail!("neither a TBFDesk setup string nor a device key")
 }
 
 #[cfg(test)]
@@ -510,5 +575,86 @@ mod tests {
         assert_eq!(parse_setup(&wrapped).unwrap().server.key, key);
         // And the raw JSON, for a hand-edited or re-serialized file.
         assert_eq!(parse_setup(&json).unwrap().server.key, key);
+    }
+}
+
+// Unattended provisioning (`--silent-install --import-setup`, `--import-setup` on an
+// installed client): the values are computed without writing anything and pushed into the
+// running service.
+#[cfg(test)]
+mod unattended_tests {
+    use super::*;
+    use crate::common::encode64;
+    use hbb_common::sodiumoxide::crypto::sign;
+
+    fn device_key() -> String {
+        let (_, sk) = sign::gen_keypair();
+        encode64(sk.as_ref())
+    }
+
+    fn bundle_string(relay: &str, dk: &str) -> String {
+        let (pk, _) = sign::gen_keypair();
+        let json = serde_json::json!({
+            "v": 1, "scope": "internal",
+            "server": {"id_server": "10.0.0.5", "relay_server": relay, "api_server": "https://10.0.0.5:21121",
+                       "key": encode64(pk.as_ref()), "api_cert_fingerprint": "AB:CD"},
+            "device_key": dk,
+        });
+        format!("{}{}", SETUP_PREFIX, encode64(json.to_string().as_bytes()))
+    }
+
+    fn strs(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn import_setup_values_collects_every_value_in_order() {
+        let a = strs(&["--silent-install", "--import-setup", "pc1.tbfsetup", "--debug", "--import-setup", "-"]);
+        assert_eq!(import_setup_values(&a), ["pc1.tbfsetup", "-"]);
+        assert!(import_setup_values(&strs(&["--silent-install"])).is_empty());
+        assert!(import_setup_values(&strs(&["--import-setup"])).is_empty(), "flag without a value");
+        assert!(import_setup_values(&strs(&["--import-setup", "  "])).is_empty(), "blank value");
+    }
+
+    #[test]
+    fn setup_option_values_match_what_the_gui_import_provisions() {
+        let dk = device_key();
+        let values = setup_option_values(&parse_setup(&bundle_string("", &dk)).unwrap());
+        let keys: Vec<&str> = values.iter().map(|(k, _)| k.as_str()).collect();
+        // The GUI re-sends APPLIED_OPTION_KEYS (+ the override marker); the unattended path
+        // must provision the same set, or the two would configure machines differently.
+        for k in &keys {
+            assert!(APPLIED_OPTION_KEYS.contains(k) || *k == OPTION_SETUP_OVERRIDES_EXE, "{k} not in APPLIED_OPTION_KEYS");
+        }
+        assert!(!keys.contains(&"relay-server"), "an empty relay leaves the existing one alone");
+        assert_eq!(values.last().unwrap(), &("nemo-device-key".to_owned(), dk), "device key last");
+        let get = |k: &str| values.iter().find(|(kk, _)| kk == k).map(|(_, v)| v.as_str());
+        assert_eq!(get("custom-rendezvous-server"), Some("10.0.0.5"));
+        assert_eq!(get("nemo-management-server"), Some("https://10.0.0.5:21121"));
+        assert_eq!(get(OPTION_MANAGEMENT_ENABLED), Some("Y"));
+        assert_eq!(get(OPTION_SETUP_OVERRIDES_EXE), Some("Y"));
+        let with_relay = setup_option_values(&parse_setup(&bundle_string("10.0.0.5:21117", "")).unwrap());
+        assert!(with_relay.iter().any(|(k, v)| k == "relay-server" && v == "10.0.0.5:21117"));
+        assert!(!with_relay.iter().any(|(k, _)| k == "nemo-device-key"), "no device key in the bundle, none pushed");
+    }
+
+    #[test]
+    fn provisioning_values_take_a_bundle_or_a_bare_device_key_and_refuse_the_rest() {
+        let dk = device_key();
+        assert_eq!(provisioning_values(&dk).unwrap(), vec![("nemo-device-key".to_owned(), dk.clone())]);
+        assert!(provisioning_values(&bundle_string("", &dk)).unwrap().len() >= 8);
+        assert!(provisioning_values("not a key").is_err());
+        assert!(provisioning_values(&bundle_string("", "")[..30]).is_err(), "a truncated paste is refused");
+    }
+
+    #[test]
+    fn read_setup_arg_reads_a_file_or_takes_the_string() {
+        let dir = std::env::temp_dir().join(format!("tbf-setup-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("pc1.tbfsetup");
+        std::fs::write(&f, "tbfdesk-setup-v1:abc\n").unwrap();
+        assert_eq!(read_setup_arg(f.to_str().unwrap()).unwrap().trim(), "tbfdesk-setup-v1:abc");
+        assert_eq!(read_setup_arg("  tbfdesk-setup-v1:inline  ").unwrap(), "tbfdesk-setup-v1:inline");
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
