@@ -89,9 +89,25 @@ Three routes, all landing in the same code (`src/nemo_setup.rs`):
 2. **Load from file…** in that dialog — pick the `.tbfsetup` downloaded from the
    dashboard. Nothing to paste at all, which is also the route to use if the clipboard
    is unavailable (an RDP session without clipboard redirection, a locked-down desktop).
-3. **Unattended:** `tbfdesk --import-setup <file|string>`. Runs before any UI exists and
-   prints what it changed. Under `sudo` it writes the *user's* config, not root's. No IPC
-   push is needed or possible here — the service reads the config when it starts.
+3. **Unattended:** `tbfdesk --import-setup <file|->` — `-` reads standard input, and the
+   flag is repeatable (a setup string plus a separately handed-out device key). Runs before
+   any UI exists and prints what it changed; the device key only as `device key: imported`.
+   - **An installed Windows client (1.4.19+)** is configured through its **service**, the
+     process that takes incoming sessions: fetch its config over IPC, merge, send, read back.
+     Exit 0 done, 1 failed, 2 a value was refused (nothing written). Before 1.4.19 this wrote
+     the console user's config, which the service never read.
+   - **Install and provision in one call:** `<installer>.exe --silent-install --import-setup
+     <file|->` validates every value first (exit 2, nothing installed), installs, then hands each
+     setup text over stdin to the installed `TBFDesk.exe --import-setup -` — the service's IPC
+     accepts only its own executable, so the installer's temporary copy cannot write it. The
+     packer passes the output and the exit code through. PowerShell and cmd recipes: the
+     superproject's `DEPLOY.md` §4.
+   - **Anywhere else** (Linux — where the command is `rustdesk` — or a client that is not
+     installed) it writes the config directly. Under `sudo` it writes the *user's* config, not
+     root's. No IPC push is needed or possible here — the service reads the config when it
+     starts.
+   - The setup string itself as the argument still works but warns: it carries the device key,
+     and every process on the machine can read another's command line (H26). Use a file or `-`.
 
 A bundle with no device key in it does **not** clear a key the machine already has, and
 the device key is written last — a failure anywhere leaves the machine un-keyed rather
@@ -112,7 +128,7 @@ miss:
 
 | Path | Whose |
 |---|---|
-| `%APPDATA%\TBFDesk\config\` | the signed-in user's client |
+| `%APPDATA%\TBFDesk\config\` | the signed-in user's client — which, once the window, tray or connection manager has run, also holds a copy of the service's config, **device key and keypair included** (superproject OPEN-TODOS #48; on a roaming profile that copy reaches the profile server) |
 | `C:\Windows\ServiceProfiles\LocalService\AppData\Roaming\TBFDesk\config\` | the **service** (`--server`), which keeps its own copy and syncs over IPC |
 
 In each: `TBFDesk.toml` (ID, keypair, permanent password), `TBFDesk2.toml` (**every**
@@ -126,7 +142,9 @@ certificate pin), `TBFDesk_local.toml` (local state incl. the login token),
 first start migrates a RustDesk-named config into the new location (RENAMING-PLAN Layer 2
 — the copy is deliberate, it is the rollback path). That means **clearing only the TBFDesk
 directories does not reset the machine**: the next start migrates the old identity straight
-back in. Clear all four, which is what the script below does.
+back in. Clear all four, which is what the script below does. The uninstaller
+(`res/uninstall/tbfdesk-uninstall.ps1`) does too since 1.4.19 — before, it removed only the
+TBFDesk directories, so an uninstall + reinstall came back with the old identity.
 
 ### Reset the settings, keep the install
 
