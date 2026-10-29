@@ -471,11 +471,7 @@ pub fn core_main() -> Option<Vec<String>> {
                     std::process::exit(1);
                 }
                 if !setup_texts.is_empty() {
-                    // The service was installed a moment ago and may still be starting.
-                    std::process::exit(nemo_provision_service(
-                        &setup_texts,
-                        std::time::Duration::from_secs(120),
-                    ));
+                    std::process::exit(nemo_provision_via_installed_exe(&setup_texts));
                 }
                 return None;
             } else if args[0] == "--uninstall-cert" {
@@ -758,7 +754,13 @@ pub fn core_main() -> Option<Vec<String>> {
                         }
                     }
                 }
-                std::process::exit(nemo_provision_service(&texts, std::time::Duration::from_secs(30)));
+                // A just-installed service may still be starting: the installer asks for
+                // a longer wait (nemo_provision_via_installed_exe).
+                let wait = std::env::var("TBFDESK_PROVISION_WAIT_SECS")
+                    .ok()
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .unwrap_or(30);
+                std::process::exit(nemo_provision_service(&texts, std::time::Duration::from_secs(wait)));
             }
             let mut failed = false;
             for arg in &values {
@@ -1335,6 +1337,49 @@ fn nemo_provision_service(texts: &[String], wait: std::time::Duration) -> i32 {
             1
         }
     }
+}
+
+/// `--silent-install --import-setup`: this process is the installer's TEMPORARY copy, and
+/// the service only talks to its own executable (ipc/auth.rs rejects an executable
+/// mismatch, deliberately). So the provisioning is handed to the binary that was just
+/// installed -- each setup text on its STDIN, never on its command line, where any local
+/// user could read the device key from the process list. Its report goes to our stdout;
+/// its exit code is ours.
+#[cfg(windows)]
+fn nemo_provision_via_installed_exe(texts: &[String]) -> i32 {
+    use std::io::Write;
+    let exe = crate::platform::windows::get_install_info().3;
+    if !std::path::Path::new(&exe).exists() {
+        println!("NOT provisioned: the installed client was not found at {}", exe);
+        return 1;
+    }
+    for (i, text) in texts.iter().enumerate() {
+        let mut child = match std::process::Command::new(&exe)
+            .args(["--import-setup", "-"])
+            .env("TBFDESK_PROVISION_WAIT_SECS", "120")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::inherit())
+            .spawn()
+        {
+            Ok(child) => child,
+            Err(err) => {
+                println!("NOT provisioned: could not start {}: {}", exe, err);
+                return 1;
+            }
+        };
+        if let Some(mut stdin) = child.stdin.take() {
+            if let Err(err) = stdin.write_all(text.as_bytes()) {
+                println!("NOT provisioned: --import-setup #{}: {}", i + 1, err);
+                return 1;
+            }
+        } // dropped here: EOF for the reader
+        let code = child.wait().ok().and_then(|s| s.code()).unwrap_or(1);
+        if code != 0 {
+            return code;
+        }
+    }
+    0
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos", test))]
