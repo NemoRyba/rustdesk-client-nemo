@@ -357,7 +357,16 @@ pub fn read_setup_arg(arg: &str) -> ResultType<String> {
         }
         return Ok(text);
     }
-    Ok(std::fs::read_to_string(arg).unwrap_or_else(|_| arg.to_owned()))
+    if let Ok(text) = std::fs::read_to_string(arg) {
+        return Ok(text);
+    }
+    // H26: the value usually carries the device key, and argv is visible to every process
+    // on the machine. Still accepted (runbooks use it), but never quietly.
+    eprintln!(
+        "warning: --import-setup with the setup string itself on the command line exposes \
+         the device key in the process list and shell history; use a file or `-` (stdin)"
+    );
+    Ok(arg.to_owned())
 }
 
 /// Every value given to `--import-setup` in an argument list, in order. Repeatable, so a

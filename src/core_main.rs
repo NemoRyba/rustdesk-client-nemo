@@ -56,14 +56,23 @@ CONFIGURATION
     --option <key> [value] [--force]  read or write a config option
     --config <path|host=..,key=..>  import a configuration
     --import-config <path>        import a configuration file
-    --import-setup <path|string>  import a TBFDesk setup string: the device key AND
+    --import-setup <path|->       import a TBFDesk setup string: the device key AND
                                   the server settings, in one value from the
                                   dashboard. Everything a fresh client needs.
+                                  `-` reads it from standard input. Repeatable (a
+                                  setup string plus a separate bare device key).
+                                  On an installed Windows client it configures the
+                                  SERVICE. A literal string also works, but warns.
 
     Most CONFIGURATION and SERVICE commands require an installed client and
     administrative privileges.
 
 SERVICE / INSTALLATION (platform dependent, may need privileges)
+    <installer>.exe --silent-install [--import-setup <path|->]...
+                                  install unattended and, with --import-setup, provision
+                                  the service in the same call -- no GUI. Exit 0 done,
+                                  1 install/provisioning failed, 2 bad setup value
+                                  (nothing installed).
     --install, --silent-install, --uninstall
     --install-service, --uninstall-service
     --server, --service, --tray, --cm
@@ -75,8 +84,8 @@ SECURITY NOTE
     --password-stdin or --password-file; the positional form still works but warns.
 
     --option will not print or accept a private key (nemo-device-key); use the
-    client's "Import device key" dialog. Options that decide which keys this client
-    trusts need an explicit --force.
+    client's "Import device key" dialog or --import-setup <path|->. Options that
+    decide which keys this client trusts need an explicit --force.
 "#,
         crate::VERSION,
         crate::BUILD_DATE
