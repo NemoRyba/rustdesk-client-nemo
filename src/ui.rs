@@ -1622,3 +1622,86 @@ mod nemo_h25_tests {
         assert_eq!(rest, vec!["--relay".to_owned()]);
     }
 }
+
+// Regression guards for the 1.4.16 Windows-release bugs (fixed in 1.4.17). They read the
+// UI sources as files, so they run in every `cargo test` without Sciter or a display; the
+// real parse check against libsciter lives in the test suite (tests/gui/sciter_parse.sh).
+#[cfg(test)]
+mod ui_release_regression_tests {
+    use std::path::PathBuf;
+
+    fn ui_dir() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/ui")
+    }
+
+    fn read(rel: &str) -> String {
+        std::fs::read_to_string(ui_dir().join(rel)).unwrap_or_else(|e| panic!("{rel}: {e}"))
+    }
+
+    /// (script blocks, includes per block) of an HTML page.
+    fn script_blocks(html: &str) -> Vec<Vec<String>> {
+        const OPEN: &str = "<script type=\"text/tiscript\">";
+        let mut out = Vec::new();
+        let mut rest = html;
+        while let Some(start) = rest.find(OPEN) {
+            let after = &rest[start..];
+            let end = after.find("</script>").expect("unterminated <script>");
+            let block = &after[OPEN.len()..end];
+            let includes = block
+                .lines()
+                .flat_map(|l| l.split(';'))
+                .filter_map(|s| s.trim().strip_prefix("include \""))
+                .map(|s| s.trim_end_matches('"').to_owned())
+                .collect();
+            out.push(includes);
+            rest = &after[end..];
+        }
+        out
+    }
+
+    // The release (inline) build pastes each include into its script block. With all of
+    // index.html's files in ONE block, index.tis outgrew Sciter's per-block parse limit
+    // and everything after ~line 2707 never loaded: the dead "..." menu and the status
+    // polling ("Generating ID" / "Connecting" forever). One file per block, always.
+    #[test]
+    fn every_multi_file_page_loads_one_file_per_script_block() {
+        for page in ["index.html", "remote.html"] {
+            let blocks = script_blocks(&read(page));
+            assert!(blocks.len() > 1, "{page}: expected one script block per file, got {}", blocks.len());
+            for (i, includes) in blocks.iter().enumerate() {
+                assert_eq!(includes.len(), 1, "{page}: script block {i} includes {includes:?} -- split it");
+            }
+        }
+        let index: Vec<String> = script_blocks(&read("index.html")).into_iter().flatten().collect();
+        assert_eq!(index, ["common.tis", "msgbox.tis", "ab.tis", "index.tis"], "include order is load order");
+    }
+
+    // Early warning, well below the size that broke 1.4.16 (index.tis alone loads fine at
+    // ~162k chars; the combined block failed past ~221k). Growing past this means a file
+    // has to be split before the release build silently stops loading its tail.
+    #[test]
+    fn no_ui_script_approaches_the_per_block_limit() {
+        const WARN_AT: usize = 190_000;
+        for entry in std::fs::read_dir(ui_dir()).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|e| e.to_str()) == Some("tis") {
+                let len = std::fs::read_to_string(&path).unwrap().chars().count();
+                assert!(len < WARN_AT, "{}: {len} chars -- split it before it hits Sciter's per-block limit", path.display());
+            }
+        }
+    }
+
+    // res/inline-sciter.py read the .tis/.html with Python's platform default encoding --
+    // cp1252 on the Windows build host -- so every non-ASCII literal became mojibake
+    // ("Einstellungen â€¦") in the Windows release only.
+    #[test]
+    fn inline_generator_reads_every_file_as_utf8() {
+        let py = std::fs::read_to_string(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("res/inline-sciter.py")).unwrap();
+        for (n, line) in py.lines().enumerate() {
+            if line.contains("open(") && !line.contains("'wt'") && !line.trim_start().starts_with('#') {
+                assert!(line.contains("encoding='utf-8'"), "res/inline-sciter.py:{}: open() without encoding='utf-8': {line}", n + 1);
+            }
+        }
+        assert!(read("index.tis").contains('\u{2026}'), "fixture: index.tis should contain a non-ASCII literal (\u{2026})");
+    }
+}

@@ -2878,6 +2878,38 @@ pub fn nemo_device_sign(domain: &str, id: &str) -> (String, String) {
     (encode64(pk.as_ref()), encode64(&signed))
 }
 
+// #43: sign a policy report so the server can bind its EXACT bytes to this machine's
+// device key: attached Ed25519 over "nemo-policy-report:{id}:{ts}:{sha256hex(report)}".
+// A separate signature (rather than extending "nemo-poll") keeps the poll proof exactly
+// what older servers verify. Empty when no device key is imported.
+pub fn nemo_device_sign_report(id: &str, report: &str) -> String {
+    let Some((_, sk)) = nemo_device_ed25519() else {
+        return String::new();
+    };
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    nemo_sign_policy_report_with(&sk, id, ts, report)
+}
+
+/// Pure half of `nemo_device_sign_report` (key and time passed in), for the unit tests.
+pub fn nemo_sign_policy_report_with(
+    sk: &hbb_common::sodiumoxide::crypto::sign::SecretKey,
+    id: &str,
+    ts: u64,
+    report: &str,
+) -> String {
+    use hbb_common::sodiumoxide::crypto::{hash::sha256, sign};
+    let digest: String = sha256::hash(report.as_bytes())
+        .0
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let msg = format!("nemo-policy-report:{id}:{ts}:{digest}");
+    encode64(&sign::sign(msg.as_bytes(), sk))
+}
+
 // S-B/S-DUALKEY step 3: open a server response sealed to our device key with a NaCl
 // sealedbox (Ed25519 -> Curve25519). Returns the plaintext, or None on any failure.
 pub fn nemo_unseal_with_device_key(sealed_b64: &str) -> Option<Vec<u8>> {
