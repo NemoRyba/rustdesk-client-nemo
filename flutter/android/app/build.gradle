@@ -82,7 +82,9 @@ protobuf {
 }
 
 android {
-    compileSdkVersion 34
+    // TBFDesk: SDK levels in ../gradle.properties (operator decision: Android 17 = API 37
+    // is the minimum and the test device, Pixel 7a).
+    compileSdkVersion project.property('tbfdesk.compileSdk').toInteger()
     sourceSets {
         main.java.srcDirs += 'src/main/kotlin'
 
@@ -99,8 +101,8 @@ android {
         // Set in ../gradle.properties (`tbfdesk.applicationId`) -- read the note there
         // before changing it. The code package (manifest `package`) stays com.carriez.flutter_hbb.
         applicationId project.property('tbfdesk.applicationId')
-        minSdkVersion 22
-        targetSdkVersion 33
+        minSdkVersion project.property('tbfdesk.minSdk').toInteger()
+        targetSdkVersion project.property('tbfdesk.targetSdk').toInteger()
         versionCode flutterVersionCode.toInteger()
         versionName flutterVersionName
     }
