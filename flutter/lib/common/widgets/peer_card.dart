@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:bot_toast/bot_toast.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -24,6 +26,69 @@ enum PeerUiType { grid, tile, list }
 final peerCardUiType = PeerUiType.grid.obs;
 
 bool? hideUsernameOnCard;
+
+// TBFDesk: B6 - IDs the signed policy published a direct (no-relay) endpoint for.
+// Polled every 3 s; the "Direct" chips depend on it, so they follow policy changes.
+final RxString nemoDirectIds = ''.obs;
+Timer? _nemoDirectIdsTimer;
+
+String _nemoReadDirectIds() {
+  try {
+    return bind.mainNemoDirectIds();
+  } catch (_) {
+    return '';
+  }
+}
+
+void _nemoEnsureDirectIdsPoll() {
+  if (_nemoDirectIdsTimer != null) return;
+  nemoDirectIds.value = _nemoReadDirectIds();
+  _nemoDirectIdsTimer = Timer.periodic(const Duration(seconds: 3), (_) {
+    nemoDirectIds.value = _nemoReadDirectIds();
+  });
+}
+
+/// TBFDesk: "host:port" the server published for direct access to [id], or "".
+String nemoDirectEndpoint(String id) {
+  try {
+    return bind.mainNemoDirectEndpoint(id: id).trim();
+  } catch (_) {
+    return '';
+  }
+}
+
+/// TBFDesk: B6 - green "⚡ Direct" chip, shown only when [id] has an endpoint.
+Widget nemoDirectChip(String id) {
+  _nemoEnsureDirectIdsPoll();
+  return Obx(() {
+    nemoDirectIds.value; // rebuild when the published set changes
+    final ep = nemoDirectEndpoint(id);
+    if (ep.isEmpty) return const SizedBox.shrink();
+    final tip =
+        '${translate('Direct access possible')} — $ep. ${translate('Right-click for a direct-only connection.')}';
+    return Tooltip(
+      message: tip,
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(3, 1, 6, 1),
+        decoration: BoxDecoration(
+          color: const Color(0xFF1A7A34),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.bolt, size: 11, color: Colors.white),
+            Text(
+              translate('Direct'),
+              style: const TextStyle(
+                  fontSize: 10, color: Colors.white, height: 1.2),
+            ),
+          ],
+        ),
+      ),
+    ).marginOnly(left: 4);
+  });
+}
 
 class _PeerCard extends StatefulWidget {
   final Peer peer;
@@ -77,6 +142,17 @@ class _PeerCardState extends State<_PeerCard>
           }
         },
         onLongPress: () => peerTabModel.select(peer),
+        // TBFDesk: B7 - right-click opens the peer menu (as in the Sciter UI),
+        // which is where the direct-only / relay connects live.
+        onSecondaryTapDown:
+            (isDesktop || isWebDesktop) && !peerTabModel.multiSelectionMode
+                ? (e) {
+                    final x = e.globalPosition.dx;
+                    final y = e.globalPosition.dy;
+                    _menuPos = RelativeRect.fromLTRB(x, y, x, y);
+                    _showPeerMenu(peer.id);
+                  }
+                : null,
         child: child);
   }
 
@@ -208,6 +284,8 @@ class _PeerCardState extends State<_PeerCard>
                               ),
                             ),
                           ),
+                          // TBFDesk: B6
+                          nemoDirectChip(peer.id),
                           if (showNote)
                             Expanded(
                               child: Tooltip(
@@ -331,6 +409,8 @@ class _PeerCardState extends State<_PeerCard>
                                       ),
                                     ),
                                   ),
+                                  // TBFDesk: B6
+                                  nemoDirectChip(peer.id),
                                 ],
                               ),
                               if (_showNote(peer))
@@ -580,6 +660,91 @@ abstract class BasePeerCard extends StatelessWidget {
       (peer.alias.isEmpty
           ? translate('Connect')
           : '${translate('Connect')} ${peer.id}'),
+    );
+  }
+
+  // TBFDesk: B7 - "Connect directly (no relay) — host:port" (only when the server
+  // published an endpoint; one-shot, consumed by the connection attempt, no relay
+  // fallback) and "Connect via relay" (one-shot, unlike "Always connect via relay").
+  @protected
+  List<MenuEntryBase<String>> _nemoConnectActions(BuildContext context) {
+    final List<MenuEntryBase<String>> items = [];
+    if (isWeb) return items;
+    final ep = nemoDirectEndpoint(peer.id);
+    if (ep.isNotEmpty) {
+      items.add(MenuEntryButton<String>(
+        childBuilder: (TextStyle? style) => Text(
+          '${translate('Connect directly (no relay)')}  —  $ep',
+          style: style,
+        ),
+        proc: () async {
+          await bind.mainNemoSetForceDirect(id: peer.id, on: true);
+          connectInPeerTab(context, peer, tab);
+        },
+        padding: menuPadding,
+        dismissOnClicked: true,
+      ));
+    }
+    items.add(MenuEntryButton<String>(
+      childBuilder: (TextStyle? style) => Text(
+        translate('Connect via relay'),
+        style: style,
+      ),
+      proc: () {
+        connectInPeerTab(context, peer, tab, forceRelay: true);
+      },
+      padding: menuPadding,
+      dismissOnClicked: true,
+    ));
+    return items;
+  }
+
+  // TBFDesk: B7 - "Reset preferences": forget this peer's stored session prefs.
+  @protected
+  MenuEntryBase<String> _nemoResetPrefsAction(String id) {
+    return MenuEntryButton<String>(
+      childBuilder: (TextStyle? style) => Text(
+        translate('Reset preferences'),
+        style: style,
+      ),
+      proc: () {
+        gFFI.dialogManager.show((setState, close, context) {
+          submit() async {
+            close();
+            if (!await bind.mainNemoResetPeerPrefs(id: id)) {
+              gFFI.dialogManager.show((setState, close, context) {
+                return CustomAlertDialog(
+                  title: Text(translate('Error')),
+                  content: Text(translate('nemo_reset_prefs_none')),
+                  actions: [
+                    dialogButton('OK',
+                        icon: Icon(Icons.done_rounded), onPressed: close),
+                  ],
+                  onSubmit: close,
+                  onCancel: close,
+                );
+              });
+            }
+          }
+
+          return CustomAlertDialog(
+            title: Text(translate('Reset preferences')),
+            content: Text(translate('nemo_reset_prefs_tip')),
+            actions: [
+              dialogButton('Cancel',
+                  icon: Icon(Icons.close_rounded),
+                  onPressed: close,
+                  isOutline: true),
+              dialogButton('OK',
+                  icon: Icon(Icons.done_rounded), onPressed: submit),
+            ],
+            onSubmit: submit,
+            onCancel: close,
+          );
+        });
+      },
+      padding: menuPadding,
+      dismissOnClicked: true,
     );
   }
 
@@ -968,6 +1133,7 @@ class RecentPeerCard extends BasePeerCard {
       BuildContext context) async {
     final List<MenuEntryBase<String>> menuItems = [
       _connectAction(context),
+      ..._nemoConnectActions(context), // TBFDesk: B7
       _transferFileAction(context),
       _viewCameraAction(context),
       _terminalAction(context),
@@ -985,6 +1151,7 @@ class RecentPeerCard extends BasePeerCard {
     // menuItems.add(await _openNewConnInOptAction(peer.id));
     if (!isWeb) {
       menuItems.add(await _forceAlwaysRelayAction(peer.id));
+      menuItems.add(_nemoResetPrefsAction(peer.id)); // TBFDesk: B7
     }
     if (isWindows && peer.platform == kPeerPlatformWindows) {
       menuItems.add(_rdpAction(context, peer.id));
@@ -1033,6 +1200,7 @@ class FavoritePeerCard extends BasePeerCard {
       BuildContext context) async {
     final List<MenuEntryBase<String>> menuItems = [
       _connectAction(context),
+      ..._nemoConnectActions(context), // TBFDesk: B7
       _transferFileAction(context),
       _viewCameraAction(context),
       _terminalAction(context),
@@ -1048,6 +1216,7 @@ class FavoritePeerCard extends BasePeerCard {
     // menuItems.add(await _openNewConnInOptAction(peer.id));
     if (!isWeb) {
       menuItems.add(await _forceAlwaysRelayAction(peer.id));
+      menuItems.add(_nemoResetPrefsAction(peer.id)); // TBFDesk: B7
     }
     if (isWindows && peer.platform == kPeerPlatformWindows) {
       menuItems.add(_rdpAction(context, peer.id));
@@ -1093,6 +1262,7 @@ class DiscoveredPeerCard extends BasePeerCard {
       BuildContext context) async {
     final List<MenuEntryBase<String>> menuItems = [
       _connectAction(context),
+      ..._nemoConnectActions(context), // TBFDesk: B7
       _transferFileAction(context),
       _viewCameraAction(context),
       _terminalAction(context),
@@ -1110,6 +1280,7 @@ class DiscoveredPeerCard extends BasePeerCard {
     // menuItems.add(await _openNewConnInOptAction(peer.id));
     if (!isWeb) {
       menuItems.add(await _forceAlwaysRelayAction(peer.id));
+      menuItems.add(_nemoResetPrefsAction(peer.id)); // TBFDesk: B7
     }
     if (isWindows && peer.platform == kPeerPlatformWindows) {
       menuItems.add(_rdpAction(context, peer.id));
@@ -1152,6 +1323,7 @@ class AddressBookPeerCard extends BasePeerCard {
       BuildContext context) async {
     final List<MenuEntryBase<String>> menuItems = [
       _connectAction(context),
+      ..._nemoConnectActions(context), // TBFDesk: B7
       _transferFileAction(context),
       _viewCameraAction(context),
       _terminalAction(context),
@@ -1167,6 +1339,7 @@ class AddressBookPeerCard extends BasePeerCard {
     // menuItems.add(await _openNewConnInOptAction(peer.id));
     if (!isWeb) {
       menuItems.add(await _forceAlwaysRelayAction(peer.id));
+      menuItems.add(_nemoResetPrefsAction(peer.id)); // TBFDesk: B7
     }
     if (isWindows && peer.platform == kPeerPlatformWindows) {
       menuItems.add(_rdpAction(context, peer.id));
@@ -1309,6 +1482,7 @@ class MyGroupPeerCard extends BasePeerCard {
       BuildContext context) async {
     final List<MenuEntryBase<String>> menuItems = [
       _connectAction(context),
+      ..._nemoConnectActions(context), // TBFDesk: B7
       _transferFileAction(context),
       _viewCameraAction(context),
       _terminalAction(context),
@@ -1324,6 +1498,7 @@ class MyGroupPeerCard extends BasePeerCard {
     // menuItems.add(await _openNewConnInOptAction(peer.id));
     if (!isWeb) {
       menuItems.add(await _forceAlwaysRelayAction(peer.id));
+      menuItems.add(_nemoResetPrefsAction(peer.id)); // TBFDesk: B7
     }
     if (isWindows && peer.platform == kPeerPlatformWindows) {
       menuItems.add(_rdpAction(context, peer.id));
@@ -1543,7 +1718,8 @@ void connectInPeerTab(BuildContext context, Peer peer, PeerTabIndex tab,
     bool isViewCamera = false,
     bool isTcpTunneling = false,
     bool isRDP = false,
-    bool isTerminal = false}) async {
+    bool isTerminal = false,
+    bool forceRelay = false}) async {
   var password = '';
   bool isSharedPassword = false;
   if (tab == PeerTabIndex.ab) {
@@ -1577,5 +1753,6 @@ void connectInPeerTab(BuildContext context, Peer peer, PeerTabIndex tab,
       isTerminal: isTerminal,
       isViewCamera: isViewCamera,
       isTcpTunneling: isTcpTunneling,
-      isRDP: isRDP);
+      isRDP: isRDP,
+      forceRelay: forceRelay); // TBFDesk: B7 "Connect via relay"
 }

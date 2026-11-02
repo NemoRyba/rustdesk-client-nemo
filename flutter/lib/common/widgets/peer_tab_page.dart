@@ -157,10 +157,7 @@ class _PeerTabPageState extends State<PeerTabPage>
             bottom: BorderSide(width: 2, color: color!),
           ));
           counter += 1;
-          return ReorderableDragStartListener(
-              key: ValueKey(t),
-              index: counter,
-              child: Obx(() => Tooltip(
+          final tabItem = Obx(() => Tooltip(
                     preferBelow: false,
                     message: model.tabTooltip(t),
                     onTriggered: isMobile ? mobileShowTabVisibilityMenu : null,
@@ -181,8 +178,37 @@ class _PeerTabPageState extends State<PeerTabPage>
                             },
                       onHover: (value) => hover.value = value,
                     ),
-                  )));
+                  ));
+          return ReorderableDragStartListener(
+              key: ValueKey(t),
+              index: counter,
+              // TBFDesk: B3 - reload button right next to the address-book tab.
+              child: t == PeerTabIndex.ab.index
+                  ? Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [tabItem, _nemoAbReloadButton()])
+                  : tabItem);
         }).toList());
+  }
+
+  // TBFDesk: B3 - "⟳" next to the Address book tab (Sciter #nemo-refresh-ab):
+  // re-fetch the server-curated book so ACL changes show without a re-login.
+  Widget _nemoAbReloadButton() {
+    final textColor = Theme.of(context).textTheme.titleLarge?.color;
+    return Obx(() => Offstage(
+          offstage: !gFFI.userModel.isLogin,
+          child: Tooltip(
+            message: translate('Reload address book from server'),
+            child: RefreshWidget(
+                // New state when the book object changes, so it spins for the
+                // book that is actually loading.
+                key: ValueKey(gFFI.abModel.currentName.value),
+                onPressed: () => gFFI.abModel
+                    .pullAb(force: ForcePullAb.listAndCurrent, quiet: false),
+                spinning: gFFI.abModel.currentAbLoading,
+                child: Icon(Icons.refresh, size: 16, color: textColor)),
+          ),
+        ));
   }
 
   Widget _createPeersView() {
@@ -553,8 +579,7 @@ class _PeerTabPageState extends State<PeerTabPage>
     final model = Provider.of<PeerTabModel>(context);
     return [
       const PeerSearchBar().marginOnly(right: 13),
-      _createRefresh(
-          index: PeerTabIndex.ab, loading: gFFI.abModel.currentAbLoading),
+      // TBFDesk: B3 - the address-book reload sits next to its tab instead.
       _createRefresh(
           index: PeerTabIndex.group, loading: gFFI.groupModel.groupLoading),
       Offstage(
@@ -620,9 +645,7 @@ class _PeerTabPageState extends State<PeerTabPage>
     // Always show search, refresh
     List<Widget> actions = [
       const PeerSearchBar(),
-      if (model.currentTab == PeerTabIndex.ab.index)
-        _createRefresh(
-            index: PeerTabIndex.ab, loading: gFFI.abModel.currentAbLoading),
+      // TBFDesk: B3 - the address-book reload sits next to its tab instead.
       if (model.currentTab == PeerTabIndex.group.index)
         _createRefresh(
             index: PeerTabIndex.group, loading: gFFI.groupModel.groupLoading),
@@ -695,7 +718,8 @@ class _PeerSearchBarState extends State<PeerSearchBar> {
           extentOffset: peerSearchTextController.value.text.length);
     });
     return Obx(() => Container(
-          width: stateGlobal.isPortrait.isTrue ? 120 : 140,
+          // TBFDesk: B4 - wider, so "Search ID or hostname" is not cut off.
+          width: stateGlobal.isPortrait.isTrue ? 120 : 190,
           decoration: BoxDecoration(
             color: Theme.of(context).colorScheme.background,
             borderRadius: BorderRadius.circular(6),
@@ -731,7 +755,10 @@ class _PeerSearchBarState extends State<PeerSearchBar> {
                           contentPadding:
                               const EdgeInsets.symmetric(vertical: 6),
                           hintText:
-                              focused.value ? null : translate("Search ID"),
+                              // TBFDesk: B4 - the filter matches hostnames too.
+                              focused.value
+                                  ? null
+                                  : translate("Search ID or hostname"),
                           hintStyle: TextStyle(
                               fontSize: 14, color: Theme.of(context).hintColor),
                           border: InputBorder.none,

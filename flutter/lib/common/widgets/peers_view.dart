@@ -93,7 +93,10 @@ class _PeersViewState extends State<_PeersView>
     LoadEvent.recent: 'empty_recent_tip',
     LoadEvent.favorite: 'empty_favorite_tip',
     LoadEvent.lan: 'empty_lan_tip',
-    LoadEvent.addressBook: 'empty_address_book_tip',
+    // TBFDesk: B5 - the TBF book is server-curated; an empty one is an ACL
+    // question, so say what decides it (Sciter ab.tis SessionList "ab").
+    LoadEvent.addressBook:
+        "The server shared no computers with this account. Check the user's access rights in the TBFDesk dashboard (ACL & Policy), then use the reload button above.",
   });
   final space = (isDesktop || isWebDesktop) ? 12.0 : 8.0;
   final _curPeers = <String>{};
@@ -196,6 +199,15 @@ class _PeersViewState extends State<_PeersView>
                   color: Theme.of(context).tabBarTheme.labelColor,
                   size: 40,
                 ).paddingOnly(bottom: 10),
+                // TBFDesk: B5 - "Empty" heading above the address-book reason.
+                if (widget.peers.loadEvent == LoadEvent.addressBook)
+                  Text(
+                    translate('Empty'),
+                    style: TextStyle(
+                      fontSize: 18,
+                      color: Theme.of(context).tabBarTheme.labelColor,
+                    ),
+                  ).paddingOnly(bottom: 8),
                 Text(
                   translate(
                     _emptyMessages[widget.peers.loadEvent] ?? 'Empty',

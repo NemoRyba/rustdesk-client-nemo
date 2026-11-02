@@ -6,6 +6,7 @@ import 'package:dynamic_layouts/dynamic_layouts.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_hbb/common/formatter/id_formatter.dart';
 import 'package:flutter_hbb/common/hbbs/hbbs.dart';
+import 'package:flutter_hbb/common/widgets/nemo_login.dart';
 import 'package:flutter_hbb/common/widgets/peer_card.dart';
 import 'package:flutter_hbb/common/widgets/peers_view.dart';
 import 'package:flutter_hbb/consts.dart';
@@ -20,7 +21,6 @@ import 'package:flex_color_picker/flex_color_picker.dart';
 
 import '../../common.dart';
 import 'dialog.dart';
-import 'login.dart';
 
 final hideAbTagsPanel = false.obs;
 
@@ -40,9 +40,19 @@ class _AddressBookState extends State<AddressBook> {
   @override
   Widget build(BuildContext context) => Obx(() {
         if (!gFFI.userModel.isLogin) {
+          // TBFDesk: B1 - the book is per account, so say why it is empty and
+          // open the TBF sign-in form (same one the login gate uses).
           return Center(
-              child: ElevatedButton(
-                  onPressed: loginDialog, child: Text(translate("Login"))));
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 360),
+              child: Text(translate('nemo_ab_signin_tip'),
+                  textAlign: TextAlign.center),
+            ).marginOnly(bottom: 12),
+            ElevatedButton(
+                onPressed: () => showNemoLoginDialog(context),
+                child: Text(translate("Login"))),
+          ]));
         } else if (gFFI.userModel.networkError.isNotEmpty) {
           return netWorkErrorWidget();
         } else {

@@ -34,6 +34,17 @@ const _legacyAddressBookName = "Legacy address book";
 
 const kUntagged = "Untagged";
 
+// TBFDesk: the TBF server serves ONE server-curated address book per account via
+// POST /api/ab/get (optionally sealed, see LegacyAb._nemoPullAbImpl), not upstream's
+// /api/ab/personal + /api/ab/peers or the legacy GET /api/ab. With this set the model
+// always runs in "legacy" (single book) mode and pulls through the TBF endpoint.
+// The upstream code paths are kept below, unused while this is true.
+const bool kNemoTbfAb = true;
+
+// TBFDesk: A21 - global option the signed policy poll writes; the server bumps it
+// whenever an ACL change affects what this account may see.
+const String _kNemoAbVersionOption = 'nemo-ab-version';
+
 enum ForcePullAb {
   listAndCurrent,
   current,
@@ -92,8 +103,27 @@ class AbModel {
           _syncFromRecent();
         }
       });
+      // TBFDesk: A21 - re-fetch the address book when the server bumps
+      // "nemo-ab-version" (Sciter index.tis nemoEnforceLogin). Polled every 3 s
+      // while logged in; the first value seen is only recorded, not acted on.
+      Timer.periodic(const Duration(seconds: 3), (timer) {
+        if (!gFFI.userModel.isLogin) {
+          _nemoLastAbVersion = null;
+          return;
+        }
+        final abv = bind.mainGetOptionSync(key: _kNemoAbVersionOption).trim();
+        if (abv.isNotEmpty && abv != _nemoLastAbVersion) {
+          if (_nemoLastAbVersion != null) {
+            pullAb(force: ForcePullAb.listAndCurrent, quiet: false);
+          }
+          _nemoLastAbVersion = abv;
+        }
+      });
     }
   }
+
+  // TBFDesk: A21 - last observed "nemo-ab-version" (null = not observed yet).
+  String? _nemoLastAbVersion;
 
   reset() async {
     print("reset ab model");
@@ -148,7 +178,9 @@ class AbModel {
         // Read personal guid every time to avoid upgrading the server without closing the main window
         _personalAbGuid = null;
         // `true`: continue init. `false`: stop, error already recorded.
-        if (!await _getPersonalAbGuid(quiet: quiet)) {
+        // TBFDesk: the TBF server has no /api/ab/personal; leaving the guid null
+        // selects the single-book (legacy) model, whose pull uses /api/ab/get.
+        if (!kNemoTbfAb && !await _getPersonalAbGuid(quiet: quiet)) {
           return;
         }
         legacyMode.value = _personalAbGuid == null;
@@ -1006,6 +1038,8 @@ class LegacyAb extends BaseAb {
 
   @override
   Future<bool> pullAbImpl({quiet = false}) async {
+    // TBFDesk: B8 - the TBF server's sealed address-book fetch.
+    if (kNemoTbfAb) return await _nemoPullAbImpl(quiet: quiet);
     bool ret = false;
     final api = "${await bind.mainGetApiServer()}/api/ab";
     int? statusCode;
@@ -1050,6 +1084,143 @@ class LegacyAb extends BaseAb {
       }
     }
     return ret;
+  }
+
+  // TBFDesk: B8 - port of Sciter ab.tis getAb().
+  //
+  // Request: POST <api>/api/ab/get. Body = nemo_ab_seal_fields(myId), i.e. `{}`
+  // without a device key, else {sealed: "v1", id, device_key_pub, device_key_sig}
+  // (asks the server to seal the book to our device key). With the
+  // "nemo-sealed-request" option on, the whole body plus `access_token` is sealed to
+  // the management key and sent as {sealed_request: <envelope>} with NO
+  // Authorization header; if sealing is impossible ("") the plaintext body goes out
+  // with the usual Bearer header and without the token in the body.
+  //
+  // Response: {error} | {data: "<ab json>", updated_at} |
+  // {sealed_data: "<b64>"}, where the (unsealed) ab json is
+  // {tags: [..], peers: [{id, username, hostname, platform, alias, tags, ...}],
+  // tag_colors?: "<json>"}. A sealed book that does not open is a hard error.
+  // This machine's own ID is filtered out of the peers.
+  Future<bool> _nemoPullAbImpl({quiet = false}) async {
+    bool ret = false;
+    int? statusCode;
+    try {
+      final myId = await bind.mainGetMyId();
+      Map<String, dynamic> body = {};
+      try {
+        final fields = jsonDecode(await bind.mainNemoAbSealFields(id: myId));
+        if (fields is Map<String, dynamic>) body = fields;
+      } catch (_) {}
+      Map<String, String> headers = getHttpHeaders();
+      if (bind.mainNemoSealedRequestEnabled()) {
+        final sealed = await bind.mainNemoSealEnvelope(
+            bodyJson: jsonEncode({
+          ...body,
+          'access_token': bind.mainGetLocalOption(key: 'access_token'),
+        }));
+        if (sealed.isNotEmpty) {
+          // The token travels inside the envelope; no cleartext header.
+          body = {'sealed_request': sealed};
+          headers = {};
+        }
+      }
+      headers['Content-Type'] = "application/json";
+      final resp = await _nemoRustPost(
+          "${await bind.mainGetApiServer()}/api/ab/get",
+          headers,
+          jsonEncode(body));
+      statusCode = resp.statusCode;
+      final text = resp.body.trim();
+      if (text.isEmpty || text.toLowerCase() == 'null') {
+        if (statusCode != 200) throw 'HTTP $statusCode';
+        tags.clear();
+        tagColors.clear();
+        peers.clear();
+        return true;
+      }
+      Map<String, dynamic> json = _jsonDecodeRespMap(text, statusCode);
+      if (json['error'] != null && json['error'].toString().isNotEmpty) {
+        throw json['error'];
+      }
+      dynamic abData = json['data'];
+      final sealedData = json['sealed_data'];
+      if (sealedData is String && sealedData.isNotEmpty) {
+        // Fail closed: never show a stale/empty book for one we cannot open.
+        abData = await bind.mainNemoUnsealAb(sealed: sealedData);
+        if ((abData as String).isEmpty) {
+          throw 'could not unseal the address book (device key mismatch?)';
+        }
+      }
+      if (abData == null) {
+        if (statusCode != 200) throw 'HTTP $statusCode';
+        abData = '{}';
+      }
+      final ab = abData is String ? jsonDecode(abData) : abData;
+      final Map<String, dynamic> norm = {'tags': <String>[], 'peers': []};
+      if (ab is Map) {
+        if (ab['tags'] is List) {
+          norm['tags'] = (ab['tags'] as List).map((e) => e.toString()).toList();
+        }
+        if (ab['tag_colors'] is String) norm['tag_colors'] = ab['tag_colors'];
+        if (ab['peers'] is List) {
+          final list = [];
+          for (final p in ab['peers']) {
+            if (p is! Map) continue;
+            final m = Map<String, dynamic>.from(p);
+            const strKeys = ['id', 'username', 'hostname', 'platform', 'alias'];
+            for (final k in strKeys) {
+              m[k] = m[k] == null ? '' : m[k].toString();
+            }
+            m['tags'] = m['tags'] is List
+                ? (m['tags'] as List).map((e) => e.toString()).toList()
+                : <dynamic>[];
+            final id = m['id'] as String;
+            if (id.isEmpty || (myId.isNotEmpty && id == myId)) {
+              continue; // a client never lists/connects to itself
+            }
+            list.add(m);
+          }
+          norm['peers'] = list;
+        }
+      }
+      _deserialize(norm);
+      ret = true;
+    } catch (err) {
+      debugPrint('nemo pull ab err: $err');
+      if (!quiet) {
+        pullError.value =
+            '${translate('pull_ab_failed_tip')}: ${translate(err.toString())}';
+      }
+      if (statusCode == 401) {
+        gFFI.userModel.reset(resetOther: true);
+      }
+    }
+    return ret;
+  }
+
+  // TBFDesk: the AB request goes through Rust's HTTP client (like Sciter's
+  // post_request), never Dart's, so the nemo-api certificate pin (A4) and the
+  // accepted-self-signed TLS cache apply to it.
+  Future<http.Response> _nemoRustPost(
+      String url, Map<String, String> headers, String body) async {
+    await bind.mainHttpRequest(
+        url: url, method: 'post', body: body, header: jsonEncode(headers));
+    String? res = " ";
+    while (res == " ") {
+      res = await bind.mainGetHttpStatus(url: url);
+      if (res == " ") {
+        await Future.delayed(const Duration(milliseconds: 100));
+      }
+    }
+    if (res == null) throw 'The HTTP request failed';
+    Map<String, dynamic> parsed;
+    try {
+      parsed = jsonDecode(res);
+    } catch (_) {
+      throw res; // Rust reported a transport error as plain text
+    }
+    return http.Response(
+        (parsed['body'] ?? '').toString(), parsed['status_code'] ?? 0);
   }
 
   Future<bool> pushAb(
