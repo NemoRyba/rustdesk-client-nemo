@@ -1342,6 +1342,10 @@ fn get_default_install_info() -> (String, String, String, String) {
 }
 
 fn get_default_install_path() -> String {
+    default_install_path_of(&crate::get_app_name())
+}
+
+fn default_install_path_of(app_name: &str) -> String {
     let mut pf = "C:\\Program Files".to_owned();
     if let Ok(x) = std::env::var("ProgramFiles") {
         if std::path::Path::new(&x).exists() {
@@ -1355,7 +1359,108 @@ fn get_default_install_path() -> String {
             pf = tmp;
         }
     }
-    format!("{}\\{}", pf, crate::get_app_name())
+    format!("{}\\{}", pf, app_name)
+}
+
+/// Where an install under the previous app name put itself, as the registry records it,
+/// falling back to where this installer would have put it. Empty when there is no such
+/// install, which is the normal case on a machine that never ran a RustDesk-named build.
+fn legacy_install_path() -> String {
+    let legacy = config::LEGACY_APP_NAME;
+    for wow in [false, true] {
+        let path = get_reg_of(&get_subkey(legacy, wow), "InstallLocation");
+        if !path.is_empty() {
+            return path.trim_end_matches('\\').to_owned();
+        }
+    }
+    let default = default_install_path_of(legacy);
+    if std::path::Path::new(&format!("{default}\\{legacy}.exe")).exists() {
+        return default;
+    }
+    "".to_owned()
+}
+
+/// RENAMING-PLAN Layer 2, the Windows half. `Config::migrate_legacy_app_name()` carries
+/// the identity (ID, password, device key, settings) over to the new config directory;
+/// this removes what the OLD name owns at the OS level, which nothing will ever touch
+/// again because every lookup now spells the new name:
+///
+/// - the `RustDesk` service, so the machine is not left with a dead auto-start service
+///   that holds the exe and the display hooks;
+/// - the `Uninstall\RustDesk` registry key, so "Apps & features" does not list the app
+///   twice with only one entry that works;
+/// - the `.rustdesk` association and the `rustdesk` URI scheme, whose `shell\open`
+///   command points at an exe this installer is about to delete;
+/// - the two firewall rules named after the old service;
+/// - the shortcuts an older installer wrote, under both the old app name and the display
+///   name, in the Start menu, on the public desktop and in Startup;
+/// - the old install directory.
+///
+/// The old CONFIG directory is deliberately left where it is: it is the rollback copy the
+/// migration reads, and it costs a few KiB.
+///
+/// A no-op when this build's name IS the legacy name, and when no legacy install is
+/// found. Safe to re-run: every file step is guarded by `if exist`, and `sc`, `reg
+/// delete` and `netsh` against something absent only set an exit code, which these
+/// scripts do not test.
+///
+/// **Must run before the new install writes its own shortcuts.** It deletes the
+/// display-name shortcuts too, because an upgrade that is not asked for a desktop icon
+/// would otherwise leave the old `TBFDesk.lnk` behind, still pointing into the install
+/// directory this function removes.
+fn get_legacy_cleanup(new_path: &str, new_start_menu: &str) -> String {
+    let legacy = config::LEGACY_APP_NAME;
+    if crate::get_app_name() == legacy {
+        return "".to_owned();
+    }
+    let legacy_ext = legacy.to_lowercase();
+    let legacy_path = legacy_install_path();
+    // Never delete the directory we are installing INTO. Someone who pointed this
+    // installer at `C:\Program Files\RustDesk` would otherwise have the freshly copied
+    // exe removed underneath them.
+    let remove_dir = if legacy_path.is_empty()
+        || legacy_path.eq_ignore_ascii_case(new_path.trim_end_matches('\\'))
+    {
+        "".to_owned()
+    } else {
+        format!("if exist \"{legacy_path}\" rd /s /q \"{legacy_path}\"")
+    };
+    let display_name = crate::get_display_name();
+    let legacy_start_menu = format!(
+        "%ProgramData%\\Microsoft\\Windows\\Start Menu\\Programs\\{}",
+        legacy
+    );
+    let startup = "%ProgramData%\\Microsoft\\Windows\\Start Menu\\Programs\\Startup";
+    format!(
+        "
+chcp 65001
+sc stop {legacy}
+sc delete {legacy}
+taskkill /F /IM {legacy}.exe{filter}
+reg delete {subkey} /f
+reg delete {subkey_wow} /f
+reg delete HKEY_CLASSES_ROOT\\.{legacy_ext} /f
+reg delete HKEY_CLASSES_ROOT\\{legacy_ext} /f
+netsh advfirewall firewall delete rule name=\"{legacy} Service\"
+if exist \"{legacy_start_menu}\" rd /s /q \"{legacy_start_menu}\"
+if exist \"{new_start_menu}\\{legacy}.lnk\" del /f /q \"{new_start_menu}\\{legacy}.lnk\"
+if exist \"{new_start_menu}\\Uninstall {legacy}.lnk\" del /f /q \"{new_start_menu}\\Uninstall {legacy}.lnk\"
+if exist \"%PUBLIC%\\Desktop\\{legacy}.lnk\" del /f /q \"%PUBLIC%\\Desktop\\{legacy}.lnk\"
+if exist \"{startup}\\{legacy} Tray.lnk\" del /f /q \"{startup}\\{legacy} Tray.lnk\"
+if exist \"%PUBLIC%\\Desktop\\{display_name}.lnk\" del /f /q \"%PUBLIC%\\Desktop\\{display_name}.lnk\"
+if exist \"{startup}\\{display_name} Tray.lnk\" del /f /q \"{startup}\\{display_name} Tray.lnk\"
+{remove_dir}
+",
+        subkey = get_subkey(legacy, false),
+        subkey_wow = get_subkey(legacy, true),
+        // THIS PROCESS is very likely called `rustdesk.exe`: the crate is still named
+        // rustdesk, so that is what the packer extracts and runs, and `/IM RustDesk.exe`
+        // matches it case-insensitively. Without the filter the installer would kill
+        // itself here and leave the machine with the old install gone and the new one
+        // never written. `get_before_uninstall` carries the same filter for the same
+        // reason.
+        filter = format!(" /FI \"PID ne {}\"", get_current_pid()),
+    )
 }
 
 pub fn check_update_broker_process() -> ResultType<()> {
@@ -1664,26 +1769,14 @@ if exist \"{tmp_path}\\{display_name} Tray.lnk\" del /f /q \"{tmp_path}\\{displa
     // Start menu, on the desktop and in Startup - and the stale one would start the
     // same exe, so nothing would look broken while the complaint (two entries, the old
     // name still searchable) got worse. Remove the old names wherever this installer
-    // ever put them. Guarded on the two names differing, so it is a no-op for a build
-    // whose display name IS the app name.
-    let legacy_start_menu = format!(
-        "%ProgramData%\\Microsoft\\Windows\\Start Menu\\Programs\\{}",
-        app_name
-    );
-    let legacy_shortcuts = if display_name == app_name {
-        String::new()
-    } else {
-        format!(
-            "
-if exist \"{start_menu}\\{app_name}.lnk\" del /f /q \"{start_menu}\\{app_name}.lnk\"
-if exist \"{start_menu}\\Uninstall {app_name}.lnk\" del /f /q \"{start_menu}\\Uninstall {app_name}.lnk\"
-if exist \"%PUBLIC%\\Desktop\\{app_name}.lnk\" del /f /q \"%PUBLIC%\\Desktop\\{app_name}.lnk\"
-if exist \"%PROGRAMDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\{app_name} Tray.lnk\" del /f /q \"%PROGRAMDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\{app_name} Tray.lnk\"
-if exist \"{path}\\Uninstall {app_name}.lnk\" del /f /q \"{path}\\Uninstall {app_name}.lnk\"
-if exist \"{legacy_start_menu}\" rd /s /q \"{legacy_start_menu}\"
-"
-        )
-    };
+    // ever put them.
+    //
+    // RENAMING-PLAN Layer 2: since Layer 1 the display name and the app name are the
+    // same string, so the name to clean up after is the LEGACY one, and the shortcuts
+    // are the smallest part of it - the service, the registry, the URI scheme and the
+    // old install directory all have to go too. That is `get_legacy_cleanup`, and it
+    // runs first, before anything new is written.
+    let legacy_cleanup = get_legacy_cleanup(&path, &start_menu);
     let src_exe = std::env::current_exe()?.to_str().unwrap_or("").to_string();
 
     // potential bug here: if run_cmd cancelled, but config file is changed.
@@ -1718,9 +1811,11 @@ copy /Y \"{tmp_path}\\{display_name} Tray.lnk\" \"%PROGRAMDATA%\\Microsoft\\Wind
     let cmds = format!(
         "
 {uninstall_str}
+{legacy_cleanup}
 chcp 65001
 md \"{path}\"
 {copy_exe}
+{rename_exe}
 reg add {subkey} /f
 reg add {subkey} /f /v DisplayIcon /t REG_SZ /d \"{display_icon}\"
 reg add {subkey} /f /v DisplayName /t REG_SZ /d \"{display_name}\"
@@ -1739,7 +1834,6 @@ cscript \"{mk_shortcut}\"
 cscript \"{uninstall_shortcut}\"
 {tray_shortcuts}
 {shortcuts}
-{legacy_shortcuts}
 copy /Y \"{tmp_path}\\Uninstall {display_name}.lnk\" \"{path}\\\"
 {dels}
 {import_config}
@@ -1759,6 +1853,16 @@ copy /Y \"{tmp_path}\\Uninstall {display_name}.lnk\" \"{path}\\\"
         sleep = if debug { "timeout 300" } else { "" },
         dels = if debug { "" } else { &dels },
         copy_exe = copy_exe_cmd(&src_exe, &exe, &path)?,
+        // RENAMING-PLAN Layer 1, and the step that decides whether the install works at
+        // all. `copy_exe_cmd` is an XCOPY of the folder this installer is running from,
+        // so the file it lands is named after the SOURCE - `rustdesk.exe`, because the
+        // crate is still called rustdesk and the packer extracts it under that name -
+        // while the service, the shortcuts, the UninstallString and the URI handler this
+        // same script registers all point at `{path}\{APP_NAME}.exe`. Those agreed only
+        // as long as the two words were the same; now they do not, and without this the
+        // install directory would hold an exe nothing refers to. `update_me` has always
+        // done this; `install_me` never did, because it never had to.
+        rename_exe = rename_exe_cmd(&src_exe, &path)?,
         import_config = get_import_config(&exe),
     );
     run_cmds(cmds, debug, "install")?;
@@ -1767,12 +1871,16 @@ copy /Y \"{tmp_path}\\Uninstall {display_name}.lnk\" \"{path}\\\"
 }
 
 pub fn run_after_install() -> ResultType<()> {
-    let (_, _, _, exe) = get_install_info();
-    run_cmds(
-        get_after_install(&exe, None, None, None),
-        true,
-        "after_install",
-    )
+    let (_, path, start_menu, exe) = get_install_info();
+    // RENAMING-PLAN Layer 2: the MSI path reaches here instead of `install_me`, so it
+    // needs the same cleanup after the previous app name. A no-op when there is nothing
+    // by that name.
+    let cmds = format!(
+        "{}\n{}",
+        get_legacy_cleanup(&path, &start_menu),
+        get_after_install(&exe, None, None, None)
+    );
+    run_cmds(cmds, true, "after_install")
 }
 
 pub fn run_before_uninstall() -> ResultType<()> {
@@ -2186,7 +2294,13 @@ pub fn is_win_10_or_greater() -> bool {
 }
 
 pub fn bootstrap() -> bool {
-    if let Ok(lic) = get_license_from_exe_name() {
+    // A setup string the operator imported outranks the exe file name (see
+    // nemo_setup::OPTION_SETUP_OVERRIDES_EXE). Re-asserting the name's host here would
+    // undo that import on every start: get_rendezvous_server() prefers
+    // EXE_RENDEZVOUS_SERVER over the imported custom-rendezvous-server.
+    if crate::common::nemo_setup_overrides_exe_name() {
+        log::info!("exe-name server ignored: this client was provisioned by a setup string");
+    } else if let Ok(lic) = get_license_from_exe_name() {
         *config::EXE_RENDEZVOUS_SERVER.write().unwrap() = lic.host.clone();
         // Nemo: a locked exe named `host=…,key=…,relay=…` also provisions the whole
         // TBFDesk control plane, so ONE rename fully configures a client. The name
@@ -3832,6 +3946,53 @@ pub fn try_remove_temp_update_files() {
     }
 }
 
+/// Debug runs only (RUST_LOG set, see core_main): give this GUI-subsystem process the
+/// launching shell's console, so the mirrored log and Sciter's script errors appear there
+/// instead of nowhere. Standard handles that are already valid -- redirected to a file,
+/// or a console the process already has -- are left untouched. Started from Explorer
+/// there is no parent console and this is a no-op.
+pub fn attach_parent_console() -> bool {
+    use winapi::um::{
+        fileapi::{CreateFileW, OPEN_EXISTING},
+        handleapi::INVALID_HANDLE_VALUE,
+        processenv::{GetStdHandle, SetStdHandle},
+        winbase::{STD_ERROR_HANDLE, STD_OUTPUT_HANDLE},
+        wincon::{AttachConsole, ATTACH_PARENT_PROCESS},
+        winnt::{FILE_SHARE_READ, FILE_SHARE_WRITE, GENERIC_READ, GENERIC_WRITE, HANDLE},
+    };
+    let usable = |h: HANDLE| !h.is_null() && h != INVALID_HANDLE_VALUE;
+    unsafe {
+        let out_ok = usable(GetStdHandle(STD_OUTPUT_HANDLE));
+        let err_ok = usable(GetStdHandle(STD_ERROR_HANDLE));
+        if out_ok && err_ok {
+            return true;
+        }
+        if AttachConsole(ATTACH_PARENT_PROCESS) == 0 {
+            return false;
+        }
+        let name: Vec<u16> = "CONOUT$\0".encode_utf16().collect();
+        let con = CreateFileW(
+            name.as_ptr(),
+            GENERIC_READ | GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            std::ptr::null_mut(),
+            OPEN_EXISTING,
+            0,
+            std::ptr::null_mut(),
+        );
+        if !usable(con) {
+            return false;
+        }
+        if !out_ok {
+            SetStdHandle(STD_OUTPUT_HANDLE, con);
+        }
+        if !err_ok {
+            SetStdHandle(STD_ERROR_HANDLE, con);
+        }
+        true
+    }
+}
+
 #[inline]
 pub fn try_kill_broker() {
     allow_err!(std::process::Command::new("cmd")
@@ -4090,6 +4251,30 @@ fn nt_terminate_process(process_id: DWORD) -> ResultType<()> {
             bail!("Failed to load ntdll.dll");
         }
     }
+}
+
+/// Bring the visible top-level windows of process `pid` to the front (restoring a
+/// minimized one). For "connect again to a peer whose session is already open": the
+/// clicking process owns the foreground at that moment, so Windows lets it hand it over.
+pub fn raise_process_windows(pid: u32) -> bool {
+    unsafe extern "system" fn each(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        let state = &mut *(lparam as *mut (u32, bool));
+        let mut owner = 0u32;
+        GetWindowThreadProcessId(hwnd, &mut owner);
+        if owner == state.0 && IsWindowVisible(hwnd) != 0 && GetWindow(hwnd, GW_OWNER).is_null() {
+            if IsIconic(hwnd) != 0 {
+                ShowWindow(hwnd, SW_RESTORE);
+            }
+            SetForegroundWindow(hwnd);
+            state.1 = true;
+        }
+        TRUE
+    }
+    let mut state = (pid, false);
+    unsafe {
+        EnumWindows(Some(each), &mut state as *mut (u32, bool) as LPARAM);
+    }
+    state.1
 }
 
 pub fn try_set_window_foreground(window: HWND) {

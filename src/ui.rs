@@ -194,6 +194,18 @@ pub fn start(args: &mut [String]) {
         frame.event_handler(UI {});
         frame.sciter_handler(UIHostHandler {});
         page = "install.html";
+    } else if args[0] == "--nemo-update-prompt" {
+        // Started by the service in the user's session before it installs an update
+        // (updater::prompt_user): <version> <postpone allowed 1|0> <seconds>.
+        *NEMO_UPDATE_PROMPT.lock().unwrap() = serde_json::json!({
+            "version": args.get(1).cloned().unwrap_or_default(),
+            "postpone": args.get(2).map(|a| a == "1").unwrap_or(false),
+            "secs": args.get(3).and_then(|a| a.parse::<u64>().ok()).unwrap_or(60),
+        })
+        .to_string();
+        frame.event_handler(UI {});
+        frame.sciter_handler(UIHostHandler {});
+        page = "update.html";
     } else if args[0] == "--cm" {
         frame.register_behavior("connection-manager", move || {
             Box::new(cm::SciterConnectionManager::new())
@@ -232,9 +244,19 @@ pub fn start(args: &mut [String]) {
         frame.register_behavior("native-remote", move || {
             let handler =
                 remote::SciterSession::new(cmd.clone(), id.clone(), pass.clone(), args.clone());
+            // CUR_SESSION is where every keystroke goes (keyboard.rs send_key_event).
+            // This factory runs for EVERY element with the native-remote behavior --
+            // including each "view all displays" tile, whose session is never started.
+            // Overwriting here pointed the keyboard at the last tile's dead session, so
+            // typing did nothing while all displays were shown. First instance wins (the
+            // page's own <video #handler> exists before any tile), and the real session
+            // re-asserts itself when its video surface binds (remote.rs VIDEO_BIND_RQ).
             #[cfg(not(any(feature = "flutter", feature = "cli")))]
             {
-                *CUR_SESSION.lock().unwrap() = Some(handler.inner());
+                let mut cur = CUR_SESSION.lock().unwrap();
+                if cur.is_none() {
+                    *cur = Some(handler.inner());
+                }
             }
             Box::new(handler)
         });
@@ -251,10 +273,17 @@ pub fn start(args: &mut [String]) {
             inline::get_cm()
         } else if page == "install.html" {
             inline::get_install()
+        } else if page == "update.html" {
+            inline::get_update()
         } else {
             inline::get_remote()
         };
-        frame.load_html(html.as_bytes(), Some(page));
+        // The UTF-8 BOM tells Sciter how to decode the page. Without it, Sciter on
+        // Windows decodes these bytes as the ANSI code page, so every non-ASCII literal
+        // in the .tis/.html (an em dash in the direct-access tooltip, the "·" in the
+        // display picker) came out as mojibake ("â€”"). Translations were unaffected
+        // because they arrive from Rust as strings, which is why it went unnoticed.
+        frame.load_html(format!("\u{feff}{html}").as_bytes(), Some(page));
     }
     #[cfg(not(feature = "inline"))]
     frame.load_file(&format!(
@@ -275,6 +304,9 @@ pub fn start(args: &mut [String]) {
 }
 
 struct UI {}
+
+// The update prompt's arguments, as JSON for update.html.
+static NEMO_UPDATE_PROMPT: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
 
 // Options that script may write but must never read back. Keep this list tight and
 // keep the reason with it: an entry here is a secret whose value the GUI has no
@@ -703,7 +735,7 @@ impl UI {
         crate::lan::send_wol(id)
     }
 
-    fn new_remote(&mut self, id: String, remote_type: String, force_relay: bool) {
+    fn new_remote(&mut self, id: String, remote_type: String, force_relay: bool) -> bool {
         new_remote(id, remote_type, force_relay)
     }
 
@@ -739,12 +771,122 @@ impl UI {
         get_new_version()
     }
 
+    // What the main window says about an offered update: the version, and whether this
+    // machine installs it by itself (automatic updates on, installed from a package /
+    // installer this client can update) or the administrator has to.
+    fn nemo_update_state(&self) -> String {
+        let auto = hbb_common::config::Config::get_option("nemo-auto-update") == "Y"
+            && crate::common::nemo_update_platform().is_some()
+            && crate::platform::is_installed();
+        serde_json::json!({ "version": get_new_version(), "auto": auto }).to_string()
+    }
+
+    // "Install now" in the main window: the service's updater takes it within a minute
+    // (no prompt, but never during a session).
+    fn nemo_update_now(&self) {
+        let v = get_new_version();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        crate::ipc::set_option(crate::updater::OPTION_UPDATE_REQUEST, &format!("{v}:{now}"));
+    }
+
+    fn nemo_update_prompt_args(&self) -> String {
+        NEMO_UPDATE_PROMPT.lock().unwrap().clone()
+    }
+
+    // The prompt's answer ("now" / "postpone"), sent to the service's updater.
+    fn nemo_update_answer(&self, choice: String) {
+        let v: serde_json::Value =
+            serde_json::from_str(&NEMO_UPDATE_PROMPT.lock().unwrap()).unwrap_or_default();
+        let version = v["version"].as_str().unwrap_or_default().to_owned();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        crate::ipc::set_option(
+            crate::updater::OPTION_UPDATE_DECISION,
+            &format!("{choice}:{version}:{now}"),
+        );
+    }
+
     fn get_version(&self) -> String {
         get_version()
     }
 
     fn get_build_id(&self) -> String {
         get_build_id()
+    }
+
+    // ⋮ menu → "Open log folder". The log root, which holds the main log and the
+    // `connect/` directory with the session logs.
+    fn nemo_open_log_folder(&self) -> String {
+        match crate::nemo_logs::open_folder(&hbb_common::config::Config::log_path()) {
+            Ok(()) => String::new(),
+            Err(err) => err.to_string(),
+        }
+    }
+
+    // ⋮ menu → "Copy recent log". Puts the redacted tail of the main log and of the
+    // newest session log on the clipboard. Returns "OK:<files>" or "ERR:<reason>" so
+    // the UI can say what was copied, or why nothing was.
+    fn nemo_copy_recent_log(&self) -> String {
+        let header = vec![
+            format!(
+                "TBFDesk {} (build {})  id {}  {}",
+                crate::VERSION,
+                get_build_id(),
+                hbb_common::config::Config::get_id(),
+                hbb_common::chrono::Local::now().format("%Y-%m-%d %H:%M:%S %z")
+            ),
+            format!("platform {} {}", std::env::consts::OS, std::env::consts::ARCH),
+            // The background service writes its own log, under a profile this user
+            // usually cannot read. Say where it is rather than pretending it is here.
+            "service log: not included (it lives in the service's own profile and needs \
+             administrator rights to read)"
+                .to_owned(),
+        ];
+        let (text, files) =
+            crate::nemo_logs::collect(&hbb_common::config::Config::log_path(), &header);
+        if files.is_empty() {
+            return format!(
+                "ERR:{}",
+                hbb_common::config::Config::log_path().display()
+            );
+        }
+        // Keep the Clipboard alive for the life of the process. On Windows and macOS the
+        // OS takes a copy and dropping it is harmless, but on X11/Wayland the clipboard
+        // is SERVED by its owner: arboard's serving thread stops when the last Clipboard
+        // is dropped, so a copy-then-drop puts nothing on the clipboard at all while
+        // reporting success. That is exactly what the first lab test of this button
+        // showed -- "copied" on screen, an empty clipboard underneath.
+        lazy_static::lazy_static! {
+            static ref NEMO_CLIPBOARD: std::sync::Mutex<Option<arboard::Clipboard>> =
+                std::sync::Mutex::new(None);
+        }
+        let mut guard = NEMO_CLIPBOARD.lock().unwrap();
+        if guard.is_none() {
+            match arboard::Clipboard::new() {
+                Ok(c) => *guard = Some(c),
+                Err(err) => return format!("ERR:{err}"),
+            }
+        }
+        let result = guard
+            .as_mut()
+            .map(|c| c.set_text(text))
+            .unwrap_or_else(|| Err(arboard::Error::ClipboardNotSupported));
+        match result {
+            Ok(()) => format!(
+                "OK:{}",
+                files
+                    .iter()
+                    .map(|f| f.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ),
+            Err(err) => format!("ERR:{err}"),
+        }
     }
 
     fn get_fingerprint(&self) -> String {
@@ -983,7 +1125,7 @@ impl UI {
     fn nemo_apply_setup_string(&self, text: String) -> String {
         match crate::nemo_setup::parse_setup(&text) {
             Ok(bundle) => {
-                let applied = crate::nemo_setup::apply_setup(&bundle);
+                let outcome = crate::nemo_setup::apply_setup(&bundle);
                 // apply_setup writes through Config::set_option (this GUI process only).
                 // Re-send each applied value to the service over IPC so the running
                 // rendezvous/poll adopts the new server, key and device key immediately —
@@ -991,13 +1133,35 @@ impl UI {
                 // restart (the service keeps its own config). Read the freshly written
                 // value from Config, not ui_interface's OPTIONS cache, which apply_setup
                 // did not touch.
+                //
+                // NOT through set_option: that one returns silently for the four keys a
+                // `host=…,key=…,relay=…` exe name owns, and for anything the server
+                // pushes as a fixed default — so on a locked-exe client it dropped
+                // exactly `custom-rendezvous-server`, `relay-server`, `api-server` and
+                // `key`, i.e. the whole point of the bundle. An import is a deliberate
+                // re-provisioning by the operator and therefore writes through.
+                let mut provisioned = Vec::new();
                 for &k in crate::nemo_setup::APPLIED_OPTION_KEYS {
                     let v = hbb_common::config::Config::get_option(k);
                     if !v.trim().is_empty() {
-                        set_option(k.to_string(), v);
+                        provisioned.push((k.to_string(), v));
                     }
                 }
-                *NEMO_SETUP_SUMMARY.lock().unwrap() = applied.join("\n");
+                // The override marker travels with them, so the service's own
+                // set_options does not put the exe-name server back.
+                let marker = crate::nemo_setup::OPTION_SETUP_OVERRIDES_EXE;
+                let marker_value = hbb_common::config::Config::get_option(marker);
+                if !marker_value.is_empty() {
+                    provisioned.push((marker.to_string(), marker_value));
+                }
+                crate::ui_interface::nemo_set_provisioned_options(provisioned);
+                let mut summary = outcome.applied.clone();
+                if !outcome.refused.is_empty() {
+                    summary.push(String::new());
+                    summary.push(crate::nemo_setup::REFUSED_HEADING.to_owned());
+                    summary.extend(outcome.refused.clone());
+                }
+                *NEMO_SETUP_SUMMARY.lock().unwrap() = summary.join("\n");
                 String::new()
             }
             Err(err) => err.to_string(),
@@ -1009,6 +1173,104 @@ impl UI {
     /// knowable at the moment of the write.
     fn nemo_setup_summary(&self) -> String {
         NEMO_SETUP_SUMMARY.lock().unwrap().clone()
+    }
+
+    /// The api-server as the CONFIG has it, not as the UI's option cache has it.
+    ///
+    /// That cache is seeded once at process start and refreshed over IPC, so on a machine
+    /// provisioned in THIS session it can still be empty — and the login gate then asked
+    /// the user for a server address the setup string had just supplied. Reading the
+    /// config is what the request path effectively does anyway.
+    fn nemo_configured_api_server(&self) -> String {
+        let api = hbb_common::config::Config::get_option("api-server");
+        if !api.trim().is_empty() {
+            return api.trim().to_owned();
+        }
+        hbb_common::config::Config::get_option("custom-rendezvous-server")
+            .trim()
+            .to_owned()
+    }
+
+    /// Where this peer can be reached WITHOUT the relay, as `host:port`, or "" when the
+    /// management server has published nothing for it — which is exactly when direct
+    /// access is not possible. The address book marks the ones that are: the relay costs
+    /// about a third of the link, so "can I reach this machine directly" is the single
+    /// most useful thing to see next to an id.
+    fn nemo_direct_endpoint(&self, id: String) -> String {
+        crate::nemo_direct::endpoint_label(&id)
+    }
+
+    /// A short, already-translated knock status line for `id`, or "" when this client
+    /// would not knock before dialling it (knocking off, or no endpoint). The UI shows it
+    /// under the direct-access line so an operator can see at a glance that the port is
+    /// gated and whether THIS machine holds the peer's own SPA key or the fleet-wide one.
+    /// Human-readable and self-contained so the script need not compose secrets or ports.
+    fn nemo_knock_hint(&self, id: String) -> String {
+        match crate::nemo_direct::knock_port_for(&id) {
+            None => String::new(),
+            Some(port) => {
+                let which = if crate::nemo_direct::has_peer_knock_key(&id) {
+                    crate::lang::translate("own key".to_owned())
+                } else {
+                    crate::lang::translate("fleet key".to_owned())
+                };
+                // e.g. "Knock :62201 · own key"
+                format!(
+                    "{} :{} \u{00B7} {}",
+                    crate::lang::translate("Knock".to_owned()),
+                    port,
+                    which
+                )
+            }
+        }
+    }
+
+    /// Every id with a published endpoint, sorted and joined: a cheap fingerprint the
+    /// main window compares once a second, so the address book redraws its Direct chips
+    /// when the policy delivers or withdraws an endpoint (it was drawn once and went stale).
+    /// "Reset preferences" on a peer: everything this client remembered about how to
+    /// show and drive that machine goes back to the defaults -- view style, quality,
+    /// keyboard mode, toggles, display mode and picker, relay/direct preferences, window
+    /// sizes. Kept: the remembered password, the alias, the RDP / OS credentials and
+    /// the peer info the lists show. Takes effect from the next connection.
+    fn nemo_reset_peer_prefs(&self, id: String) -> bool {
+        let id = id.trim().to_owned();
+        if id.is_empty() || !hbb_common::config::PeerConfig::exists(&id) {
+            return false;
+        }
+        let old = hbb_common::config::PeerConfig::load(&id);
+        let mut fresh = hbb_common::config::PeerConfig::default();
+        fresh.password = old.password.clone();
+        fresh.info = old.info.clone();
+        for key in ["alias", "rdp_port", "rdp_username", "rdp_password", "os-username", "os-password"] {
+            if let Some(v) = old.options.get(key) {
+                fresh.options.insert(key.to_owned(), v.clone());
+            }
+        }
+        fresh.store(&id);
+        log::info!("peer {}: preferences reset to defaults", id);
+        true
+    }
+
+    fn nemo_direct_ids(&self) -> String {
+        let mut ids = crate::nemo_direct::direct_capable_ids();
+        ids.sort();
+        ids.join(",")
+    }
+
+    /// The per-peer "direct only, do not fall back" flag the Connect-directly menu entry
+    /// sets. Kept as its own pair of calls rather than get/set_peer_option from script,
+    /// so the option NAME lives in one place (nemo_direct) and script cannot typo it.
+    fn nemo_force_direct(&self, id: String) -> bool {
+        crate::nemo_direct::force_direct(&id)
+    }
+
+    fn nemo_set_force_direct(&self, id: String, on: bool) {
+        crate::ui_interface::set_peer_option(
+            id,
+            crate::nemo_direct::PEER_OPTION_FORCE_DIRECT.to_owned(),
+            if on { "Y".to_owned() } else { String::new() },
+        );
     }
 
     /// Read a setup file the operator downloaded from the dashboard. Text only, and
@@ -1174,8 +1436,14 @@ impl sciter::EventHandler for UI {
         fn set_option(String, String);
         fn get_software_update_url();
         fn get_new_version();
+        fn nemo_update_state();
+        fn nemo_update_now();
+        fn nemo_update_prompt_args();
+        fn nemo_update_answer(String);
         fn get_version();
         fn get_build_id();
+        fn nemo_open_log_folder();
+        fn nemo_copy_recent_log();
         fn get_fingerprint();
         fn update_me(String);
         fn show_run_without_install();
@@ -1215,6 +1483,13 @@ impl sciter::EventHandler for UI {
         fn nemo_is_setup_string(String);
         fn nemo_apply_setup_string(String);
         fn nemo_setup_summary();
+        fn nemo_configured_api_server();
+        fn nemo_direct_endpoint(String);
+        fn nemo_knock_hint(String);
+        fn nemo_direct_ids();
+        fn nemo_reset_peer_prefs(String);
+        fn nemo_force_direct(String);
+        fn nemo_set_force_direct(String, bool);
         fn nemo_read_text_file(String);
         fn nemo_claim_status();
         fn nemo_device_key_candidate_valid(String);
@@ -1231,6 +1506,39 @@ impl sciter::EventHandler for UI {
 impl sciter::host::HostHandler for UIHostHandler {
     fn on_graphics_critical_failure(&mut self) {
         log::error!("Critical rendering error: e.g. DirectX gfx driver error. Most probably bad gfx drivers.");
+    }
+
+    // TBFDesk: sciter-rs's default prints script errors and `stdout.println` to the
+    // process's stdout/stderr, which the release exe (windows_subsystem = "windows") does
+    // not have -- so a TIScript failure left no trace anywhere. The "Bad parse code" that
+    // silently killed the main window's "..." menu and status polling was invisible in
+    // the log for exactly this reason. Log it too, and keep the console output for runs
+    // that have one (a debug run attaches the parent console, see core_main).
+    fn on_debug_output(
+        &mut self,
+        subsystem: sciter::types::OUTPUT_SUBSYTEMS,
+        severity: sciter::types::OUTPUT_SEVERITY,
+        message: &str,
+    ) {
+        use sciter::types::OUTPUT_SEVERITY;
+        let message = message.trim_end();
+        if message.is_empty() {
+            return;
+        }
+        match severity {
+            OUTPUT_SEVERITY::ERROR => log::error!("sciter {:?}: {}", subsystem, message),
+            OUTPUT_SEVERITY::WARNING => log::warn!("sciter {:?}: {}", subsystem, message),
+            OUTPUT_SEVERITY::INFO => log::info!("sciter {:?}: {}", subsystem, message),
+        }
+        // A debug run (RUST_LOG set) already mirrors the log to stderr; printing the raw
+        // line as well would show every script message twice.
+        if std::env::var_os("RUST_LOG").is_none() {
+            if severity == OUTPUT_SEVERITY::INFO {
+                println!("{:?}:{:?}: {}", severity, subsystem, message);
+            } else {
+                eprintln!("{:?}:{:?}: {}", severity, subsystem, message);
+            }
+        }
     }
 }
 
@@ -1312,5 +1620,88 @@ mod nemo_h25_tests {
             "--relay".to_owned(),
         ]);
         assert_eq!(rest, vec!["--relay".to_owned()]);
+    }
+}
+
+// Regression guards for the 1.4.16 Windows-release bugs (fixed in 1.4.17). They read the
+// UI sources as files, so they run in every `cargo test` without Sciter or a display; the
+// real parse check against libsciter lives in the test suite (tests/gui/sciter_parse.sh).
+#[cfg(test)]
+mod ui_release_regression_tests {
+    use std::path::PathBuf;
+
+    fn ui_dir() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/ui")
+    }
+
+    fn read(rel: &str) -> String {
+        std::fs::read_to_string(ui_dir().join(rel)).unwrap_or_else(|e| panic!("{rel}: {e}"))
+    }
+
+    /// (script blocks, includes per block) of an HTML page.
+    fn script_blocks(html: &str) -> Vec<Vec<String>> {
+        const OPEN: &str = "<script type=\"text/tiscript\">";
+        let mut out = Vec::new();
+        let mut rest = html;
+        while let Some(start) = rest.find(OPEN) {
+            let after = &rest[start..];
+            let end = after.find("</script>").expect("unterminated <script>");
+            let block = &after[OPEN.len()..end];
+            let includes = block
+                .lines()
+                .flat_map(|l| l.split(';'))
+                .filter_map(|s| s.trim().strip_prefix("include \""))
+                .map(|s| s.trim_end_matches('"').to_owned())
+                .collect();
+            out.push(includes);
+            rest = &after[end..];
+        }
+        out
+    }
+
+    // The release (inline) build pastes each include into its script block. With all of
+    // index.html's files in ONE block, index.tis outgrew Sciter's per-block parse limit
+    // and everything after ~line 2707 never loaded: the dead "..." menu and the status
+    // polling ("Generating ID" / "Connecting" forever). One file per block, always.
+    #[test]
+    fn every_multi_file_page_loads_one_file_per_script_block() {
+        for page in ["index.html", "remote.html"] {
+            let blocks = script_blocks(&read(page));
+            assert!(blocks.len() > 1, "{page}: expected one script block per file, got {}", blocks.len());
+            for (i, includes) in blocks.iter().enumerate() {
+                assert_eq!(includes.len(), 1, "{page}: script block {i} includes {includes:?} -- split it");
+            }
+        }
+        let index: Vec<String> = script_blocks(&read("index.html")).into_iter().flatten().collect();
+        assert_eq!(index, ["common.tis", "msgbox.tis", "ab.tis", "index.tis"], "include order is load order");
+    }
+
+    // Early warning, well below the size that broke 1.4.16 (index.tis alone loads fine at
+    // ~162k chars; the combined block failed past ~221k). Growing past this means a file
+    // has to be split before the release build silently stops loading its tail.
+    #[test]
+    fn no_ui_script_approaches_the_per_block_limit() {
+        const WARN_AT: usize = 190_000;
+        for entry in std::fs::read_dir(ui_dir()).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|e| e.to_str()) == Some("tis") {
+                let len = std::fs::read_to_string(&path).unwrap().chars().count();
+                assert!(len < WARN_AT, "{}: {len} chars -- split it before it hits Sciter's per-block limit", path.display());
+            }
+        }
+    }
+
+    // res/inline-sciter.py read the .tis/.html with Python's platform default encoding --
+    // cp1252 on the Windows build host -- so every non-ASCII literal became mojibake
+    // ("Einstellungen â€¦") in the Windows release only.
+    #[test]
+    fn inline_generator_reads_every_file_as_utf8() {
+        let py = std::fs::read_to_string(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("res/inline-sciter.py")).unwrap();
+        for (n, line) in py.lines().enumerate() {
+            if line.contains("open(") && !line.contains("'wt'") && !line.trim_start().starts_with('#') {
+                assert!(line.contains("encoding='utf-8'"), "res/inline-sciter.py:{}: open() without encoding='utf-8': {line}", n + 1);
+            }
+        }
+        assert!(read("index.tis").contains('\u{2026}'), "fixture: index.tis should contain a non-ASCII literal (\u{2026})");
     }
 }

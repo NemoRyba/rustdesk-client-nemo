@@ -84,6 +84,21 @@ pub fn create_http_client_async_pinned(fingerprint: [u8; 32]) -> AsyncClient {
     finish_http_client!(builder, AsyncClient)
 }
 
+/// The blocking twin of `create_http_client_async_pinned`, for the updater's installer
+/// download: the same pin as the policy poll and the manifest, and no fallback ladder.
+pub fn create_http_client_pinned(fingerprint: [u8; 32]) -> SyncClient {
+    let mut builder = SyncClient::builder().no_proxy();
+    match hbb_common::verifier::client_config_pinned(fingerprint) {
+        Ok(client_config) => {
+            builder = builder.use_preconfigured_tls(client_config);
+        }
+        Err(e) => {
+            hbb_common::log::error!("Failed to build pinned client config: {}", e);
+        }
+    }
+    finish_http_client!(builder, SyncClient)
+}
+
 macro_rules! configure_http_client {
     ($builder:expr, $tls_type:expr, $danger_accept_invalid_cert:expr, $Client: ty) => {{
         // https://github.com/rustdesk/rustdesk/issues/11569

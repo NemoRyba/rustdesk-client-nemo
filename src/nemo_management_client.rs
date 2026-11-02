@@ -34,6 +34,7 @@ const OPTION_NEMO_REQUIRE_SECURE_RENDEZVOUS: &str = "nemo-require-secure-rendezv
 // policy key — the stock `allow-auto-update` stays in POLICY_DENIED_KEYS, so the
 // upstream updater has no way in. "" (the default) = no updater at all.
 const OPTION_NEMO_AUTO_UPDATE: &str = "nemo-auto-update";
+const OPTION_NEMO_UPDATE_VERSION: &str = "nemo-update-version";
 const MANAGED_SECRET_PLACEHOLDER: &str = "<managed-secret>";
 const NEMO_MANAGEMENT_SETTINGS: &[&str] = &[
     OPTION_NEMO_MANAGEMENT_ENABLED,
@@ -67,6 +68,9 @@ const NEMO_MANAGEMENT_SETTINGS: &[&str] = &[
     OPTION_NEMO_REQUIRE_SECURE_RENDEZVOUS,
     // Auto-update: same reason — an unlisted key is dropped by option_scope().
     OPTION_NEMO_AUTO_UPDATE,
+    // The version the server publishes (server-driven rollout): a newer one makes a
+    // client with automatic updates check now rather than at its next daily check.
+    OPTION_NEMO_UPDATE_VERSION,
 ];
 
 /// Direct endpoints + the SPA knock. Kept as its own slice so the owning module
@@ -77,7 +81,9 @@ const NEMO_MANAGEMENT_SETTINGS: &[&str] = &[
 use crate::nemo_direct::NEMO_DIRECT_SETTINGS;
 
 fn is_nemo_management_setting(key: &str) -> bool {
-    NEMO_MANAGEMENT_SETTINGS.contains(&key) || NEMO_DIRECT_SETTINGS.contains(&key)
+    NEMO_MANAGEMENT_SETTINGS.contains(&key)
+        || NEMO_DIRECT_SETTINGS.contains(&key)
+        || crate::nemo_control::NEMO_CONTROL_SETTINGS.contains(&key)
 }
 
 #[derive(Clone, Copy)]
@@ -126,6 +132,17 @@ struct ClientPolicyRequest {
     /// response sealed to its device key. Empty when no device key is imported.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     sealed: String,
+    /// This build, for the dashboard's "who runs what" during an update rollout.
+    client_version: String,
+    /// #43: what this process did with the last policy it was handed (JSON text, see
+    /// build_policy_report), so the dashboard shows the policy actually applied. Rides
+    /// inside the poll body, which is sealed to the management key whenever one is
+    /// configured; `applied_policy_sig` binds its exact bytes to the device key. Empty
+    /// without a device key (the server would not trust an unsigned report).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    applied_policy: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    applied_policy_sig: String,
 }
 
 // Device-key sign/unseal helpers live in crate::common (always compiled) so the
@@ -157,6 +174,10 @@ struct ClientPolicyPayload {
     /// 0 / absent = nothing to do (older server, or no revocation issued).
     #[serde(default)]
     terminate_sessions_before: u64,
+    /// #43: the server's content id for `policy`, inside the signed payload. Echoed back
+    /// on the next poll once applied. Empty from servers older than 1.1.16.
+    #[serde(default)]
+    policy_ref: String,
     policy: ManagementPolicy,
 }
 
@@ -272,6 +293,112 @@ fn check_policy_freshness(issued_ts: u64, high_water: u64, now: u64) -> Result<(
         ));
     }
     Ok(())
+}
+
+// #43: what THIS process last did with a policy, reported on the next poll so the
+// dashboard shows the policy actually applied (or refused, and why) instead of only the
+// one the server assigns. Per process on purpose: the service and the user's window poll
+// separately, and after a restart nothing is applied until the first poll lands.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+struct PolicyRefusal {
+    code: &'static str,
+    issued_ts: u64,
+    at: u64,
+}
+
+struct AppliedPolicyState {
+    applied_ref: String,
+    applied_at: u64,
+    refused: Option<PolicyRefusal>,
+}
+
+static APPLIED_POLICY: Mutex<AppliedPolicyState> = Mutex::new(AppliedPolicyState {
+    applied_ref: String::new(),
+    applied_at: 0,
+    refused: None,
+});
+
+fn epoch_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn note_policy_applied(policy_ref: &str) {
+    let mut s = APPLIED_POLICY.lock().unwrap();
+    s.applied_ref = policy_ref.to_owned();
+    s.applied_at = epoch_now();
+    s.refused = None;
+}
+
+/// `code` is one of the fixed reasons the server knows (nemo_management::POLICY_REFUSAL_CODES);
+/// nothing the server sent is echoed back.
+fn note_policy_refused(code: &'static str, issued_ts: u64) {
+    APPLIED_POLICY.lock().unwrap().refused = Some(PolicyRefusal {
+        code,
+        issued_ts,
+        at: epoch_now(),
+    });
+}
+
+/// Maps check_policy_freshness's refusal to its report code (unit-tested against it).
+fn freshness_refusal_code(reason: &str) -> &'static str {
+    if reason.contains("no issued_ts") {
+        "unstamped"
+    } else if reason.contains("older than last-applied") {
+        "rollback"
+    } else if reason.contains("too far in the future") {
+        "future"
+    } else if reason.contains("stale") {
+        "stale"
+    } else {
+        "other"
+    }
+}
+
+/// Options the user changed locally where the policy allowed it (allow_user_override):
+/// names only, never values; never secrets or management/authorization keys.
+fn overridden_policy_keys(policy: &ManagementPolicy) -> Vec<String> {
+    if !policy.allow_user_override {
+        return Vec::new();
+    }
+    let mut keys: Vec<String> = policy
+        .options
+        .iter()
+        .filter(|(k, _)| {
+            !secret_policy_keys().contains(&k.as_str())
+                && !is_nemo_management_setting(k)
+                && !k.starts_with("nemo-")
+        })
+        .filter(|(k, v)| match option_scope(k) {
+            Some(ManagedOptionScope::Settings) => Config::get_option(k) != **v,
+            Some(ManagedOptionScope::Local) => LocalConfig::get_option(k) != **v,
+            _ => false,
+        })
+        .map(|(k, _)| k.clone())
+        .collect();
+    keys.sort();
+    keys.truncate(64);
+    keys
+}
+
+/// The report JSON (pure: role and override list passed in, for the unit tests).
+fn policy_report_json(role: &str, overridden: &[String]) -> String {
+    let s = APPLIED_POLICY.lock().unwrap();
+    serde_json::json!({
+        "role": role,
+        "ref": s.applied_ref,
+        "applied_at": s.applied_at,
+        "refused": s.refused,
+        "overridden": overridden,
+    })
+    .to_string()
+}
+
+fn build_policy_report() -> String {
+    let role = if crate::common::is_server() { "service" } else { "ui" };
+    policy_report_json(role, &overridden_policy_keys(&previous_policy()))
 }
 
 pub(crate) fn start() {
@@ -408,6 +535,9 @@ fn sync_policy() -> ResultType<()> {
         device_key_pub: String::new(),
         device_key_sig: String::new(),
         sealed: String::new(),
+        client_version: crate::VERSION.to_owned(),
+        applied_policy: String::new(),
+        applied_policy_sig: String::new(),
     };
     let (device_key_pub, device_key_sig) = nemo_sign_poll(&id);
     // Layer 1: remembered so the server's refusal can be explained below. The poll
@@ -421,10 +551,21 @@ fn sync_policy() -> ResultType<()> {
     } else {
         "v1".to_owned()
     };
+    // #43: report what this process did with the last policy -- only with a device key,
+    // because the server trusts the report only under its signature.
+    let (applied_policy, applied_policy_sig) = if has_device_key {
+        let report = build_policy_report();
+        let sig = crate::common::nemo_device_sign_report(&id, &report);
+        if sig.is_empty() { (String::new(), String::new()) } else { (report, sig) }
+    } else {
+        (String::new(), String::new())
+    };
     let request = ClientPolicyRequest {
         device_key_pub,
         device_key_sig,
         sealed,
+        applied_policy,
+        applied_policy_sig,
         ..request
     };
     let mgmt_key_configured = !public_key.trim().is_empty();
@@ -525,7 +666,16 @@ fn sync_policy() -> ResultType<()> {
     crate::common::nemo_set_claim_status(crate::common::NEMO_CLAIM_NONE);
     let response: ClientPolicyResponse = serde_json::from_str(&http.body)?;
     let was_sealed = response.sealed_payload.is_some();
-    let payload = verified_payload(response, public_key.trim())?;
+    // #43: every refusal from here on is a policy the server DID hand over and this client
+    // would not take -- exactly what the dashboard could not see. Recorded with a fixed
+    // reason code and reported on the next poll.
+    let payload = match verified_payload(response, public_key.trim()) {
+        Ok(payload) => payload,
+        Err(err) => {
+            note_policy_refused("signature", 0);
+            return Err(err);
+        }
+    };
     // Anti-downgrade ratchet: once we have received a sealed response, a later
     // UNSEALED one means a MITM stripped the seal — refuse it. (A server that
     // genuinely stops sealing would also stop pushing secrets, but we must not let
@@ -538,12 +688,14 @@ fn sync_policy() -> ResultType<()> {
         // removed) — refusing it forever would brick policy sync. With a key present, an
         // unsealed response is the downgrade signal, so refuse it.
         if crate::common::nemo_device_ed25519().is_some() {
+            note_policy_refused("downgrade", payload.issued_ts);
             bail!("management policy response was not sealed but this client holds a device key and requires sealing (possible downgrade attack). If this client was intentionally deprovisioned, clear option nemo-policy-seal-seen or re-pin its device key.");
         }
         log::warn!("Nemo management: seal ratchet was engaged but no device key is present now; accepting plaintext policy and clearing the ratchet");
         Config::set_option(OPTION_NEMO_POLICY_SEAL_SEEN.to_owned(), String::new());
     }
     if payload.id != id {
+        note_policy_refused("id-mismatch", payload.issued_ts);
         bail!("management policy id mismatch");
     }
     // A2: anti-replay / anti-rollback. The response is authenticated (signature verified
@@ -557,6 +709,7 @@ fn sync_policy() -> ResultType<()> {
         .unwrap_or(0);
     let high_water = policy_issued_ts_high_water();
     if let Err(reason) = check_policy_freshness(payload.issued_ts, high_water, now) {
+        note_policy_refused(freshness_refusal_code(&reason), payload.issued_ts);
         bail!("management policy rejected: {reason}");
     }
     // check_policy_freshness already refused issued_ts == 0, so this is always > 0.
@@ -581,7 +734,28 @@ fn sync_policy() -> ResultType<()> {
         .options
         .get("nemo-require-login")
         .map_or(false, |v| v == "Y");
-    apply_policy(payload.policy)?;
+    let control_ticket = payload
+        .policy
+        .options
+        .get(crate::nemo_control::OPTION_CONTROL_TICKET)
+        .cloned()
+        .unwrap_or_default();
+    let published_version = payload
+        .policy
+        .options
+        .get(OPTION_NEMO_UPDATE_VERSION)
+        .cloned()
+        .unwrap_or_default();
+    let policy_ref = payload.policy_ref.clone();
+    let issued_ts = payload.issued_ts;
+    if let Err(err) = apply_policy(payload.policy) {
+        note_policy_refused("apply-failed", issued_ts);
+        return Err(err);
+    }
+    note_policy_applied(&policy_ref);
+    // This process polled with this OS user's token (or none): its ticket is that user's.
+    crate::nemo_control::remember_user_ticket(&control_ticket);
+    nudge_updater(&published_version);
     // Stale-session self-heal: we polled WITH a token, yet the server signalled
     // require-login and did not recognise us (server restart wiped its in-memory
     // sessions, or the user was disabled/expired). Drop the dead token so the UI
@@ -595,9 +769,42 @@ fn sync_policy() -> ResultType<()> {
     {
         log::info!("Nemo management: session token rejected by server; clearing stale login");
         LocalConfig::set_option("access_token".to_owned(), String::new());
+        crate::nemo_control::remember_user_ticket("");
         crate::ui_interface::refresh_options();
     }
     Ok(())
+}
+
+/// Server-driven rollout: a published version newer than this build. Once per version
+/// per process:
+/// - the installed service process (Windows, Linux) with automatic updates on asks the
+///   updater to check now instead of at its next daily check; the updater fetches and
+///   verifies the signed manifest, hashes the file, asks the user, and installs only
+///   outside sessions;
+/// - any other process (the user's main window) refreshes the offer, so the window can
+///   say that an update exists.
+fn nudge_updater(published: &str) {
+    static LAST: Mutex<String> = Mutex::new(String::new());
+    if published.is_empty()
+        || hbb_common::get_version_number(published) <= hbb_common::get_version_number(crate::VERSION)
+    {
+        return;
+    }
+    let Ok(mut last) = LAST.lock() else { return };
+    if *last == published {
+        return;
+    }
+    *last = published.to_owned();
+    drop(last);
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    if crate::platform::is_installed() && crate::is_server() {
+        if Config::get_option(OPTION_NEMO_AUTO_UPDATE) == "Y" {
+            log::info!("Nemo update {} published (this build {}): checking now", published, crate::VERSION);
+            hbb_common::allow_err!(crate::updater::manually_check_update());
+        }
+        return;
+    }
+    std::thread::spawn(|| hbb_common::allow_err!(crate::common::do_check_software_update()));
 }
 
 fn verified_payload(
@@ -906,6 +1113,9 @@ fn apply_policy_option(
         return;
     }
     let (default_map, overwrite_map) = policy_maps(scope);
+    // Authorization keys are never user-adjustable (see nemo_control).
+    let allow_user_override =
+        allow_user_override && !crate::nemo_control::NEMO_CONTROL_SETTINGS.contains(&key);
     if allow_user_override {
         overwrite_map.write().unwrap().remove(key);
         default_map
@@ -1100,5 +1310,75 @@ mod tests {
         assert_eq!(http_error_message("plain text"), "plain text");
         assert_eq!(http_error_message(""), "");
         assert_eq!(http_error_message(&"x".repeat(1000)).len(), 200);
+    }
+}
+
+// #43: the applied-policy report. Process-global state, so these tests serialise on one
+// guard; nothing else in the unit tests touches APPLIED_POLICY (sync_policy never runs here).
+#[cfg(test)]
+mod applied_policy_tests {
+    use super::*;
+    use hbb_common::sodiumoxide::crypto::{hash::sha256, sign};
+
+    static GUARD: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn freshness_refusals_map_to_the_codes_the_server_knows() {
+        let now = 1_800_000_000;
+        let code = |issued: u64, high: u64| freshness_refusal_code(&check_policy_freshness(issued, high, now).unwrap_err());
+        assert_eq!(code(0, 0), "unstamped");
+        assert_eq!(code(now - 10, now), "rollback");
+        assert_eq!(code(now - POLICY_MAX_AGE_SECS - 1, 0), "stale");
+        assert_eq!(code(now + POLICY_MAX_FUTURE_SECS + 1, 0), "future");
+        assert_eq!(freshness_refusal_code("something new"), "other");
+        // That every code the client emits is one the server accepts is checked across
+        // both repos by tests/contracts/check_policy_report_contract.py.
+    }
+
+    #[test]
+    fn report_carries_the_outcome_and_clears_a_refusal_on_success() {
+        let _g = GUARD.lock().unwrap();
+        note_policy_applied("0123456789abcdef");
+        note_policy_refused("rollback", 42);
+        let v: serde_json::Value = serde_json::from_str(&policy_report_json("service", &[])).unwrap();
+        assert_eq!(v["role"], "service");
+        assert_eq!(v["ref"], "0123456789abcdef", "the last GOOD policy stays reported");
+        assert_eq!(v["refused"]["code"], "rollback");
+        assert_eq!(v["refused"]["issued_ts"], 42);
+        note_policy_applied("fedcba9876543210");
+        let v: serde_json::Value = serde_json::from_str(&policy_report_json("ui", &["enable-audio".to_owned()])).unwrap();
+        assert_eq!(v["ref"], "fedcba9876543210");
+        assert!(v["refused"].is_null(), "a successful apply clears the refusal");
+        assert_eq!(v["overridden"][0], "enable-audio");
+        assert!(v["applied_at"].as_u64().unwrap() > 0);
+    }
+
+    #[test]
+    fn overridden_keys_never_include_secrets_or_management_keys() {
+        let mut p = ManagementPolicy { allow_user_override: true, options: HashMap::new() };
+        for k in secret_policy_keys() {
+            p.options.insert((*k).to_owned(), "secret-value".to_owned());
+        }
+        p.options.insert("nemo-require-login".to_owned(), "Y".to_owned());
+        p.options.insert(OPTION_NEMO_MANAGEMENT_SERVER.to_owned(), "https://x".to_owned());
+        assert!(overridden_policy_keys(&p).is_empty(), "secrets and nemo-* keys are never reported");
+        p.allow_user_override = false;
+        p.options.insert("enable-audio".to_owned(), "N".to_owned());
+        assert!(overridden_policy_keys(&p).is_empty(), "nothing is overridable without allow_user_override");
+    }
+
+    // Contract with the server (nemo_management::verify_policy_report_sig): attached
+    // Ed25519 over "nemo-policy-report:{id}:{ts}:{sha256hex(report)}". Verified here the
+    // way the server does it, so a format drift on either side fails a test.
+    #[test]
+    fn report_signature_matches_the_server_contract() {
+        let (pk, sk) = sign::gen_keypair();
+        let report = r#"{"role":"service","ref":"0123456789abcdef"}"#;
+        let sig_b64 = crate::common::nemo_sign_policy_report_with(&sk, "12513041", 1_800_000_000, report);
+        let msg = sign::verify(&crate::common::decode64(&sig_b64).unwrap(), &pk).expect("valid signature");
+        let msg = String::from_utf8(msg).unwrap();
+        let parts: Vec<&str> = msg.splitn(4, ':').collect();
+        let digest: String = sha256::hash(report.as_bytes()).0.iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(parts, vec!["nemo-policy-report", "12513041", "1800000000", digest.as_str()]);
     }
 }

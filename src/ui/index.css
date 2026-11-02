@@ -86,10 +86,19 @@ div.sessions-bar {
     flow: horizontal;
 }
 
+/* TBFDesk: let the tab labels wrap. An installed client shows four tabs, and in German
+   ("Letzte Sitzungen", "Favoriten", "Im LAN erkannt", "Adressbuch") they do not fit on
+   one line beside the search box -- so the measuring code that used to live in ab.tis
+   ellipsised all four at once. With no max-width forced on them these are ordinary
+   inline-blocks and the row wraps to a second line, which costs one row and keeps every
+   label readable. */
 div.sessions-tab span {
     display: inline-block;
     padding: 6px 8px;
     cursor: pointer;
+    /* The ellipsis is now a last resort: it can only bite a single label that is wider
+       than the whole row on its own. */
+    max-width: 100%;
     @ELLIPSIS;
 }
 
@@ -233,6 +242,24 @@ span.connect-status0 {
     background: #F5853B;
 }
 
+/* Nemo: registration badge next to "Ready" (index.tis ConnectStatus.getRegistrationBadge) */
+span.nemo-reg {
+    /* inline-block, or Sciter drops the horizontal margin of a plain inline span and the
+       badge renders glued to the status text ("BereitRegistriert"). Same 1em the icon
+       and the "Start service" link use, so the line reads as three evenly spaced parts. */
+    display: inline-block;
+    margin-left: 1em;
+    font-weight: bold;
+}
+
+span.nemo-reg-ok {
+    color: #32bea6;
+}
+
+span.nemo-reg-warn {
+    color: #F5853B;
+}
+
 div.recent-sessions-content {
     border-spacing: 1em;
     flow: horizontal-flow;
@@ -274,9 +301,82 @@ div.remote-session .platform svg {
     background: none;
 }
 
+/* TBFDesk: "direct access possible" on a peer tile. The relay costs about a third of
+   the link, so which machines can be reached without it is the one property worth a
+   mark of its own: one elongated green chip, bolt and word on the same line. */
+.nemo-direct-badge {
+    display: inline-block;
+    flow: horizontal;
+    white-space: nowrap;
+    height: 18px;
+    padding: 0 8px 0 7px;
+    border-radius: 9px;
+    background: #1a7a34;
+    color: white;
+    font-size: 11px;
+    font-weight: bold;
+}
+
+/* The tile's `.platform svg` rule sizes the OS logo to 60 px and would catch the bolt
+   too (that was the big green disc); this selector is more specific. */
+.nemo-direct-badge svg,
+div.remote-session .platform .nemo-direct-badge svg {
+    width: 9px;
+    height: 13px;
+    margin: * 0;
+    background: none;
+}
+
+.nemo-direct-label {
+    display: inline-block;
+    margin: * 0 * 4px;
+    line-height: 18px;
+}
+
+/* Under the remote ID box: the same fact for an ID typed by hand. */
+#nemo-direct-hint {
+    margin: 4px 0 0 0;
+    font-size: 11px;
+    color: #1a7a34;
+}
+#nemo-direct-hint { flow: vertical; }
+#nemo-direct-hint > span { flow: horizontal; white-space: nowrap; }
+#nemo-direct-hint svg { width: 8px; height: 12px; margin: * 5px * 1px; }
+/* The knock status sits on its own row, dimmer than the green endpoint, and may wrap
+   rather than overflow the narrow window. */
+#nemo-direct-hint > span.nemo-knock-line {
+    white-space: normal;
+    color: #7a6a1a;
+    margin: 2px 0 0 1px;
+    word-break: break-word;
+}
+
+div.remote-session .platform .nemo-direct-badge {
+    position: absolute;
+    top: 7px;
+    right: 7px;
+}
+
+/* The chip sits on the second line, next to user@host: on the first line it took the
+   room the ID / alias needs, and "91 090 ..." was cut off in a card with space to spare. */
+div.remote-session-list .nemo-subline {
+    flow: horizontal;
+    margin-top: 3px;
+}
+
+div.remote-session-list .name .nemo-subline .username {
+    width: *;
+    margin-top: *;
+    margin-bottom: *;
+}
+
+div.remote-session-list .nemo-direct-badge {
+    margin: * 4px * 6px;
+}
+
 div.remote-session-list {
     background: color(bg);
-    width: 220px;
+    width: 270px;
     flow: horizontal;
 }
 
@@ -371,6 +471,24 @@ div.install-me > div:nth-child(2) {
 
 #install-me.link {
     margin-top: 0.5em;
+}
+
+/* The update banner sits in the narrow left column: its text must wrap, and the
+   "install now" link must not take the oversized nth-child(3) countdown styling. */
+div.install-me > div:nth-child(2) {
+    white-space: pre-wrap;
+    overflow: hidden;
+}
+div.install-me .nemo-update-now-wrap {
+    margin-top: 0.6em;
+    text-align: center;
+}
+div.install-me .nemo-update-now-wrap #nemo-update-now {
+    font-size: 1em;
+    font-weight: bold;
+    text-decoration: underline;
+    cursor: pointer;
+    color: white;
 }
 
 div.trust-me > div:nth-child(2) {
@@ -479,9 +597,35 @@ textarea.grey-text {
     margin-bottom: 8px;
     padding-right: 20px;
 }
-.nemo-account-bar button#nemo-logoff {
+.nemo-account-bar button#nemo-logoff,
+.nemo-account-bar button#nemo-login {
     padding: 4px 14px;
     font-size: 0.85em;
+}
+/* Signed out: same bar, quieter name line, so the eye lands on the Anmelden button. */
+.nemo-account-name.nemo-signed-out {
+    color: #667;
+    font-weight: normal;
+    /* One line. Wrapped ("Nicht / angemeldet") the bar grows a line, the left pane
+       outgrows an 800x600 window, and the status line slides off the bottom edge --
+       seen in the lab on the first try. */
+    font-size: 0.95em;
+    white-space: nowrap;
+}
+html.darktheme .nemo-account-name.nemo-signed-out {
+    color: #9aa7b2;
+}
+/* The address book's signed-out prompt: the sentence and the button under it. */
+div.nemo-ab-signin {
+    margin: *;
+    flow: vertical;
+    border-spacing: 12px;
+    text-align: center;
+    color: color(lighter-text);
+}
+div.nemo-ab-signin button {
+    margin: 0 *;
+    padding: 6px 22px;
 }
 /* Dark-theme variants — the account bar's light colors are hardcoded, so they
    must be overridden explicitly (they don't read the html.darktheme vars). */
@@ -642,3 +786,28 @@ html.darktheme .ab-reload-btn:hover svg { stroke: #4da6ff; }
     margin-left: 8px;
     vertical-align: middle;
 }
+
+/* Settings > Language: the current choice with its flag, as a drop-down. */
+.nemo-lang-current {
+    flow: horizontal;
+    vertical-align: middle;
+    color: color(text);
+    white-space: nowrap;
+}
+.nemo-flag {
+    display: inline-block;
+    vertical-align: middle;
+    margin: * 6px * 0;
+}
+/* Each flag keeps its own proportions (DE 5:3, AT 3:2, GB 2:1): the size comes from
+   the svg's width/height attributes in index.tis. */
+.nemo-flag > svg {
+    outline: 1px solid rgba(0,0,0,0.25);
+}
+.nemo-flag > svg.flag-de,
+menu.context li .nemo-flag > svg.flag-de { width: 21px; height: 13px; }
+.nemo-flag > svg.flag-at,
+menu.context li .nemo-flag > svg.flag-at { width: 21px; height: 14px; }
+.nemo-flag > svg.flag-gb,
+menu.context li .nemo-flag > svg.flag-gb { width: 21px; height: 11px; }
+menu.context li .nemo-flag { margin-left: 2px; }

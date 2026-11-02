@@ -101,6 +101,8 @@ lazy_static::lazy_static! {
     // cleared together with SOFTWARE_UPDATE_URL; updater.rs must compare the downloaded file
     // against it before handing anything to the installer. "" = no verified offer pending.
     pub static ref NEMO_UPDATE_SHA256: Mutex<String> = Mutex::new(String::new());
+    // The offered version itself (e.g. "1.4.16"), for what the user is shown.
+    pub static ref NEMO_UPDATE_VERSION: Mutex<String> = Mutex::new(String::new());
     pub static ref DEVICE_ID: Arc<Mutex<String>> = Default::default();
     pub static ref DEVICE_NAME: Arc<Mutex<String>> = Default::default();
     static ref PUBLIC_IPV6_ADDR: Arc<Mutex<(Option<SocketAddr>, Option<Instant>)>> = Default::default();
@@ -988,16 +990,16 @@ pub fn check_software_update() {
 pub fn do_check_software_update() -> hbb_common::ResultType<()> {
     let server = nemo_management_server_url();
     if server.is_empty() {
-        nemo_set_update_offer("", "");
+        nemo_set_update_offer("", "", "");
         return Ok(());
     }
     let mgmt_pk_b64 = Config::get_option("nemo-management-public-key");
     if mgmt_pk_b64.trim().is_empty() {
-        nemo_set_update_offer("", "");
+        nemo_set_update_offer("", "", "");
         bail!("nemo-management-public-key is not configured; cannot verify an update manifest");
     }
     let Some(server_origin) = nemo_url_origin(&server) else {
-        nemo_set_update_offer("", "");
+        nemo_set_update_offer("", "", "");
         bail!("nemo-management-server is not an http(s) URL: {}", server);
     };
     let headers = json!({ "Accept": "application/json" }).to_string();
@@ -1011,20 +1013,26 @@ pub fn do_check_software_update() -> hbb_common::ResultType<()> {
     let http: Value = serde_json::from_str(&raw)?;
     let status = http["status_code"].as_u64().unwrap_or(0);
     if status == 404 {
-        nemo_set_update_offer("", "");
+        nemo_set_update_offer("", "", "");
         return Ok(());
     }
     if status != 200 {
-        nemo_set_update_offer("", "");
+        nemo_set_update_offer("", "", "");
         bail!(
             "management server returned HTTP {} for the update manifest",
             status
         );
     }
     let body = http["body"].as_str().unwrap_or_default();
+    // Only the package for this platform counts; none published for it = no offer.
+    let Some(body) = nemo_update_platform().and_then(|p| nemo_platform_manifest(body, p)) else {
+        nemo_set_update_offer("", "", "");
+        return Ok(());
+    };
+    let body = body.as_str();
     let Some(manifest) = nemo_verify_update_manifest(body, mgmt_pk_b64.trim(), &server_origin)
     else {
-        nemo_set_update_offer("", "");
+        nemo_set_update_offer("", "", "");
         bail!(
             "update manifest from {} rejected (signature, shape or origin)",
             server
@@ -1045,18 +1053,89 @@ pub fn do_check_software_update() -> hbb_common::ResultType<()> {
             manifest.version,
             crate::VERSION
         );
-        nemo_set_update_offer(&manifest.url, &manifest.sha256);
+        // An installer hosted by the server (uploaded in the dashboard) is fetched from
+        // the management server THIS client is configured with: behind two NATs the
+        // server is one address inside the company and another on the internet, and the
+        // url can only name one of them. The signed sha256 is what makes it safe.
+        let download = match nemo_hosted_update_path(&manifest.url) {
+            Some(path) => format!("{server}{path}"),
+            None => manifest.url.clone(),
+        };
+        log::info!("Nemo update download: {}", download);
+        nemo_set_update_offer(&manifest.version, &download, &manifest.sha256);
     } else {
-        nemo_set_update_offer("", "");
+        nemo_set_update_offer("", "", "");
     }
     Ok(())
 }
 
 // Auto-update: the offer is one unit — url and digest are always written together, so
 // updater.rs can never pair a fresh url with a stale digest (or the other way round).
-fn nemo_set_update_offer(url: &str, sha256: &str) {
+fn nemo_set_update_offer(version: &str, url: &str, sha256: &str) {
     *SOFTWARE_UPDATE_URL.lock().unwrap() = url.to_owned();
     *NEMO_UPDATE_SHA256.lock().unwrap() = sha256.to_owned();
+    *NEMO_UPDATE_VERSION.lock().unwrap() = version.to_owned();
+}
+
+/// Which published package this client installs: "windows-x64" (the manifest's top
+/// level), or "linux-deb" / "linux-rpm" / "linux-arch" by the package manager that owns
+/// the installed program. None = nothing can update this client in place (portable,
+/// not installed from a package, another OS). Asked once per process.
+pub fn nemo_update_platform() -> Option<&'static str> {
+    static PLATFORM: std::sync::OnceLock<Option<&'static str>> = std::sync::OnceLock::new();
+    *PLATFORM.get_or_init(|| {
+        #[cfg(windows)]
+        return Some("windows-x64");
+        #[cfg(target_os = "linux")]
+        {
+            if !crate::platform::is_installed() {
+                return None;
+            }
+            let exe = std::env::current_exe().ok()?;
+            let owned_by = |cmd: &str, flag: &str| {
+                std::process::Command::new(cmd)
+                    .arg(flag)
+                    .arg(&exe)
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false)
+            };
+            if owned_by("dpkg", "-S") {
+                return Some("linux-deb");
+            }
+            if owned_by("rpm", "-qf") {
+                return Some("linux-rpm");
+            }
+            if owned_by("pacman", "-Qo") {
+                return Some("linux-arch");
+            }
+            return None;
+        }
+        #[allow(unreachable_code)]
+        None
+    })
+}
+
+/// The {version,url,sha256,sig} object for `platform` out of the server's manifest, in
+/// the shape nemo_verify_update_manifest checks. Windows is the top level (empty when
+/// only Linux packages are published); the others come from `platforms`, signed over
+/// the same "version|url|sha256" string. None = nothing published for this platform.
+pub fn nemo_platform_manifest(body: &str, platform: &str) -> Option<String> {
+    let v: Value = serde_json::from_str(body).ok()?;
+    if platform == "windows-x64" {
+        let has = v.get("url").and_then(|u| u.as_str()).map_or(false, |u| !u.is_empty());
+        return has.then(|| body.to_owned());
+    }
+    let a = v.get("platforms")?.get(platform)?;
+    Some(
+        json!({
+            "version": v.get("version")?,
+            "url": a.get("url")?,
+            "sha256": a.get("sha256")?,
+            "sig": a.get("sig")?,
+        })
+        .to_string(),
+    )
 }
 
 #[inline]
@@ -1082,9 +1161,19 @@ pub fn get_display_name() -> String {
     DISPLAY_NAME.to_owned()
 }
 
+/// RENAMING-PLAN Layer 5. Its one caller is `lang::translate`, where a `false` turns on
+/// "rewrite the word RustDesk in every translated string into the app name". That rewrite
+/// is for custom-client builds whose name came from an embedded blob; this fork's own
+/// strings are already branded (892 values across 49 locales), and the handful that still
+/// say RustDesk say it on purpose -- the AGPL attribution and two upstream doc links. So
+/// the predicate is "nothing overrode the name", exactly as before Layer 1, rather than a
+/// literal that the rename would have flipped.
 #[inline]
 pub fn is_rustdesk() -> bool {
-    hbb_common::config::APP_NAME.read().unwrap().eq("RustDesk")
+    hbb_common::config::APP_NAME
+        .read()
+        .unwrap()
+        .eq(hbb_common::config::DEFAULT_APP_NAME)
 }
 
 #[inline]
@@ -1405,6 +1494,46 @@ fn http_proxy_response_to_json(resp: HttpProxyResponse) -> ResultType<String> {
 }
 
 fn parse_json_header_entries(header: &str) -> ResultType<Vec<HeaderEntry>> {
+    // No header is not a malformed header. Every caller passes "" when it has none to
+    // send (`httpRequest`'s `headers=""` default), and serde_json::from_str("") is an
+    // error — "EOF while parsing a value at line 1 column 0" — so the request failed
+    // before a byte went out. That is what the login gate showed instead of signing in:
+    // /api/login-key and /api/login are the two calls that carry no header, so NO
+    // client could log in, and with no session token there was no address book either
+    // (OPEN-TODOS 22). Inherited from upstream's tcp-proxy refactor (#14633), which
+    // dropped the `if !header.is_empty()` guard this restores.
+    if header.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    // The Sciter UI passes headers as plain lines — `getHttpHeaders()` returns
+    // "Authorization: Bearer <token>" — which is what this function took before
+    // upstream's tcp-proxy refactor made it JSON-only. Nothing updated the UI, so every
+    // authenticated call it makes (the address book above all) failed with "expected
+    // value at line 1 column 1" and never left the machine. Accept both shapes: a JSON
+    // object, or one `Name: value` per line.
+    let text = header.trim();
+    if !text.starts_with('{') {
+        let mut out = Vec::new();
+        for line in text.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            let Some((name, value)) = line.split_once(':') else {
+                bail!("HTTP header information parsing failed!");
+            };
+            let name = name.trim();
+            if name.is_empty() {
+                bail!("HTTP header information parsing failed!");
+            }
+            out.push(HeaderEntry {
+                name: name.to_owned(),
+                value: value.trim().into(),
+                ..Default::default()
+            });
+        }
+        return Ok(out);
+    }
     let v: Value = serde_json::from_str(header)?;
     if let Value::Object(obj) = v {
         Ok(obj
@@ -2460,6 +2589,16 @@ pub fn using_public_server() -> bool {
 
 #[inline]
 pub fn nemo_exe_custom_server_configured() -> bool {
+    // An imported setup string is an explicit re-provisioning by the operator and
+    // outranks the server baked into the exe's file name. Without this, a client
+    // installed from a `host=…,key=…,relay=….exe` stays locked to that name for good:
+    // `ui_interface::set_option` drops the four server keys and
+    // `nemo_preserve_locked_server_options` re-writes them on every `set_options`, so an
+    // imported bundle applied only the keys NOT in that list. See
+    // `nemo_setup::OPTION_SETUP_OVERRIDES_EXE`.
+    if nemo_setup_overrides_exe_name() {
+        return false;
+    }
     if !config::EXE_RENDEZVOUS_SERVER.read().unwrap().trim().is_empty() {
         return true;
     }
@@ -2468,6 +2607,13 @@ pub fn nemo_exe_custom_server_configured() -> bool {
         return !lic.host.trim().is_empty();
     }
     false
+}
+
+/// Has a setup string been imported into this machine? Then it, not the exe file name,
+/// defines which server this client belongs to.
+#[inline]
+pub fn nemo_setup_overrides_exe_name() -> bool {
+    config::Config::get_option(crate::nemo_setup::OPTION_SETUP_OVERRIDES_EXE) == "Y"
 }
 
 #[inline]
@@ -2732,6 +2878,38 @@ pub fn nemo_device_sign(domain: &str, id: &str) -> (String, String) {
     (encode64(pk.as_ref()), encode64(&signed))
 }
 
+// #43: sign a policy report so the server can bind its EXACT bytes to this machine's
+// device key: attached Ed25519 over "nemo-policy-report:{id}:{ts}:{sha256hex(report)}".
+// A separate signature (rather than extending "nemo-poll") keeps the poll proof exactly
+// what older servers verify. Empty when no device key is imported.
+pub fn nemo_device_sign_report(id: &str, report: &str) -> String {
+    let Some((_, sk)) = nemo_device_ed25519() else {
+        return String::new();
+    };
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    nemo_sign_policy_report_with(&sk, id, ts, report)
+}
+
+/// Pure half of `nemo_device_sign_report` (key and time passed in), for the unit tests.
+pub fn nemo_sign_policy_report_with(
+    sk: &hbb_common::sodiumoxide::crypto::sign::SecretKey,
+    id: &str,
+    ts: u64,
+    report: &str,
+) -> String {
+    use hbb_common::sodiumoxide::crypto::{hash::sha256, sign};
+    let digest: String = sha256::hash(report.as_bytes())
+        .0
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let msg = format!("nemo-policy-report:{id}:{ts}:{digest}");
+    encode64(&sign::sign(msg.as_bytes(), sk))
+}
+
 // S-B/S-DUALKEY step 3: open a server response sealed to our device key with a NaCl
 // sealedbox (Ed25519 -> Curve25519). Returns the plaintext, or None on any failure.
 pub fn nemo_unseal_with_device_key(sealed_b64: &str) -> Option<Vec<u8>> {
@@ -2910,6 +3088,23 @@ fn nemo_url_origin(url: &str) -> Option<String> {
     Some(origin.ascii_serialization())
 }
 
+/// The server's hosted-installer route.
+pub const NEMO_HOSTED_UPDATE_PREFIX: &str = "/nemo/api/update/file/";
+
+/// `/nemo/api/update/file/<name>` if `url` points at an installer the management server
+/// hosts itself (any host, no query or fragment, a plain file name), else None.
+pub fn nemo_hosted_update_path(url: &str) -> Option<String> {
+    let u = url::Url::parse(url.trim()).ok()?;
+    if !matches!(u.scheme(), "http" | "https") || u.query().is_some() || u.fragment().is_some() {
+        return None;
+    }
+    let name = u.path().strip_prefix(NEMO_HOSTED_UPDATE_PREFIX)?;
+    let plain = !name.is_empty()
+        && !name.starts_with('.')
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_');
+    plain.then(|| format!("{NEMO_HOSTED_UPDATE_PREFIX}{name}"))
+}
+
 // Auto-update: a verified update offer from the management server.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NemoUpdateManifest {
@@ -2954,8 +3149,10 @@ pub fn nemo_verify_update_manifest(
     if sha256.len() != 64 || !sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;
     }
-    // Same origin as the management server, by parsed origin (never a prefix test).
-    if nemo_url_origin(url)? != nemo_url_origin(server_origin)? {
+    // Same origin as the management server, by parsed origin (never a prefix test) --
+    // unless it is the server's own hosted installer, which the caller fetches from its
+    // own management server whatever host the url names (nemo_hosted_update_path).
+    if nemo_hosted_update_path(url).is_none() && nemo_url_origin(url)? != nemo_url_origin(server_origin)? {
         return None;
     }
     Some(NemoUpdateManifest {
@@ -3226,9 +3423,16 @@ pub fn get_builtin_option(key: &str) -> String {
         .unwrap_or_default()
 }
 
+/// RENAMING-PLAN Layer 5. This asks "did an embedded custom-client blob override the app
+/// name?" -- the only writer of `APP_NAME` besides the default is `read_custom_client()`.
+/// It was spelled `!= "RustDesk"` because that WAS the default; after Layer 1 that literal
+/// would make it unconditionally true, which silently turns on the "powered by" link and
+/// replaces five option defaults in `index.tis` (language, approve mode, whitelist, two
+/// Y/N pairs). Comparing against the compiled-in default keeps the original meaning and
+/// stays correct through any future rename.
 #[inline]
 pub fn is_custom_client() -> bool {
-    get_app_name() != "RustDesk"
+    get_app_name() != hbb_common::config::DEFAULT_APP_NAME
 }
 
 pub fn verify_login(_raw: &str, _id: &str) -> bool {
@@ -3566,6 +3770,23 @@ pub fn get_control_permission(
     }
 }
 
+/// Tests that mutate the process-global `Config` must hold this.
+///
+/// `cargo test` runs the whole suite in ONE process, in parallel, and `Config` is a
+/// process global backed by the user's config file — so two tests writing the same
+/// option key race. That is not hypothetical: the sealed-envelope round trip here and
+/// the setup-import test in `nemo_setup` both write `nemo-management-public-key`, and
+/// the first one to finish restored it under the other's feet.
+#[cfg(test)]
+pub(crate) static CONFIG_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Take `CONFIG_TEST_LOCK`, ignoring poisoning: a panic in one config test must not turn
+/// every other config test into a second, confusing failure.
+#[cfg(test)]
+pub(crate) fn lock_config_for_test() -> std::sync::MutexGuard<'static, ()> {
+    CONFIG_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3838,6 +4059,12 @@ mod tests {
             }
         }
 
+        // This writes the process-global Config, so it has to serialise with the other
+        // config-writing tests: `nemo_setup`'s import test asserts on
+        // `custom-rendezvous-server` right after setting it, and would read this test's
+        // "1:2" instead. It restored the value but never took the lock, so the two raced
+        // and which one failed depended on thread scheduling.
+        let _config_guard = lock_config_for_test();
         let _restore = RestoreCustomRendezvousServer(Config::get_option(
             keys::OPTION_CUSTOM_RENDEZVOUS_SERVER,
         ));
@@ -3862,6 +4089,47 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("HTTP header information parsing failed!"));
+    }
+
+    /// No header must mean "send no headers", not "fail the request".
+    ///
+    /// `httpRequest(url, #post, body, ok, err)` defaults `headers` to "", and the two
+    /// calls the login gate makes — /api/login-key and /api/login — use that default.
+    /// While "" was a parse error the gate could only ever show
+    /// "EOF while parsing a value at line 1 column 0" and no client could sign in; with
+    /// no session token the address book then stayed empty for everyone. Reproduced in
+    /// the lab against a real server before this was fixed.
+    #[test]
+    fn an_empty_header_means_no_headers_not_a_failed_request() {
+        assert!(parse_json_header_entries("").unwrap().is_empty());
+        assert!(parse_json_header_entries("   ").unwrap().is_empty());
+        // A header that is genuinely malformed is still an error.
+        assert!(parse_json_header_entries("{oops").is_err());
+        assert!(parse_json_header_entries("[]").is_err());
+    }
+
+    /// The Sciter UI sends `Name: value` lines, not JSON. Upstream's tcp-proxy refactor
+    /// made this parser JSON-only and nothing updated the UI, so every authenticated
+    /// call it makes failed with "expected value at line 1 column 1" before reaching
+    /// the network — which is what an operator saw as an address book that never
+    /// loaded. Both shapes must work.
+    #[test]
+    fn a_plain_header_line_is_accepted_as_well_as_json() {
+        let from_line =
+            parse_json_header_entries("Authorization: Bearer abc123").expect("line form");
+        assert_eq!(from_line.len(), 1);
+        assert_eq!(from_line[0].name, "Authorization");
+        assert_eq!(from_line[0].value, "Bearer abc123");
+        // Several lines, and the JSON form, agree.
+        let two = parse_json_header_entries("Authorization: Bearer abc123\nX-Nemo-Token: t")
+            .expect("two lines");
+        assert_eq!(two.len(), 2);
+        let as_json =
+            parse_json_header_entries(r#"{"Authorization":"Bearer abc123"}"#).expect("json form");
+        assert_eq!(as_json[0].name, from_line[0].name);
+        assert_eq!(as_json[0].value, from_line[0].value);
+        // Still rejected: a line that is not a header at all.
+        assert!(parse_json_header_entries("not a header").is_err());
     }
 
     #[test]
@@ -4031,6 +4299,7 @@ mod tests {
                 Config::set_option("nemo-management-public-key".to_string(), self.0.clone());
             }
         }
+        let _config_guard = lock_config_for_test();
         let _restore = RestoreMgmtKey(Config::get_option("nemo-management-public-key"));
 
         // The Ed25519 management key this client trusts; sealing converts it to Curve25519.
@@ -4183,6 +4452,56 @@ mod tests {
             "file:///C:/tbfdesk.exe",                                      // opaque origin
             "not a url",
         ] {
+            let off = manifest("9.9.9", url, &sha, &mgmt_sk);
+            assert!(
+                nemo_verify_update_manifest(&off, &mgmt_pk_b64, origin).is_none(),
+                "{url}"
+            );
+        }
+
+        // Per-platform packages: Windows is the top level, Linux packages come out of
+        // `platforms` re-shaped into the same signed object.
+        let multi = json!({
+            "version": "9.9.9", "url": "https://h/nemo/api/update/file/w.exe", "sha256": sha, "sig": "S1",
+            "platforms": {"linux-deb": {"url": "https://h/nemo/api/update/file/x.deb", "sha256": sha, "sig": "S2"}}
+        })
+        .to_string();
+        assert_eq!(nemo_platform_manifest(&multi, "windows-x64").as_deref(), Some(multi.as_str()));
+        let deb: Value = serde_json::from_str(&nemo_platform_manifest(&multi, "linux-deb").unwrap()).unwrap();
+        assert_eq!(deb["version"], "9.9.9");
+        assert_eq!(deb["url"], "https://h/nemo/api/update/file/x.deb");
+        assert_eq!(deb["sig"], "S2");
+        assert!(nemo_platform_manifest(&multi, "linux-rpm").is_none(), "no rpm published");
+        let linux_only = json!({"version": "9.9.9", "url": "", "sha256": "", "sig": "",
+            "platforms": {"linux-deb": {"url": "u", "sha256": sha, "sig": "S2"}}}).to_string();
+        assert!(nemo_platform_manifest(&linux_only, "windows-x64").is_none(), "no Windows installer");
+
+        // The server's own hosted installer is accepted whatever host the url names: a
+        // server between two NATs has a different address on each side, and the client
+        // fetches the PATH from its own management server (do_check_software_update).
+        let hosted = manifest(
+            "9.9.9",
+            "https://203.0.113.7:31120/nemo/api/update/file/tbfdesk-9.9.9-x64-install.exe",
+            &sha,
+            &mgmt_sk,
+        );
+        assert!(nemo_verify_update_manifest(&hosted, &mgmt_pk_b64, origin).is_some());
+        assert_eq!(
+            nemo_hosted_update_path("https://203.0.113.7:31120/nemo/api/update/file/tbfdesk-9.9.9-x64-install.exe").as_deref(),
+            Some("/nemo/api/update/file/tbfdesk-9.9.9-x64-install.exe")
+        );
+        // ...but only a plain file name under that route: no query, no fragment, no
+        // traversal, no other route, no other scheme.
+        for url in [
+            "https://evil.example.com/nemo/api/update/file/x.exe?redirect=1",
+            "https://evil.example.com/nemo/api/update/file/x.exe#frag",
+            "https://evil.example.com/nemo/api/update/file/../latest",
+            "https://evil.example.com/nemo/api/update/file/",
+            "https://evil.example.com/nemo/api/update/file/.hidden",
+            "https://evil.example.com/nemo/api/update/latest",
+            "ftp://evil.example.com/nemo/api/update/file/x.exe",
+        ] {
+            assert!(nemo_hosted_update_path(url).is_none(), "{url}");
             let off = manifest("9.9.9", url, &sha, &mgmt_sk);
             assert!(
                 nemo_verify_update_manifest(&off, &mgmt_pk_b64, origin).is_none(),

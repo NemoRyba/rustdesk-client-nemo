@@ -56,14 +56,23 @@ CONFIGURATION
     --option <key> [value] [--force]  read or write a config option
     --config <path|host=..,key=..>  import a configuration
     --import-config <path>        import a configuration file
-    --import-setup <path|string>  import a TBFDesk setup string: the device key AND
+    --import-setup <path|->       import a TBFDesk setup string: the device key AND
                                   the server settings, in one value from the
                                   dashboard. Everything a fresh client needs.
+                                  `-` reads it from standard input. Repeatable (a
+                                  setup string plus a separate bare device key).
+                                  On an installed Windows client it configures the
+                                  SERVICE. A literal string also works, but warns.
 
     Most CONFIGURATION and SERVICE commands require an installed client and
     administrative privileges.
 
 SERVICE / INSTALLATION (platform dependent, may need privileges)
+    <installer>.exe --silent-install [--import-setup <path|->]...
+                                  install unattended and, with --import-setup, provision
+                                  the service in the same call -- no GUI. Exit 0 done,
+                                  1 install/provisioning failed, 2 bad setup value
+                                  (nothing installed).
     --install, --silent-install, --uninstall
     --install-service, --uninstall-service
     --server, --service, --tray, --cm
@@ -75,8 +84,8 @@ SECURITY NOTE
     --password-stdin or --password-file; the positional form still works but warns.
 
     --option will not print or accept a private key (nemo-device-key); use the
-    client's "Import device key" dialog. Options that decide which keys this client
-    trusts need an explicit --force.
+    client's "Import device key" dialog or --import-setup <path|->. Options that
+    decide which keys this client trusts need an explicit --force.
 "#,
         crate::VERSION,
         crate::BUILD_DATE
@@ -149,6 +158,11 @@ pub fn core_main() -> Option<Vec<String>> {
         return None;
     }
     crate::load_custom_client();
+    // RENAMING-PLAN Layer 2. Has to run here: `load_custom_client()` above is the last
+    // thing that can still change APP_NAME, and the first config read is already a few
+    // lines below (the `pre-elevate-service` lookup), well before `init_log`. So the
+    // migration happens first and the report is logged once there is somewhere to log to.
+    let config_migration = config::Config::migrate_legacy_app_name();
     #[cfg(windows)]
     if !crate::platform::windows::bootstrap() {
         // return None to terminate the process
@@ -283,7 +297,39 @@ pub fn core_main() -> Option<Vec<String>> {
             log_name = name;
         }
     }
-    hbb_common::init_log(false, &log_name);
+    // TBFDesk: a debug run (RUST_LOG set) shows the log live in the shell it was started
+    // from, not only in the file. The release exe on Windows has no console of its own
+    // (windows_subsystem = "windows"), so attach the parent's first; stdout/stderr that
+    // were redirected (`> file`) are already valid and left alone.
+    let debug_run = std::env::var_os("RUST_LOG").is_some();
+    // The provisioning commands report what they did on stdout; the exe has no console
+    // of its own, so borrow the launching one (or keep a redirect / the installer's pipe).
+    let cli_report = matches!(
+        args.first().map(String::as_str),
+        Some("--import-setup") | Some("--silent-install")
+    );
+    #[cfg(windows)]
+    if debug_run || cli_report {
+        crate::platform::windows::attach_parent_console();
+    }
+    let _ = cli_report;
+    let log_handle = hbb_common::init_log(false, &log_name);
+    if debug_run {
+        if let Some(mut handle) = log_handle {
+            handle
+                .adapt_duplication_to_stderr(hbb_common::flexi_logger::Duplicate::All)
+                .ok();
+        }
+    }
+    if let Some(m) = config_migration {
+        log::info!(
+            "carried {} config file(s) from {:?} to {:?}: {}",
+            m.copied.len(),
+            m.from,
+            m.to,
+            m.copied.join(", ")
+        );
+    }
 
     // linux uni (url) go here.
     #[cfg(all(target_os = "linux", feature = "flutter"))]
@@ -387,11 +433,33 @@ pub fn core_main() -> Option<Vec<String>> {
                 if config::is_disable_installation() {
                     return None;
                 }
+                // TBFDesk: provisioning in the same unattended call, no GUI --
+                //   <installer>.exe --silent-install --import-setup <file|string|-> [--import-setup ...]
+                // Every value is read and validated BEFORE installing, so a typo or a
+                // truncated paste leaves no half-provisioned machine (exit 2, nothing done).
+                let mut setup_texts = Vec::new();
+                for (i, value) in crate::nemo_setup::import_setup_values(&args).iter().enumerate() {
+                    match crate::nemo_setup::read_setup_arg(value).and_then(|text| {
+                        crate::nemo_setup::provisioning_values(&text).map(|_| text)
+                    }) {
+                        Ok(text) => setup_texts.push(text),
+                        Err(err) => {
+                            // Never echo the value: a setup string carries the device key.
+                            println!("--import-setup #{}: {} -- nothing installed", i + 1, err);
+                            log::error!("silent install refused: --import-setup #{}: {}", i + 1, err);
+                            std::process::exit(2);
+                        }
+                    }
+                }
                 #[cfg(not(windows))]
                 let options = "desktopicon startmenu";
                 #[cfg(windows)]
                 let options = "desktopicon startmenu printer";
-                let res = platform::install_me(options, "".to_owned(), true, args.len() > 1);
+                // Debug only when asked: any extra argument used to switch it on, which now
+                // includes every --import-setup.
+                let debug = args.iter().any(|a| a == "--debug");
+                let res = platform::install_me(options, "".to_owned(), true, debug);
+                let installed = res.is_ok();
                 let text = match res {
                     Ok(_) => translate("Installation Successful!".to_string()),
                     Err(err) => {
@@ -406,6 +474,14 @@ pub fn core_main() -> Option<Vec<String>> {
                     .duration(Duration::Short)
                     .show()
                     .ok();
+                // An exit code a deployment tool can act on (the installer waits for us and
+                // passes it through).
+                if !installed {
+                    std::process::exit(1);
+                }
+                if !setup_texts.is_empty() {
+                    std::process::exit(nemo_provision_via_installed_exe(&setup_texts));
+                }
                 return None;
             } else if args[0] == "--uninstall-cert" {
                 #[cfg(windows)]
@@ -665,21 +741,71 @@ pub fn core_main() -> Option<Vec<String>> {
             // on an installed client - the point is to configure a machine before
             // anyone logs into its UI, which is also why it prints what it changed
             // instead of succeeding silently.
-            let Some(arg) = args.get(1).filter(|a| !a.trim().is_empty()) else {
-                println!("Usage: --import-setup <file|string>. See --help.");
+            // Repeatable (a setup string plus a separately handed-out device key), and `-`
+            // reads standard input:  --import-setup <file|string|-> [--import-setup ...]
+            let values = crate::nemo_setup::import_setup_values(&args);
+            if values.is_empty() {
+                println!("Usage: --import-setup <file|string|-> [--import-setup ...]. See --help.");
                 return None;
-            };
-            match crate::nemo_setup::import_setup(arg) {
-                Ok(applied) if applied.is_empty() => {
-                    println!("Setup string applied: this client was already configured this way.");
-                }
-                Ok(applied) => {
-                    println!("Setup string applied:");
-                    for line in applied {
-                        println!("  {}", line);
+            }
+            // An INSTALLED Windows client is configured through its SERVICE: that process
+            // takes the incoming sessions and keeps its own config, so writing this console
+            // user's config -- all this command used to do -- changed nothing for it.
+            #[cfg(windows)]
+            if crate::platform::is_installed() {
+                let mut texts = Vec::new();
+                for (i, value) in values.iter().enumerate() {
+                    match crate::nemo_setup::read_setup_arg(value) {
+                        Ok(text) => texts.push(text),
+                        Err(err) => {
+                            println!("--import-setup #{}: {}", i + 1, err);
+                            std::process::exit(2);
+                        }
                     }
                 }
-                Err(err) => println!("Could not import that setup string: {}", err),
+                // A just-installed service may still be starting: the installer asks for
+                // a longer wait (nemo_provision_via_installed_exe).
+                let wait = std::env::var("TBFDESK_PROVISION_WAIT_SECS")
+                    .ok()
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .unwrap_or(30);
+                std::process::exit(nemo_provision_service(&texts, std::time::Duration::from_secs(wait)));
+            }
+            let mut failed = false;
+            for arg in &values {
+                match crate::nemo_setup::import_setup(arg) {
+                    Ok(outcome) => {
+                        if outcome.applied.is_empty() {
+                            println!(
+                                "Setup string applied: this client was already configured this way."
+                            );
+                        } else {
+                            println!("Setup string applied:");
+                            for line in outcome.applied {
+                                println!("  {}", line);
+                            }
+                        }
+                        // A half-applied bundle used to exit 0 with a cheerful list. Say
+                        // which values did NOT stick and why, and fail, so an unattended
+                        // provisioning run cannot report success for a machine that cannot
+                        // reach the server.
+                        if !outcome.refused.is_empty() {
+                            println!("NOT applied — this client is not fully provisioned:");
+                            for line in outcome.refused {
+                                println!("  {}", line);
+                            }
+                            failed = true;
+                        }
+                    }
+                    Err(err) => {
+                        // This used to print and still exit 0.
+                        println!("Could not import that setup string: {}", err);
+                        failed = true;
+                    }
+                }
+            }
+            if failed {
+                std::process::exit(1);
             }
             return None;
         } else if args[0] == "--option" {
@@ -1166,6 +1292,103 @@ fn is_root() -> bool {
     }
     #[allow(unreachable_code)]
     crate::platform::is_root()
+}
+
+/// Unattended provisioning of an installed client (`--silent-install --import-setup`, or
+/// `--import-setup` on an installed client): push setup strings / bare device keys -- already
+/// read -- into the RUNNING service, then read its options back and verify every value
+/// stuck. Prints what changed, never a secret. Exit code: 0 provisioned, 1 the service did
+/// not take it (or did not answer), 2 unusable input.
+#[cfg(windows)]
+fn nemo_provision_service(texts: &[String], wait: std::time::Duration) -> i32 {
+    let mut values: Vec<(String, String)> = Vec::new();
+    for (i, text) in texts.iter().enumerate() {
+        match crate::nemo_setup::provisioning_values(text) {
+            Ok(v) => {
+                for (key, value) in v {
+                    values.retain(|(k, _)| k != &key); // a later value wins
+                    values.push((key, value));
+                }
+            }
+            Err(err) => {
+                println!("--import-setup #{}: {} -- not provisioned", i + 1, err);
+                return 2;
+            }
+        }
+    }
+    match crate::ipc::nemo_push_options_to_service(values.clone(), wait) {
+        Ok(after) => {
+            let missing: Vec<&str> = values
+                .iter()
+                .filter(|(k, v)| after.get(k) != Some(v))
+                .map(|(k, _)| k.as_str())
+                .collect();
+            println!("TBFDesk service provisioned:");
+            for (key, value) in &values {
+                match key.as_str() {
+                    "nemo-device-key" => println!("  device key: imported"),
+                    crate::nemo_setup::OPTION_MANAGEMENT_ENABLED
+                    | crate::nemo_setup::OPTION_SETUP_OVERRIDES_EXE => {}
+                    _ => println!("  {}: {}", key, value),
+                }
+            }
+            if !missing.is_empty() {
+                println!("NOT applied by the service: {}", missing.join(", "));
+                log::error!("unattended provisioning: the service did not take {}", missing.join(", "));
+                return 1;
+            }
+            log::info!("unattended provisioning: {} option(s) pushed into the service and verified", values.len());
+            0
+        }
+        Err(err) => {
+            println!("NOT provisioned: {}", err);
+            log::error!("unattended provisioning failed: {}", err);
+            1
+        }
+    }
+}
+
+/// `--silent-install --import-setup`: this process is the installer's TEMPORARY copy, and
+/// the service only talks to its own executable (ipc/auth.rs rejects an executable
+/// mismatch, deliberately). So the provisioning is handed to the binary that was just
+/// installed -- each setup text on its STDIN, never on its command line, where any local
+/// user could read the device key from the process list. Its report goes to our stdout;
+/// its exit code is ours.
+#[cfg(windows)]
+fn nemo_provision_via_installed_exe(texts: &[String]) -> i32 {
+    use std::io::Write;
+    let exe = crate::platform::windows::get_install_info().3;
+    if !std::path::Path::new(&exe).exists() {
+        println!("NOT provisioned: the installed client was not found at {}", exe);
+        return 1;
+    }
+    for (i, text) in texts.iter().enumerate() {
+        let mut child = match std::process::Command::new(&exe)
+            .args(["--import-setup", "-"])
+            .env("TBFDESK_PROVISION_WAIT_SECS", "120")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::inherit())
+            .spawn()
+        {
+            Ok(child) => child,
+            Err(err) => {
+                println!("NOT provisioned: could not start {}: {}", exe, err);
+                return 1;
+            }
+        };
+        if let Some(mut stdin) = child.stdin.take() {
+            if let Err(err) = stdin.write_all(text.as_bytes()) {
+                println!("NOT provisioned: --import-setup #{}: {}", i + 1, err);
+                return 1;
+            }
+        } // dropped here: EOF for the reader
+        let code = child.wait().ok().and_then(|s| s.code()).unwrap_or(1);
+        if code != 0 {
+            return code;
+        }
+    }
+    0
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos", test))]

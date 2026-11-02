@@ -12,7 +12,7 @@ class PortForward: Reactor.Component {
       }
       var pfs =  this.pfs.map(function(pf, i) {
         return <tr key={i} .value>
-            <td>{is_rdp ? <button .button #new-rdp>New RDP</button> : pf[0]}</td>
+            <td>{is_rdp ? <button .button #new-rdp>{translate('New RDP')}</button> : pf[0]}</td>
             <td .right-arrow style="text-align: center; padding-left: 0">{args.length ? svg_arrow : ""}</td>
             <td>{pf[1] || "localhost"}</td>
             <td>{pf[2]}</td>

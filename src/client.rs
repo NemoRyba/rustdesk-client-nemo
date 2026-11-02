@@ -186,6 +186,22 @@ pub fn get_key_state(key: enigo::Key) -> bool {
     ENIGO.lock().unwrap().get_key_state(key)
 }
 
+/// Which setting made this session relay-only, in the words of the settings UI, so a
+/// log or an error dialog points at the switch to turn off.
+fn relay_only_reason(interface: &impl Interface) -> &'static str {
+    let lch = interface.get_lch();
+    let lch = lch.read().unwrap();
+    if config::option2bool("force-always-relay", &lch.get_option("force-always-relay")) {
+        "'Always connect via relay' is on for this peer"
+    } else if use_ws() {
+        "'Use WebSocket' is on"
+    } else if Config::is_proxy() {
+        "a proxy is configured"
+    } else {
+        "this session was opened as a relay session"
+    }
+}
+
 fn check_nemo_outbound_policy(peer: &str) -> ResultType<()> {
     if Config::get_option(OPTION_NEMO_OUTBOUND_ENABLED) == "N" {
         bail!("Outgoing connections are disabled by TBF policy");
@@ -404,9 +420,63 @@ impl Client {
         // through to the unchanged hole-punch / relay path below. Skipped for
         // `other_server` sessions (whose endpoints are not ours to know) and when the
         // user asked for relay explicitly.
+        // "Connect directly" (per-peer nemo-force-direct, set by the peer menu): the
+        // operator asked for THIS path specifically, usually to find out whether a port
+        // forward works. Consumed here, before the attempt, so it governs exactly one
+        // connection however that connection ends.
+        let force_direct = other_server.is_empty() && crate::nemo_direct::take_force_direct(peer);
+        // A relay-only setting skips the direct endpoint, and used to do it without a
+        // word: the session log then shows a relay and nothing about why the forward was
+        // never tried. Say which setting it was. And "Connect directly" must not end on
+        // the relay anyway -- that is the one answer that option exists to rule out.
+        if other_server.is_empty() && interface.is_force_relay() {
+            let why = relay_only_reason(&interface);
+            if force_direct {
+                // `{..}` is the translator's placeholder (lang.rs): the message is
+                // shown translated, with the peer and the setting in it.
+                bail!(
+                    "{}{{{} ({})}} failed: this client is set to use the relay only. Turn \
+                     that off to test the direct path.",
+                    FORCED_DIRECT_FAILED,
+                    peer,
+                    why
+                );
+            }
+            let endpoint = crate::nemo_direct::endpoint_label(peer);
+            if !endpoint.is_empty() {
+                log::info!(
+                    "TBFDesk direct: endpoint for {} not tried, relay only: {}",
+                    peer,
+                    why
+                );
+                crate::nemo_direct::report_attempt(peer, &endpoint, "not-tried", None, why);
+            }
+        }
         if other_server.is_empty() && !interface.is_force_relay() {
             if let Some(conn) = Self::try_nemo_direct(peer, key).await {
                 return Ok((conn, (0, "".to_owned()), false));
+            }
+            // Falling back now would answer the wrong question -- a session that quietly
+            // went over the relay looks like a success and proves nothing about the
+            // forward -- so fail with the reason instead.
+            if force_direct {
+                let endpoint = crate::nemo_direct::endpoint_label(peer);
+                if endpoint.is_empty() {
+                    bail!(
+                        "{}{{{}}} failed: this server has published no direct endpoint for \
+                         it. Set 'Reachable at' for it in the dashboard, or connect \
+                         normally.",
+                        FORCED_DIRECT_FAILED,
+                        peer
+                    );
+                }
+                bail!(
+                    "{}{{{} ({})}} failed. The relay was NOT used because you asked for a \
+                     direct connection; see the log for the reason.",
+                    FORCED_DIRECT_FAILED,
+                    peer,
+                    endpoint
+                );
             }
         }
         if crate::nemo_public_network_blocked()
@@ -508,7 +578,14 @@ impl Client {
         Option<KcpStream>,
         &'static str,
     )> {
-        let endpoint = crate::nemo_direct::endpoint_for(peer_id)?;
+        let Some(endpoint) = crate::nemo_direct::endpoint_for(peer_id) else {
+            log::info!(
+                "TBFDesk direct: no direct endpoint for {}: {}. Using hole punch / relay.",
+                peer_id,
+                crate::nemo_direct::why_no_endpoint(peer_id)
+            );
+            return None;
+        };
         let budget = crate::nemo_direct::direct_timeout();
         let budget_ms = budget.as_millis() as u64;
         log::info!(
@@ -530,6 +607,13 @@ impl Client {
                     endpoint.target(),
                     start.elapsed()
                 );
+                crate::nemo_direct::report_attempt(
+                    peer_id,
+                    &endpoint.target(),
+                    "established",
+                    Some(start.elapsed().as_millis()),
+                    "",
+                );
                 Some((conn, true, pk, None, "TCP"))
             }
             Ok(Err(e)) => {
@@ -538,6 +622,13 @@ impl Client {
                     endpoint.target(),
                     e
                 );
+                crate::nemo_direct::report_attempt(
+                    peer_id,
+                    &endpoint.target(),
+                    "failed",
+                    Some(start.elapsed().as_millis()),
+                    &e.to_string(),
+                );
                 None
             }
             Err(_) => {
@@ -545,6 +636,13 @@ impl Client {
                     "TBFDesk direct: {} did not complete within {}ms; falling back to hole punch / relay",
                     endpoint.target(),
                     budget_ms
+                );
+                crate::nemo_direct::report_attempt(
+                    peer_id,
+                    &endpoint.target(),
+                    "failed",
+                    Some(start.elapsed().as_millis()),
+                    &format!("did not complete within {budget_ms} ms"),
                 );
                 None
             }
@@ -557,7 +655,7 @@ impl Client {
         endpoint: &crate::nemo_direct::DirectEndpoint,
         budget_ms: u64,
     ) -> ResultType<(Stream, Option<Vec<u8>>)> {
-        if let Some(cfg) = crate::nemo_direct::knock_config() {
+        if let Some(cfg) = crate::nemo_direct::knock_config_for(peer_id) {
             let cfg = crate::nemo_direct::KnockConfig {
                 // A per-endpoint knock port wins: a fleet behind several edges needs one
                 // SPA port per site, wherever that site's router forwards it.
@@ -1112,18 +1210,41 @@ impl Client {
     // plaintext). Bails on a signature-verify failure under a required-encryption policy
     // so the channel is never silently downgraded by a MITM.
     async fn secure_connection_direct(peer_id: &str, conn: &mut Stream) -> ResultType<Option<Vec<u8>>> {
+        // Each refusal below names what was found behind the endpoint. On a direct
+        // endpoint these are the port-forward mistakes, and "the peer's key is
+        // unavailable" (the caller's generic message) sends the operator looking at key
+        // distribution when the forward simply lands on the wrong thing. Found in the
+        // lab: an endpoint pointing at hbbs logged exactly that.
         let bytes = match timeout(READ_TIMEOUT, conn.next()).await? {
             Some(res) => res?,
-            None => bail!("Reset by the peer"),
+            None => bail!(
+                "the endpoint accepted the connection and closed it without a TBFDesk \
+                 handshake (a forward to a host or port where nothing serves it?)"
+            ),
         };
         let si = match Message::parse_from_bytes(&bytes).ok().and_then(|m| m.union) {
             Some(message::Union::SignedId(si)) => si,
             // Not a secure handshake (peer sent no SignedId): let the caller decide.
-            _ => return Ok(None),
+            _ => {
+                if crate::common::nemo_require_encrypted_session() {
+                    bail!(
+                        "the endpoint answered, but not with a TBFDesk handshake ({} bytes) \
+                         - the forward reaches a different service, not the workstation",
+                        bytes.len()
+                    );
+                }
+                return Ok(None);
+            }
         };
         let Some(sign_pk) = crate::common::nemo_anchored_key_for_signed_id(&si.id) else {
             // No server-pushed key for the id this peer claims; caller fails closed
             // under policy (or falls back to plaintext when encryption isn't required).
+            if crate::common::nemo_require_encrypted_session() {
+                bail!(
+                    "a TBFDesk peer answered, but this client holds no server key for the id \
+                     it claims (nemo-peer-keys); has this client received its policy?"
+                );
+            }
             return Ok(None);
         };
         let (id, their_pk_b) = match decode_id_pk(&si.id, &sign_pk) {
@@ -2331,6 +2452,12 @@ impl LoginConfigHandler {
     pub fn save_view_style(&mut self, value: String) {
         let mut config = self.load_config();
         config.view_style = value;
+        // Marks the style as the user's own choice. Every peer file carries a
+        // view_style from the moment it is created, so without this a stored "original"
+        // could not be told apart from "never chosen" (see Session::get_view_style).
+        config
+            .options
+            .insert(OPTION_NEMO_VIEW_STYLE_CHOSEN.to_owned(), "Y".to_owned());
         self.save_config(config);
     }
 
@@ -3110,6 +3237,14 @@ impl LoginConfigHandler {
             avatar,
             ..Default::default()
         };
+        // Management authorization: the target applies the permissions the admin set for
+        // this user and refuses the session when it requires authorization and none is
+        // presented. Sent on every path, direct sessions included -- those never pass
+        // the server, which is exactly why the target has to see this (nemo_control).
+        if let Some((ticket, sig)) = crate::nemo_control::login_proof(&lr.username, &self.hash.challenge) {
+            lr.nemo_control_ticket = ticket;
+            lr.nemo_control_sig = sig.into();
+        }
         match self.conn_type {
             ConnType::FILE_TRANSFER => lr.set_file_transfer(FileTransfer {
                 dir: self.get_remote_dir(),
@@ -4293,6 +4428,15 @@ lazy_static::lazy_static! {
     ].iter().cloned().collect();
 }
 
+/// Per-peer option: the view style in the peer file was picked by the user.
+pub const OPTION_NEMO_VIEW_STYLE_CHOSEN: &str = "nemo-view-style-chosen";
+
+/// Every "Connect directly" failure starts with this. Such a failure must never be retried
+/// automatically: the retry is an ordinary connection, which ends on the relay and shows
+/// a working session -- exactly the answer "Connect directly" exists to rule out. Found in
+/// the lab: the relay-only refusal was retried and the session came up over the relay.
+pub const FORCED_DIRECT_FAILED: &str = "Direct connection to ";
+
 /// Check if the given message is an error and can be retried.
 ///
 /// # Arguments
@@ -4302,7 +4446,8 @@ lazy_static::lazy_static! {
 /// * `text` - The text of the message.
 #[inline]
 pub fn check_if_retry(msgtype: &str, title: &str, text: &str, retry_for_relay: bool) -> bool {
-    msgtype == "error"
+    !text.starts_with(FORCED_DIRECT_FAILED)
+        && msgtype == "error"
         && title == "Connection Error"
         && ((text.contains("10054") || text.contains("104")) && retry_for_relay
             || (!text.to_lowercase().contains("offline")
@@ -4651,7 +4796,7 @@ async fn udp_nat_connect(
 
 #[cfg(test)]
 mod nemo_h33_tests {
-    use super::nemo_source_marker_with;
+    use super::{check_if_retry, nemo_source_marker_with, FORCED_DIRECT_FAILED};
 
     /// H33: the session token is a bearer credential -- anyone holding it can act as
     /// that user against the management API. It used to be appended to the rendezvous
@@ -4677,5 +4822,26 @@ mod nemo_h33_tests {
             !plaintext.contains(token),
             "the token must never appear in a marker built for an unencrypted socket"
         );
+    }
+
+    /// A "Connect directly" failure is final. An automatic retry would be an ordinary
+    /// connection and end on the relay, hiding the very result the operator asked for.
+    #[test]
+    fn a_forced_direct_failure_is_never_retried() {
+        for text in [
+            format!("{FORCED_DIRECT_FAILED}91090423 failed: this client is set to use the relay only ('Use WebSocket' is on). Turn that off to test the direct path."),
+            format!("{FORCED_DIRECT_FAILED}91090423 failed: this server has published no direct endpoint for it."),
+            // Ids and ports that contain "104" must not slip through the errno rule.
+            format!("{FORCED_DIRECT_FAILED}91041040 failed (85.126.226.2:21104). The relay was NOT used."),
+        ] {
+            for retry_for_relay in [false, true] {
+                assert!(
+                    !check_if_retry("error", "Connection Error", &text, retry_for_relay),
+                    "{text}"
+                );
+            }
+        }
+        // Unchanged for everything else: a plain reset during a normal session retries.
+        assert!(check_if_retry("error", "Connection Error", "Reset by the peer", false));
     }
 }

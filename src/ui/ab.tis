@@ -1,9 +1,17 @@
 var selectTags = [];
 var ab = { tags: [], peers: [] };
 // Address-book reload icon (styled via .ab-reload-btn svg in index.css).
-// NOTE: MultipleSessions.onSize() must skip the icon's span — it sizes tabs by
-// text length, and a textless span would get max-width:0 (invisible icon).
 var svg_reload = <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 2v6h6M2.66 15.57a10 10 0 1 0 .57-8.38"/></svg>;
+// "Direct access possible". A DRAWN bolt, not a text glyph: a bare ⇄ or ⚡ renders as
+// a boxy smudge at badge size on Windows. The viewBox is cropped to the bolt, so the
+// CSS box is the bolt. White inside the green "Direkt" pill (svg_bolt), green on its
+// own next to the hint under the ID box (svg_direct).
+var svg_bolt = <svg xmlns="http://www.w3.org/2000/svg" viewBox="6.6 4.1 10.8 15.8" width="9" height="13">
+    <path d="M13.4 4.6 L7.1 13.1 L11.1 13.1 L10.6 19.4 L16.9 10.9 L12.9 10.9 Z" fill="#ffffff" />
+</svg>;
+var svg_direct = <svg xmlns="http://www.w3.org/2000/svg" viewBox="6.6 4.1 10.8 15.8" width="9" height="13">
+    <path d="M13.4 4.6 L7.1 13.1 L11.1 13.1 L10.6 19.4 L16.9 10.9 L12.9 10.9 Z" fill="#1a7a34" />
+</svg>;
 var abLoading;
 var abError;
 var current_menu_peer_id = '';
@@ -20,10 +28,18 @@ class AddressBook: Reactor.Component
     
     function render() {
         if (!handler.get_local_option("access_token")) {
-            // TBFDesk: no stock "Login" link here — signing in is handled only by our
-            // custom login gate (App.render, shown when the server requires login).
-            // When login isn't required this pane is simply idle (non-clickable hint).
-            return <div style="margin: *; text-align: center; color: color(lighter-text)">{translate("Please sign in to continue")}</div>;
+            // TBFDesk: the address book is served per account, so it is empty until
+            // someone signs in. This pane used to say "please sign in" with nothing to
+            // click, on the theory that the mandatory login gate would handle it -- but
+            // that gate only appears when the SERVER requires login, so on every other
+            // server the user was told to sign in and given no way to. The button opens
+            // the same form the gate uses (index.tis nemoOpenLogin).
+            if (disable_account)
+                return <div style="margin: *; text-align: center; color: color(lighter-text)">{translate("Please sign in to continue")}</div>;
+            return <div .nemo-ab-signin>
+                <div>{translate("nemo_ab_signin_tip")}</div>
+                <button .button #ab-login>{translate("Login")}</button>
+            </div>;
         }
         if (abLoading) {
             return <div style="margin: *"><progress style="color: #0071ff" /></div>;
@@ -323,9 +339,26 @@ class SessionList: Reactor.Component {
         return tmp;
     }
 
+    // Direct access, asked for explicitly, is offered only for peers the server
+    // published an endpoint for (#connect-direct is hidden otherwise, see the #menu
+    // handler): connecting "directly" to a machine with no port forward is not
+    // something an operator can ask for. Unlike the automatic attempt it does NOT fall
+    // back to the relay -- a session that quietly relayed would answer the wrong
+    // question when what you are testing is the forward.
     function render() {
         var sessions = this.getSessions();
         if (sessions.length == 0) {
+            // TODO 22: a bare "Empty" is indistinguishable from a broken address book.
+            // The server returns a REASON when it refuses one (handleAbError shows
+            // that); this covers the other case - it answered, with no peers for this
+            // account - and says what decides that, so nobody debugs the client for an
+            // ACL question.
+            if (this.type == "ab") {
+                return <div style="margin: *; width: 300px; text-align: center; color: color(lighter-text)">
+                    <div style="font-size: 1.4em">{translate("Empty")}</div>
+                    <div style="margin-top: 1em; font-size: 0.9em">{translate("The server shared no computers with this account. Check the user's access rights in the TBFDesk dashboard (ACL & Policy), then use the reload button above.")}</div>
+                </div>;
+            }
             return <div style="margin: *; font-size: 1.6em; width: 100px; text-align: center;">{translate("Empty")}</div>;
         }
         var me = this;
@@ -334,9 +367,12 @@ class SessionList: Reactor.Component {
             <popup>
                 <menu.context #remote-context>
                     <li #connect>{translate('Connect')}</li>
+                    <li #connect-direct>{translate('Connect directly (no relay)')}</li>
+                    <li #connect-relay>{translate('Connect via relay')}</li>
                     <li #transfer>{translate('Transfer file')}</li>
                     <li #tunnel>{translate('TCP tunneling')}</li>
                     <li #force-always-relay><span>{svg_checkmark}</span>{translate('Always connect via relay')}</li>
+                    <li #reset-prefs>{translate('Reset preferences')}</li>
                     <li #rdp>RDP<EditRdpPort /></li>
                     <li #wol>{translate('WOL')}</li>
                     <div .separator />
@@ -362,15 +398,31 @@ class SessionList: Reactor.Component {
         // Clean secondary label: "user@host", or just the host / user, never a
         // bare "@host" when the username is empty (Nemo peers have no username).
         var userhost = username ? (hostname ? username + "@" + hostname : username) : hostname;
+        // Can this machine be reached WITHOUT the relay? The relay costs about a third
+        // of the link, so this is the most consequential thing to know about a peer
+        // before dialling it, and it was invisible: the endpoint map arrives in the
+        // signed policy and was only ever read by the connect path.
+        var directEp = "";
+        try { directEp = handler.nemo_direct_endpoint(id) || ""; } catch (e) { directEp = ""; }
+        var directTip = directEp
+            ? translate("Direct access possible") + " — " + directEp + ". " + translate("Right-click for a direct-only connection.")
+            : "";
+        // One elongated chip, bolt + word on the same line: a bare icon was not noticed,
+        // and a separate disc next to the chip read as clutter.
+        var directMark = directEp ? <span .nemo-direct-badge title={directTip}>{svg_bolt}<span .nemo-direct-label>{translate("Direct")}</span></span> : "";
+        var tileTitle = (alias ? "ID: " + id : "") + (directEp ? (alias ? "  •  " : "") + directTip : "");
         if (this.style == "list") {
-            return <div .remote-session-link .remote-session-list id={id} platform={platform} title={alias ? "ID: " + id : ""}>
+            return <div .remote-session-link .remote-session-list id={id} platform={platform} title={tileTitle}>
                 <div .platform style={"background:"+string2RGB(id+platform, 0.5)}>
                     {platform && platformSvg(platform, "white")}
                 </div>
                 <div .name>
                     <div>
                         <div #alias .ellipsis>{alias ? alias : formatId(id)}</div>
-                        <div .username .ellipsis>{userhost}</div>
+                        <div .nemo-subline>
+                            <div .username .ellipsis>{userhost}</div>
+                            {directMark}
+                        </div>
                     </div>
                 </div>
                 <div>
@@ -378,10 +430,11 @@ class SessionList: Reactor.Component {
                 </div>
             </div>;
         }
-        return <div .remote-session-link .remote-session id={id} platform={platform} title={alias ? "ID: " + id : ""} style={"background:"+string2RGB(id+platform, 0.5)}>
+        return <div .remote-session-link .remote-session id={id} platform={platform} title={tileTitle} style={"background:"+string2RGB(id+platform, 0.5)}>
             <div .platform>
                 {platform && platformSvg(platform, "white")}
                 <div .username .ellipsis>{userhost}</div>
+                {directMark}
             </div>
             <div .text>
                 <div #alias .ellipsis>{alias ? alias : formatId(id)}</div>
@@ -403,6 +456,14 @@ class SessionList: Reactor.Component {
         this.$(#forget-password).style.set{
             display: handler.peer_has_password(id) ? "block" : "none",
         };
+        // Direct access is only offered where the server says it exists, and the entry
+        // names the address so the operator can see WHICH forward is about to be tried.
+        var cd = this.$(#connect-direct);
+        if (cd) {
+            var ep = handler.nemo_direct_endpoint(id);
+            cd.style.set{ display: ep ? "block" : "none" };
+            if (ep) cd.text = translate('Connect directly (no relay)') + "  —  " + ep;
+        }
         if (!this.type || this.type == "fav") {
             var in_fav = handler.get_fav().indexOf(id) >= 0;
             this.$(#add-fav).style.set{
@@ -440,6 +501,21 @@ class SessionList: Reactor.Component {
         var id = current_menu_peer_id;
         if (action == "connect") {
             createNewConnect(id, "connect");
+        } else if (action == "connect-direct") {
+            // One-shot: the connection attempt CONSUMES the flag (take_force_direct),
+            // so this is "use the forward for this attempt or tell me why not" and
+            // never a mode the peer gets stuck in.
+            handler.nemo_set_force_direct(id, true);
+            createNewConnect(id, "connect");
+        } else if (action == "reset-prefs") {
+            msgbox("custom-reset-prefs", translate("Reset preferences"), translate("nemo_reset_prefs_tip"), "", function(res=null) {
+                if (!res) return;
+                if (!handler.nemo_reset_peer_prefs(id)) msgbox("custom-error", "Error", translate("nemo_reset_prefs_none"));
+            });
+        } else if (action == "connect-relay") {
+            // One-shot as well: "<id>/r" is the client's own relay-for-this-session form
+            // (handle_relay_id), unlike "Always connect via relay", which sticks.
+            createNewConnect(id + "/r", "connect");
         } else if (action == "transfer") {
             createNewConnect(id, "file-transfer");
         } else if (action == "wol") {
@@ -577,7 +653,6 @@ class MultipleSessions: Reactor.Component {
         self.timer(60ms, function() {
             me.hidden = false;
             me.update();
-	    self.timer(30ms, function() { me.onSize(); });
         });
     }
 
@@ -589,27 +664,23 @@ class MultipleSessions: Reactor.Component {
         this.stupidUpdate();
     }
 
-    function onSize() {
-        var w = this.$(.sessions-bar .sessions-tab).box(#width);
-        var len = translate('Recent sessions').length;
-        var totalChars = 0;
-        var nEle = 0;
-        // The reload icon span has no text — the proportional width share below
-        // would give it max-width:0 and squash it invisible, so leave it alone.
-        for (var el in this.$$(#sessions-type span)) {
-            if (el.id == "nemo-refresh-ab") continue;
-            nEle += 1;
-            totalChars += el.text.length;
-        }
-        for (var el in this.$$(#sessions-type span)) {
-            if (el.id == "nemo-refresh-ab") continue;
-            var maxWidth = (w - nEle * 2 * 8) * el.text.length / totalChars;
-            if (maxWidth < 0) maxWidth = 36;
-            el.style.set{
-                "max-width": maxWidth + "px",
-            };
-        }
-    }
+    // Upstream sized the tabs here: it shared the row's width out between them in
+    // proportion to each label's character count and set a hard max-width, which with
+    // @ELLIPSIS meant that as soon as the labels did not fit, EVERY one of them was cut
+    // ("Letzte Sitz… / Favor… / Im LAN e… / Adres…") -- four unreadable tabs instead of
+    // the one that was actually too long. Four tabs appear on an installed client, and
+    // German needs more room than English, so that was the normal case, not an edge one.
+    //
+    // With nothing clamping them the spans are plain inline-blocks again, so the row
+    // wraps by itself: four German tabs come out as "Letzte Sitzungen | Favoriten |
+    // Im LAN erkannt" and "Adressbuch ⟳" on a second line, every label whole. Nothing
+    // left to measure, so no `onSize` and no `view.on("size")` handler -- which also
+    // means the tabs no longer depend on a size event arriving at all.
+    //
+    // Do NOT give this div a wrapping `flow` to "help": `.sessions-bar` is
+    // `flow: horizontal` and the tab div is `width:*`, and setting `horizontal-wrap`
+    // or `horizontal-flow` on it collapses it to zero width -- the tabs disappear
+    // entirely. Verified both ways in the lab.
 }
 
 function discover() {
@@ -643,7 +714,6 @@ class LanPeers: Reactor.Component {
     }
 }
 
-view.on("size", function() { if (app && app.multipleSessions) app.multipleSessions.onSize(); });
 
 /*
 {

@@ -25,7 +25,7 @@
 //! produced). Being wire-compatible means the audited `fwknopd` validates our packets;
 //! we never have to be the authority on whether a knock is genuine.
 
-use hbb_common::{anyhow::anyhow, config::Config, log, ResultType};
+use hbb_common::{anyhow::anyhow, config::Config, log, tokio, ResultType};
 use std::{collections::HashMap, time::Duration};
 
 use aes::Aes256;
@@ -46,9 +46,18 @@ pub const OPTION_KNOCK_ENABLED: &str = "nemo-knock-enabled";
 /// Default UDP port the SPA goes to, when an endpoint entry carries none.
 pub const OPTION_KNOCK_PORT: &str = "nemo-knock-port";
 /// base64 Rijndael (AES-256) key, shared with the fwknopd on the edge. SECRET.
+/// The fleet-wide fallback; a per-peer key in `nemo-knock-keys` overrides it.
 pub const OPTION_KNOCK_KEY: &str = "nemo-knock-key";
 /// base64 HMAC-SHA256 key, shared with the same fwknopd. SECRET.
 pub const OPTION_KNOCK_HMAC_KEY: &str = "nemo-knock-hmac-key";
+/// Per-peer SPA keys: `id,rijndael_b64,hmac_b64` entries joined by `;`. SECRET.
+///
+/// This is what gives each workstation its own knock key. The server hands a controller
+/// only the rows for peers it may reach, so a key leaked from one machine opens only the
+/// one port it belongs to — pc2's key can never knock pc7's edge open. A peer that has a
+/// row here uses it; a peer that does not falls back to the fleet-wide
+/// `nemo-knock-key`/`nemo-knock-hmac-key`, so the single-key deployment keeps working.
+pub const OPTION_KNOCK_KEYS: &str = "nemo-knock-keys";
 /// How long to wait after the knock before connecting.
 pub const OPTION_KNOCK_DELAY_MS: &str = "nemo-knock-delay-ms";
 /// Username stamped into the SPA payload (informational unless fwknopd requires it).
@@ -66,6 +75,7 @@ pub const NEMO_DIRECT_SETTINGS: &[&str] = &[
     OPTION_KNOCK_PORT,
     OPTION_KNOCK_KEY,
     OPTION_KNOCK_HMAC_KEY,
+    OPTION_KNOCK_KEYS,
     OPTION_KNOCK_DELAY_MS,
     OPTION_KNOCK_USER,
     OPTION_KNOCK_SOURCE_IP,
@@ -148,6 +158,213 @@ pub fn endpoint_for(peer_id: &str) -> Option<DirectEndpoint> {
     parse_endpoints(&raw).remove(peer_id)
 }
 
+/// Per-peer: "Y" => connect ONLY over the published direct endpoint, and fail with a
+/// reason instead of quietly falling back to hole punch / relay.
+///
+/// The mirror image of the existing per-peer `force-always-relay`. Direct is already
+/// automatic and silently additive, which is right as a default and useless as a test:
+/// when an operator wants to know whether a port forward works, a connection that
+/// succeeded over the relay anyway answers nothing. This is also what the Peers panel's
+/// "Connect directly" entry sets for the one attempt.
+pub const PEER_OPTION_FORCE_DIRECT: &str = "nemo-force-direct";
+
+/// Did the operator ask for a direct-only attempt to this peer?
+pub fn force_direct(peer_id: &str) -> bool {
+    hbb_common::config::PeerConfig::load(peer_id)
+        .options
+        .get(PEER_OPTION_FORCE_DIRECT)
+        .map(|v| v == "Y")
+        .unwrap_or(false)
+}
+
+/// Read the flag and CLEAR it, at the start of one connection attempt.
+///
+/// One-shot by construction: "Connect directly" answers a question about this attempt
+/// ("does the forward work?"), so leaving the flag set would silently turn the peer into
+/// a direct-only peer and break the next ordinary connect when the forward goes away.
+/// Consuming it here rather than in the UI means it is cleared whether the attempt
+/// succeeds, fails or the window is closed mid-connect.
+pub fn take_force_direct(peer_id: &str) -> bool {
+    let mut c = hbb_common::config::PeerConfig::load(peer_id);
+    if c.options.remove(PEER_OPTION_FORCE_DIRECT).is_none() {
+        return false;
+    }
+    c.store(peer_id);
+    true
+}
+
+/// Does this client currently hold a per-peer SPA key for `peer_id` (as opposed to
+/// falling back to the fleet-wide key)? For the UI's knock status line.
+pub fn has_peer_knock_key(peer_id: &str) -> bool {
+    per_peer_knock_key(peer_id).is_some()
+}
+
+/// The SPA (knock) port that a connection to `peer_id` would use, or `None` when knocking
+/// is off on this client. The per-endpoint knock port wins, else the global one. For the
+/// UI only; the real send path computes the same value in `knock_config_for`.
+pub fn knock_port_for(peer_id: &str) -> Option<u16> {
+    if Config::get_option(OPTION_KNOCK_ENABLED) != "Y" {
+        return None;
+    }
+    let global = Config::get_option(OPTION_KNOCK_PORT)
+        .trim()
+        .parse::<u16>()
+        .ok()
+        .filter(|p| *p > 0)
+        .unwrap_or(DEFAULT_KNOCK_PORT);
+    Some(endpoint_for(peer_id).and_then(|e| e.knock_port).unwrap_or(global))
+}
+
+/// The endpoint for this id as plain `host:port`, for the UI. Empty when the management
+/// server has not published one, which is exactly when direct access is NOT possible.
+pub fn endpoint_label(peer_id: &str) -> String {
+    endpoint_for(peer_id)
+        .map(|e| e.target())
+        .unwrap_or_default()
+}
+
+/// Every id the server has published an endpoint for. The address book marks these, so
+/// an operator can see at a glance which machines cost a third of the link and which do
+/// not.
+pub fn direct_capable_ids() -> Vec<String> {
+    let raw = Config::get_option(OPTION_DIRECT_ENDPOINTS);
+    if raw.trim().is_empty() {
+        return Vec::new();
+    }
+    let mut ids: Vec<String> = parse_endpoints(&raw).into_keys().collect();
+    ids.sort();
+    ids
+}
+
+/// Why there is no direct endpoint for `peer_id`, in words a log reader can act on.
+///
+/// The direct attempt used to return silently when no endpoint was known, so the
+/// session log of a controller that never received one said nothing about direct at
+/// all -- indistinguishable from an old build, or from the feature being off. The
+/// three causes need three different fixes (turn the managed poll on, find out why the
+/// poll never got a policy, publish the endpoint in the dashboard), so name which one
+/// it is.
+pub fn why_no_endpoint(peer_id: &str) -> String {
+    // The server also withholds a set endpoint, deliberately, so say so: a blocked peer's
+    // address is never handed out, and a controller only learns endpoints of targets its
+    // own outbound policy allows.
+    const WITHHELD: &str = " (if it is set, the server withholds it: the peer is blocked, \
+                            or it is not in this client's allowed outbound targets)";
+    if Config::get_option("nemo-management-enabled") != "Y" {
+        return "the managed policy poll is OFF on this client, so it never receives \
+                endpoints (import the setup string again, or enable it)"
+            .to_owned();
+    }
+    let issued = Config::get_option("nemo-policy-issued-ts");
+    if issued.trim().is_empty() {
+        return "this client has not received a policy from the management server yet \
+                (check that it can reach the API and that its device key is approved)"
+            .to_owned();
+    }
+    let ids = direct_capable_ids();
+    let known: Vec<&String> = ids.iter().filter(|i| i.as_str() != peer_id).collect();
+    if known.is_empty() {
+        format!(
+            "the last policy (issued {issued}) published no direct endpoints at all; \
+             set 'Reachable at' for {peer_id} in the dashboard{WITHHELD}"
+        )
+    } else {
+        format!(
+            "the last policy (issued {issued}) has endpoints for {} other peer(s) ({}) \
+             but none for {peer_id}; set 'Reachable at' for it in the dashboard{WITHHELD}",
+            known.len(),
+            known
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    }
+}
+
+/// How often the same (peer, outcome) is reported again. A TCP tunnel opens one
+/// connection per forwarded socket, a browser behind one opens dozens a minute; the
+/// server needs to know that it works, not to count every socket.
+const REPORT_REPEAT_AFTER: Duration = Duration::from_secs(600);
+
+/// Tell the management server about one attempt at a published direct endpoint.
+///
+/// A direct session never touches the rendezvous, so this report is the server's only
+/// record of it -- without it the dashboard showed no direct session at all, and a
+/// failed attempt left no trace anywhere but this machine's log. The controller sends
+/// it because only the controller knows the outcome: the target never sees an attempt
+/// that failed on the way.
+///
+/// Sparse by construction: at most one small HTTPS POST per attempt, never during a
+/// session, sent from its own thread so the connection never waits for it, and the
+/// same (peer, result) at most once per REPORT_REPEAT_AFTER. Signed with the device key
+/// like every client audit; no key or no management server = nothing is sent.
+/// `result`: "established" | "failed" | "not-tried".
+pub fn report_attempt(peer_id: &str, endpoint: &str, result: &str, ms: Option<u128>, detail: &str) {
+    lazy_static::lazy_static! {
+        static ref LAST: std::sync::Mutex<HashMap<(String, String), std::time::Instant>> =
+            Default::default();
+    }
+    if !due_for_report(&mut LAST.lock().unwrap(), peer_id, result, std::time::Instant::now()) {
+        return;
+    }
+    let url = crate::common::get_audit_server(
+        Config::get_option("api-server"),
+        Config::get_option("custom-rendezvous-server"),
+        "direct".to_owned(),
+    );
+    if url.is_empty() {
+        return;
+    }
+    let mut body = serde_json::json!({
+        "peer": peer_id,
+        "endpoint": endpoint,
+        "result": result,
+        "detail": detail.chars().take(200).collect::<String>(),
+        "version": crate::VERSION,
+    });
+    if let Some(ms) = ms {
+        body["ms"] = serde_json::json!(ms as u64);
+    }
+    std::thread::spawn(move || post_report(url, body));
+}
+
+/// True (and remembered) unless the same (peer, result) was reported within
+/// REPORT_REPEAT_AFTER. A different outcome is always reported at once.
+fn due_for_report(
+    last: &mut HashMap<(String, String), std::time::Instant>,
+    peer_id: &str,
+    result: &str,
+    now: std::time::Instant,
+) -> bool {
+    let key = (peer_id.to_owned(), result.to_owned());
+    if matches!(last.get(&key), Some(t) if now.duration_since(*t) < REPORT_REPEAT_AFTER) {
+        return false;
+    }
+    last.insert(key, now);
+    true
+}
+
+#[tokio::main(flavor = "current_thread")]
+async fn post_report(url: String, mut body: serde_json::Value) {
+    let me = Config::get_id();
+    let (pk, sig) = crate::common::nemo_device_sign("nemo-audit", &me);
+    if pk.is_empty() {
+        log::debug!("direct report not sent: no device key on this machine");
+        return;
+    }
+    body["id"] = serde_json::json!(me);
+    body["device_key_pub"] = serde_json::json!(pk);
+    body["device_key_sig"] = serde_json::json!(sig);
+    match crate::post_request(url.clone(), body.to_string(), "").await {
+        Ok(text) if text.contains("\"error\"") => {
+            log::warn!("direct report to {} refused: {:.200}", url, text)
+        }
+        Ok(_) => {}
+        Err(e) => log::debug!("direct report to {} not delivered: {}", url, e),
+    }
+}
+
 pub fn direct_timeout() -> Duration {
     let ms = Config::get_option(OPTION_DIRECT_TIMEOUT_MS)
         .trim()
@@ -169,22 +386,37 @@ pub struct KnockConfig {
     pub source_ip: String,
 }
 
-/// Read the knock settings, or `None` when knocking is off or unusable.
+/// The knock settings for a connection to `peer_id`, or `None` when knocking is off or
+/// unusable.
 ///
-/// A half-configured knock (enabled, no keys) returns `None` and logs: the connection
-/// then goes out WITHOUT a knock, which either succeeds (the port was never gated) or
-/// fails and falls back to the relay. Refusing to connect would be the wrong call —
-/// the knock is a hardening layer over a port forward, not an authentication boundary
-/// for the session itself. That boundary is the Ed25519 handshake, which runs either way.
-pub fn knock_config() -> Option<KnockConfig> {
+/// The SPA keys come from the peer's own row in `nemo-knock-keys` when it has one, and
+/// otherwise from the fleet-wide `nemo-knock-key`/`nemo-knock-hmac-key`. That split is
+/// the whole point of per-peer keys: with a row per workstation, a key leaked from one
+/// machine opens only that machine's port; without any rows the client behaves exactly
+/// as before. When a peer has its own key the global key need not be set at all, so a
+/// deployment can distribute *only* per-peer keys.
+///
+/// A half-configured knock (enabled, no usable key for this peer and no global key)
+/// returns `None` and logs: the connection then goes out WITHOUT a knock, which either
+/// succeeds (the port was never gated) or fails and falls back to the relay. Refusing to
+/// connect would be the wrong call — the knock is a hardening layer over a port forward,
+/// not an authentication boundary for the session itself. That boundary is the Ed25519
+/// handshake, which runs either way.
+pub fn knock_config_for(peer_id: &str) -> Option<KnockConfig> {
     if Config::get_option(OPTION_KNOCK_ENABLED) != "Y" {
         return None;
     }
-    let key = decode_spa_key(&Config::get_option(OPTION_KNOCK_KEY), OPTION_KNOCK_KEY)?;
-    let hmac_key = decode_spa_key(
-        &Config::get_option(OPTION_KNOCK_HMAC_KEY),
-        OPTION_KNOCK_HMAC_KEY,
-    )?;
+    let (key, hmac_key) = match per_peer_knock_key(peer_id) {
+        Some(pair) => pair,
+        // No per-peer key: fall back to the fleet-wide pair, both required.
+        None => (
+            decode_spa_key(&Config::get_option(OPTION_KNOCK_KEY), OPTION_KNOCK_KEY)?,
+            decode_spa_key(
+                &Config::get_option(OPTION_KNOCK_HMAC_KEY),
+                OPTION_KNOCK_HMAC_KEY,
+            )?,
+        ),
+    };
     let port = Config::get_option(OPTION_KNOCK_PORT)
         .trim()
         .parse::<u16>()
@@ -210,6 +442,57 @@ pub fn knock_config() -> Option<KnockConfig> {
         user,
         source_ip,
     })
+}
+
+/// The fleet-wide knock settings, with no per-peer key override. Equivalent to
+/// `knock_config_for("")`: an empty id never matches a row in `nemo-knock-keys`.
+pub fn knock_config() -> Option<KnockConfig> {
+    knock_config_for("")
+}
+
+/// The (rijndael, hmac) SPA key pair the server published for `peer_id` in
+/// `nemo-knock-keys`, or `None` when that map is empty, has no row for this peer, or the
+/// row's keys do not decode. A row that fails to decode falls through to the global key
+/// rather than disabling the knock, which matches the lenient handling everywhere else
+/// on this path: a bad row must never cost a reachable workstation its connection.
+fn per_peer_knock_key(peer_id: &str) -> Option<(Vec<u8>, Vec<u8>)> {
+    if peer_id.is_empty() {
+        return None;
+    }
+    let raw = Config::get_option(OPTION_KNOCK_KEYS);
+    if raw.trim().is_empty() {
+        return None;
+    }
+    parse_knock_keys(&raw).remove(peer_id)
+}
+
+/// Parse `id,rijndael_b64,hmac_b64;...` into a per-peer SPA key map. Lenient by design,
+/// exactly like [`parse_endpoints`]: one malformed or undecodable row is skipped and
+/// never discards the rest, because the whole map arrives as a single policy string and
+/// a typo in one workstation's row must not take out the fleet.
+pub fn parse_knock_keys(raw: &str) -> HashMap<String, (Vec<u8>, Vec<u8>)> {
+    let mut out = HashMap::new();
+    for entry in raw.split(';') {
+        let entry = entry.trim();
+        if entry.is_empty() {
+            continue;
+        }
+        let mut fields = entry.split(',').map(str::trim);
+        let (Some(id), Some(k), Some(h)) = (fields.next(), fields.next(), fields.next()) else {
+            continue;
+        };
+        if id.is_empty() {
+            continue;
+        }
+        let (Some(key), Some(hmac_key)) = (
+            decode_spa_key(k, OPTION_KNOCK_KEYS),
+            decode_spa_key(h, OPTION_KNOCK_KEYS),
+        ) else {
+            continue;
+        };
+        out.insert(id.to_owned(), (key, hmac_key));
+    }
+    out
 }
 
 fn non_empty(value: String, fallback: &str) -> String {
@@ -382,6 +665,25 @@ pub async fn knock(host: &str, port: u16, cfg: &KnockConfig) -> ResultType<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A tunnel opening a connection per socket must not turn into a report per socket,
+    /// but a change of outcome must reach the server at once.
+    #[test]
+    fn direct_reports_are_sparse_but_a_change_of_outcome_is_not_held_back() {
+        let mut last = HashMap::new();
+        let t0 = std::time::Instant::now();
+        assert!(due_for_report(&mut last, "352069946", "established", t0));
+        for s in [1, 30, 599] {
+            let t = t0 + Duration::from_secs(s);
+            assert!(!due_for_report(&mut last, "352069946", "established", t), "repeat at {s}s");
+        }
+        // A failure right after a success is news.
+        assert!(due_for_report(&mut last, "352069946", "failed", t0 + Duration::from_secs(2)));
+        // Another peer is independent.
+        assert!(due_for_report(&mut last, "91090423", "established", t0 + Duration::from_secs(2)));
+        // After the window the same outcome is reported again.
+        assert!(due_for_report(&mut last, "352069946", "established", t0 + REPORT_REPEAT_AFTER));
+    }
 
     // Base64 of the real fwknop 2.6.11 datagram captured with
     //   fwknop -A tcp/21118 -a 203.0.113.9 -D 127.0.0.1 --use-hmac --test -B <file>
@@ -575,5 +877,57 @@ mod tests {
         assert!(parse_endpoints("").is_empty());
         assert!(parse_endpoints("   ").is_empty());
         assert!(parse_endpoints(";;;").is_empty());
+    }
+
+    #[test]
+    fn knock_keys_parse_per_peer() {
+        let map = parse_knock_keys(&format!(
+            "123456789,{k},{h}; 987654321,{k},{h}",
+            k = REAL_KEY_B64,
+            h = REAL_HMAC_B64
+        ));
+        assert_eq!(map.len(), 2);
+        let (key, hmac_key) = &map["123456789"];
+        assert_eq!(key, &b64_decode(REAL_KEY_B64));
+        assert_eq!(hmac_key, &b64_decode(REAL_HMAC_B64));
+        assert!(map.contains_key("987654321"));
+    }
+
+    // Key isolation at the client layer: a controller handed only pc2's row holds no key
+    // for pc7, so `knock_config_for("pc7")` could never build pc7's SPA from this map.
+    // The server enforces the split by filtering the rows per controller; this proves the
+    // client does not invent a key for a peer it was not given one for.
+    #[test]
+    fn a_peer_absent_from_the_knock_key_map_has_no_key() {
+        let map = parse_knock_keys(&format!("pc2,{k},{h}", k = REAL_KEY_B64, h = REAL_HMAC_B64));
+        assert!(map.contains_key("pc2"));
+        assert!(!map.contains_key("pc7"));
+    }
+
+    // One bad row must not cost the fleet its per-peer keys: the map is a single policy
+    // string, so a typo in one workstation's row is skipped, not fatal.
+    #[test]
+    fn a_malformed_knock_key_row_does_not_discard_the_others() {
+        let map = parse_knock_keys(&format!(
+            "good,{k},{h};\
+             missinghmac,{k};\
+             badb64,not@@base64,{h};\
+             ,{k},{h};\
+             empty,,;\
+             ;  ;\
+             also-good,{k},{h}",
+            k = REAL_KEY_B64,
+            h = REAL_HMAC_B64
+        ));
+        assert_eq!(map.len(), 2);
+        assert!(map.contains_key("good"));
+        assert!(map.contains_key("also-good"));
+    }
+
+    #[test]
+    fn an_empty_knock_key_map_yields_nothing() {
+        assert!(parse_knock_keys("").is_empty());
+        assert!(parse_knock_keys("   ").is_empty());
+        assert!(parse_knock_keys(";;;").is_empty());
     }
 }

@@ -461,6 +461,45 @@ pub fn set_options(mut m: HashMap<String, String>) {
     Config::set_options(m);
 }
 
+/// Provisioning write: the one path that may NOT be silently dropped.
+///
+/// `set_option` refuses two classes of key on purpose — those the server pushes as fixed
+/// (`is_option_fixed`) and the four server keys a `host=…,key=…,relay=…` exe name owns
+/// (`nemo_is_server_config_key`). Both guards exist so the SETTINGS DIALOG cannot drift
+/// away from a managed value. Importing a setup string is the opposite situation: the
+/// operator is deliberately re-pointing this machine, and a guard that silently discards
+/// four of the six values leaves it half-provisioned — reported from the Windows test
+/// workstation as "the setup string imports the ID server and nothing else".
+///
+/// So this writes through, in ONE batch: the whole set has to reach the service
+/// together, because the service re-derives the locked keys from the config it is handed
+/// (`nemo_preserve_locked_server_options`) and a key-by-key send lets it rebuild the old
+/// server from a half-updated map in between. Values that `Config::set_option` would not
+/// store at all are reported to the operator by the caller (`nemo_setup::apply_setup`);
+/// nothing here pretends.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub fn nemo_set_provisioned_options(values: Vec<(String, String)>) {
+    if values.is_empty() {
+        return;
+    }
+    let mut options = OPTIONS.lock().unwrap();
+    for (key, value) in values {
+        if value.is_empty() {
+            options.remove(&key);
+        } else {
+            options.insert(key, value);
+        }
+    }
+    ipc::set_options(options.clone()).ok();
+}
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
+pub fn nemo_set_provisioned_options(values: Vec<(String, String)>) {
+    for (key, value) in values {
+        Config::set_option(key, value);
+    }
+}
+
 #[inline]
 pub fn set_option(key: String, value: String) {
     if is_option_fixed(&key) {
@@ -798,6 +837,10 @@ pub fn current_is_wayland() -> bool {
 
 #[inline]
 pub fn get_new_version() -> String {
+    let v = crate::common::NEMO_UPDATE_VERSION.lock().unwrap().clone();
+    if !v.is_empty() {
+        return v;
+    }
     (*SOFTWARE_UPDATE_URL
         .lock()
         .unwrap()
@@ -1166,7 +1209,11 @@ pub fn recent_sessions_updated() -> bool {
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios", feature = "flutter")))]
-pub fn new_remote(id: String, remote_type: String, force_relay: bool) {
+/// Returns false when a session of this type to this peer is already open: nothing is
+/// started, its window is brought forward where the platform allows it, and the caller
+/// says so (it used to return silently, and a second click looked broken). Sessions to
+/// other peers are unaffected.
+pub fn new_remote(id: String, remote_type: String, force_relay: bool) -> bool {
     let mut lock = CHILDREN.lock().unwrap();
     let mut args = vec![format!("--{}", remote_type), id.clone()];
     if force_relay {
@@ -1184,7 +1231,9 @@ pub fn new_remote(id: String, remote_type: String, force_relay: bool) {
                 c.try_wait().ok();
                 lock.1.remove(&key);
             } else {
-                return;
+                #[cfg(windows)]
+                crate::platform::windows::raise_process_windows(c.id());
+                return false;
             }
         }
     }
@@ -1196,6 +1245,7 @@ pub fn new_remote(id: String, remote_type: String, force_relay: bool) {
             log::error!("Failed to spawn remote: {}", err);
         }
     }
+    true
 }
 
 // Make sure `SENDER` is inited here.

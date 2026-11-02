@@ -1,6 +1,9 @@
 use hbb_common::regex::Regex;
 use std::ops::Deref;
 
+/// The lookup key of the AGPL attribution. Kept verbatim in every locale on purpose.
+const ATTRIBUTION: &str = "Based on the open-source RustDesk project.";
+
 mod ar;
 mod be;
 mod bg;
@@ -144,7 +147,9 @@ pub fn translate_locale(name: String, locale: &str) -> String {
         "zh-cn" => cn::T.deref(),
         "it" => it::T.deref(),
         "zh-tw" => tw::T.deref(),
-        "de" => de::T.deref(),
+        // "de-at": the Austrian choice in Settings > Language. Same texts until there is a
+        // reason for Austrian ones; a code of its own so they can be added later.
+        "de" | "de-at" => de::T.deref(),
         "nb" => nb::T.deref(),
         "nl" => nl::T.deref(),
         "es" => es::T.deref(),
@@ -201,6 +206,11 @@ pub fn translate_locale(name: String, locale: &str) -> String {
             if s.contains("RustDesk")
                 && !name.starts_with("upgrade_rustdesk_server_pro")
                 && name != "powered_by_me"
+                // The AGPL attribution names the upstream project, not this app. It has
+                // no value in en.rs, so `translate` falls back to the key -- which this
+                // rewrite would happily turn into "Based on the open-source TBFDesk
+                // project.", i.e. a false claim in place of the attribution we owe.
+                && name != ATTRIBUTION
             {
                 let app_name = crate::get_app_name();
                 if !app_name.contains("RustDesk") {
@@ -261,6 +271,44 @@ fn extract_placeholder(input: &str) -> (String, Option<String>) {
 }
 
 mod test {
+    /// RENAMING-PLAN Layer 5. `translate` rewrites the word "RustDesk" into the app name
+    /// for a custom-client build; the AGPL attribution must survive that, in every
+    /// locale, or the app claims to be based on itself.
+    #[test]
+    fn the_agpl_attribution_still_names_the_upstream_project() {
+        for lang in ["en", "de", "cn", "fr"] {
+            let s = super::translate_locale(super::ATTRIBUTION.to_owned(), lang);
+            assert!(
+                s.contains("RustDesk"),
+                "{lang} attribution lost the upstream name: {s}"
+            );
+            assert!(
+                !s.contains("TBFDesk"),
+                "{lang} attribution was rebranded: {s}"
+            );
+        }
+    }
+
+    /// Texts built at runtime with a `{value}` placeholder (a target's session refusal,
+    /// a failed "connect directly") must still find their German entry, or the user
+    /// reads English with braces in it.
+    #[test]
+    fn runtime_messages_with_a_placeholder_have_german() {
+        use std::ops::Deref;
+        let de = super::de::T.deref();
+        for text in [
+            "user {usera} is not permitted to control this computer".to_owned(),
+            format!("{}{{91090423 (169.254.1.2:21218)}} failed. The relay was NOT used because you asked for a direct connection; see the log for the reason.", crate::client::FORCED_DIRECT_FAILED),
+            format!("{}{{91090423}} failed: this server has published no direct endpoint for it. Set 'Reachable at' for it in the dashboard, or connect normally.", crate::client::FORCED_DIRECT_FAILED),
+            format!("{}{{91090423 ('Use WebSocket' is on)}} failed: this client is set to use the relay only. Turn that off to test the direct path.", crate::client::FORCED_DIRECT_FAILED),
+        ] {
+            let (key, value) = super::extract_placeholder(&text);
+            let german = de.get(key.as_str()).unwrap_or_else(|| panic!("no German for {key:?}"));
+            assert!(german.contains("{}"), "German for {key:?} drops the value");
+            assert!(value.is_some());
+        }
+    }
+
     #[test]
     fn test_extract_placeholders() {
         use super::extract_placeholder as f;

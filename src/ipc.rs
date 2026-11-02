@@ -1771,6 +1771,55 @@ pub fn set_option(key: &str, value: &str) {
     set_options(options).ok();
 }
 
+/// The running service's options, or an error when it does not answer. Unlike get_options_
+/// it writes nothing into THIS process's config.
+async fn service_options(ms_timeout: u64) -> ResultType<HashMap<String, String>> {
+    let mut c = connect(ms_timeout, "").await?;
+    c.send(&Data::Options(None)).await?;
+    match c.next_timeout(ms_timeout).await? {
+        Some(Data::Options(Some(value))) => Ok(value),
+        _ => bail!("the service answered without its options"),
+    }
+}
+
+/// Unattended provisioning (`--silent-install --import-setup`, `--import-setup` on an
+/// installed client): merge `values` into the RUNNING service's option map and return the
+/// map as the service then reports it, so the caller can verify what stuck.
+///
+/// Strict where set_options is lenient: set_options writes this process's own config when
+/// the service does not answer -- a config the service never reads, so an install script
+/// would report success for an unprovisioned machine. Here a silent service is an error,
+/// after waiting up to `wait` (a fresh install is still starting it).
+///
+/// Fetch-merge-send, because Data::Options(Some) REPLACES the service's whole map. And
+/// nothing is persisted locally: an admin console on a roaming profile would otherwise
+/// copy the device key onto the file server.
+#[tokio::main(flavor = "current_thread")]
+pub async fn nemo_push_options_to_service(
+    values: Vec<(String, String)>,
+    wait: std::time::Duration,
+) -> ResultType<HashMap<String, String>> {
+    let deadline = std::time::Instant::now() + wait;
+    let mut current = loop {
+        match service_options(1000).await {
+            Ok(options) => break options,
+            Err(err) if std::time::Instant::now() >= deadline => bail!(
+                "the TBFDesk service did not answer within {} s ({}) -- is it installed and running?",
+                wait.as_secs(),
+                err
+            ),
+            Err(_) => tokio::time::sleep(std::time::Duration::from_secs(1)).await,
+        }
+    };
+    for (key, value) in values {
+        current.insert(key, value);
+    }
+    let mut c = connect(1000, "").await?;
+    c.send(&Data::Options(Some(current))).await?;
+    c.next_timeout(1000).await.ok();
+    service_options(1000).await
+}
+
 #[tokio::main(flavor = "current_thread")]
 pub async fn set_options(value: HashMap<String, String>) -> ResultType<()> {
     let _nat = CheckTestNatType::new();

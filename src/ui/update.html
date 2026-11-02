@@ -1,0 +1,74 @@
+<html>
+    <head>
+        <style>
+            @import url(common.css);
+            body { background: color(bg); }
+            div.content {
+                size: *;
+                padding: 1.4em 1.6em;
+                flow: vertical;
+            }
+            div.title { font-size: 1.3em; font-weight: bold; margin-bottom: 0.6em; }
+            div.text { line-height: 1.5em; }
+            div.count { margin-top: 0.8em; color: color(lighter-text); }
+            div.buttons { flow: horizontal; margin-top: *; padding-top: 1em; }
+            div.buttons .button { margin-left: 0.8em; }
+            div.spacer { width: *; }
+        </style>
+        <script type="text/tiscript">
+            include "common.tis";
+
+            // Shown by the service in the user's session before it installs an update
+            // (updater::prompt_user). Silence = install when the countdown ends.
+            var args = JSON.parse(handler.nemo_update_prompt_args() || "{}");
+            var left = args.secs || 60;
+
+            function self.ready() {
+                centerize(scaleIt(520), scaleIt(250));
+                view.windowTopmost = true;
+                var version = args.version || "";
+                $(div.title).text = translate("nemo_update_prompt_title");
+                $(div.text).text = translate("nemo_update_prompt_text").replace("{}", version);
+                $(#now).text = translate("nemo_update_now");
+                if (args.postpone) {
+                    $(#later).text = translate("nemo_update_postpone");
+                } else {
+                    $(#later).style.set { display: "none" };
+                }
+                tick();
+                self.timer(1s, function() {
+                    left -= 1;
+                    if (left <= 0) { view.close(); return false; }
+                    tick();
+                    return true;
+                });
+            }
+
+            function tick() {
+                $(div.count).text = translate("nemo_update_countdown").replace("{}", left.toString());
+            }
+
+            event click $(#now) {
+                handler.nemo_update_answer("now");
+                view.close();
+            }
+
+            event click $(#later) {
+                handler.nemo_update_answer("postpone");
+                view.close();
+            }
+        </script>
+    </head>
+    <body>
+        <div .content>
+            <div .title />
+            <div .text />
+            <div .count />
+            <div .buttons>
+                <div .spacer />
+                <button .button .outline #later />
+                <button .button #now />
+            </div>
+        </div>
+    </body>
+</html>
