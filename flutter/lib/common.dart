@@ -30,6 +30,7 @@ import 'package:window_size/window_size.dart' as window_size;
 
 import '../consts.dart';
 import 'common/widgets/overlay.dart';
+import 'common/nemo_policy.dart';
 import 'mobile/pages/file_manager_page.dart';
 import 'mobile/pages/remote_page.dart';
 import 'mobile/pages/view_camera_page.dart';
@@ -1312,6 +1313,10 @@ Widget msgboxIcon(String type) {
 // title should be null
 Widget msgboxContent(String type, String title, String text) {
   String translateText(String text) {
+    // TBFDesk: a target's session refusal (nemo_control): "Not authorized: <reason>".
+    if (text.startsWith('Not authorized: ')) {
+      return '${translate('Not authorized')}: ${translate(text.substring(16))}';
+    }
     if (text.indexOf('Failed') == 0 && text.indexOf(': ') > 0) {
       List<String> words = text.split(': ');
       for (var i = 0; i < words.length; ++i) {
@@ -2562,6 +2567,15 @@ connect(BuildContext context, String id,
   final oldId = id;
   id = await bind.mainHandleRelayId(id: id);
   forceRelay = id != oldId || forceRelay;
+  // TBFDesk (A13): outbound / company-network / target policy, with the reason.
+  final nemoPolicyError = await nemoConnectPolicyError(oldId, id);
+  if (nemoPolicyError != null) {
+    msgBoxCommon(gFFI.dialogManager, translate('Error'),
+        Text(translate(nemoPolicyError)), [
+      dialogButton('OK', onPressed: () => gFFI.dialogManager.dismissAll())
+    ]);
+    return;
+  }
   assert(!(isFileTransfer && isTcpTunneling && isRDP),
       "more than one connect type");
 

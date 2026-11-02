@@ -8,6 +8,8 @@ import 'package:flutter/services.dart';
 import 'package:flutter_hbb/common.dart';
 import 'package:flutter_hbb/common/widgets/animated_rotation_widget.dart';
 import 'package:flutter_hbb/common/widgets/custom_password.dart';
+import 'package:flutter_hbb/common/widgets/nemo_gate.dart';
+import 'package:flutter_hbb/common/widgets/nemo_login.dart';
 import 'package:flutter_hbb/consts.dart';
 import 'package:flutter_hbb/desktop/pages/connection_page.dart';
 import 'package:flutter_hbb/desktop/pages/desktop_setting_page.dart';
@@ -79,6 +81,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
     final isIncomingOnly = bind.isIncomingOnly();
     final isOutgoingOnly = bind.isOutgoingOnly();
     final children = <Widget>[
+      _buildNemoAccountBar(context),
       if (!isOutgoingOnly) buildPresetPasswordWarning(),
       if (bind.isCustomClient())
         Align(
@@ -145,6 +148,12 @@ class _DesktopHomePageState extends State<DesktopHomePage>
                 ),
                 Expanded(child: Container())
               ],
+            ),
+            // TBFDesk (A19): build id bottom-left.
+            Positioned(
+              bottom: 6,
+              left: isOutgoingOnly ? 44 : 12,
+              child: const NemoBuildIdLabel(),
             ),
             if (isOutgoingOnly)
               Positioned(
@@ -221,7 +230,8 @@ class _DesktopHomePageState extends State<DesktopHomePage>
                                   ?.color
                                   ?.withOpacity(0.5)),
                         ).marginOnly(top: 5),
-                        buildPopupMenu(context)
+                        // TBFDesk: ⋮ lives in the account bar when accounts are on.
+                        if (bind.isDisableAccount()) buildPopupMenu(context)
                       ],
                     ),
                   ),
@@ -254,11 +264,148 @@ class _DesktopHomePageState extends State<DesktopHomePage>
     );
   }
 
+  // TBFDesk (A7): ⋮ opens a small menu: Settings…, Open log folder, Copy recent log.
+  Future<void> _showNemoMoreMenu(BuildContext context) async {
+    final box = context.findRenderObject() as RenderBox?;
+    final overlay =
+        Overlay.of(context).context.findRenderObject() as RenderBox?;
+    if (box == null || overlay == null) {
+      DesktopTabPage.onAddSetting();
+      return;
+    }
+    final pos = RelativeRect.fromRect(
+      Rect.fromPoints(box.localToGlobal(Offset.zero, ancestor: overlay),
+          box.localToGlobal(box.size.bottomRight(Offset.zero), ancestor: overlay)),
+      Offset.zero & overlay.size,
+    );
+    final choice = await showMenu<String>(
+      context: context,
+      position: pos,
+      items: [
+        PopupMenuItem(value: 'settings', child: Text('${translate('Settings')} …')),
+        const PopupMenuDivider(),
+        PopupMenuItem(value: 'open-log', child: Text(translate('Open log folder'))),
+        PopupMenuItem(
+            value: 'copy-log',
+            child: Tooltip(
+                message: translate('nemo_copy_log_tip'),
+                child: Text(translate('Copy recent log')))),
+      ],
+    );
+    switch (choice) {
+      case 'settings':
+        DesktopTabPage.onAddSetting();
+        break;
+      case 'open-log':
+        final err = await bind.mainNemoOpenLogFolder();
+        if (err.isNotEmpty) showToast('${translate('Failed')}: $err');
+        break;
+      case 'copy-log':
+        await _nemoCopyRecentLog();
+        break;
+    }
+  }
+
+  Future<void> _nemoCopyRecentLog() async {
+    Map<String, dynamic> r = {};
+    try {
+      r = jsonDecode(await bind.mainNemoRecentLog()) as Map<String, dynamic>;
+    } catch (_) {}
+    final text = r['text'] as String?;
+    if (text == null || text.isEmpty) {
+      msgBoxCommon(gFFI.dialogManager, translate('Copy recent log'),
+          Text('${translate('nemo_copy_log_failed')} ${r['error'] ?? ''}'), [
+        dialogButton('OK', onPressed: () => gFFI.dialogManager.dismissAll())
+      ]);
+      return;
+    }
+    await Clipboard.setData(ClipboardData(text: text));
+    final files = (r['files'] as List?)?.join('\n') ?? '';
+    msgBoxCommon(
+        gFFI.dialogManager,
+        translate('Copy recent log'),
+        Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(translate('nemo_copy_log_done')),
+            const SizedBox(height: 4),
+            SelectableText(files, style: const TextStyle(fontSize: 12)),
+          ],
+        ),
+        [dialogButton('OK', onPressed: () => gFFI.dialogManager.dismissAll())]);
+  }
+
+  // TBFDesk (A6): account bar at the top of the left pane. Signed in: display name in a
+  // pill + Logout; signed out: "Not signed in" + Login. Login/Logout are not in Settings.
+  Widget _buildNemoAccountBar(BuildContext context) {
+    if (bind.isDisableAccount()) return const SizedBox.shrink();
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    const accent = Color(0xFF0B7285);
+    return Obx(() {
+      final loggedIn = gFFI.userModel.isLogin;
+      final name = gFFI.userModel.displayNameOrUserName;
+      return Container(
+        margin: const EdgeInsets.fromLTRB(12, 10, 8, 0),
+        padding: const EdgeInsets.fromLTRB(10, 6, 4, 6),
+        decoration: loggedIn
+            ? BoxDecoration(
+                color: isDark ? const Color(0xFF16353B) : const Color(0xFFE3F4F6),
+                borderRadius: BorderRadius.circular(12),
+              )
+            : null,
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    loggedIn ? name : translate('Not signed in'),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: loggedIn
+                        ? TextStyle(
+                            fontWeight: FontWeight.bold,
+                            color: isDark ? const Color(0xFF7FD3DE) : accent)
+                        : const TextStyle(color: Colors.grey),
+                  ),
+                  const SizedBox(height: 4),
+                  SizedBox(
+                    height: 26,
+                    child: OutlinedButton(
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: accent,
+                        side: const BorderSide(color: accent),
+                        padding: const EdgeInsets.symmetric(horizontal: 10),
+                      ),
+                      onPressed: () {
+                        if (loggedIn) {
+                          gFFI.userModel.logOut();
+                        } else {
+                          showNemoLoginDialog(context);
+                        }
+                      },
+                      child: Text(translate(loggedIn ? 'Logout' : 'Login'),
+                          style: const TextStyle(fontSize: 12)),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            buildPopupMenu(context),
+          ],
+        ),
+      );
+    });
+  }
+
   Widget buildPopupMenu(BuildContext context) {
     final textColor = Theme.of(context).textTheme.titleLarge?.color;
     RxBool hover = false.obs;
-    return InkWell(
-      onTap: DesktopTabPage.onAddSetting,
+    return Builder(builder: (context) => InkWell(
+      onTap: () => _showNemoMoreMenu(context),
       child: Tooltip(
         message: translate('Settings'),
         child: Obx(
@@ -276,7 +423,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
         ),
       ),
       onHover: (value) => hover.value = value,
-    );
+    ));
   }
 
   buildPasswordBoard(BuildContext context) {
@@ -291,7 +438,6 @@ class _DesktopHomePageState extends State<DesktopHomePage>
 
   buildPasswordBoard2(BuildContext context, ServerModel model) {
     RxBool refreshHover = false.obs;
-    RxBool editHover = false.obs;
     final textColor = Theme.of(context).textTheme.titleLarge?.color;
     final showOneTime = model.approveMode != 'click' &&
         model.verificationMethod != kUsePermanentPassword;
@@ -358,24 +504,8 @@ class _DesktopHomePageState extends State<DesktopHomePage>
                           ),
                           onHover: (value) => refreshHover.value = value,
                         ).marginOnly(right: 8, top: 4),
-                      if (!bind.isDisableSettings())
-                        InkWell(
-                          child: Tooltip(
-                            message: translate('Change Password'),
-                            child: Obx(
-                              () => Icon(
-                                Icons.edit,
-                                color: editHover.value
-                                    ? textColor
-                                    : Color(0xFFDDDDDD),
-                                size: 22,
-                              ).marginOnly(right: 8, top: 4),
-                            ),
-                          ),
-                          onTap: () => DesktopSettingPage.switch2page(
-                              SettingsTabKey.safety),
-                          onHover: (value) => editHover.value = value,
-                        ),
+                      // TBFDesk (A17): no password pencil; password settings live
+                      // in Settings -> Security only.
                     ],
                   ),
                 ],
@@ -442,14 +572,8 @@ class _DesktopHomePageState extends State<DesktopHomePage>
     }
 
     if (isWindows && !bind.isDisableInstallation()) {
-      if (!bind.mainIsInstalled()) {
-        return buildInstallCard(
-            "", bind.isOutgoingOnly() ? "" : "install_tip", "Install",
-            () async {
-          await rustDeskWinManager.closeAllSubWindows();
-          bind.mainGotoInstall();
-        });
-      } else if (bind.mainIsInstalledLowerVersion()) {
+      // TBFDesk (A17): no "install me" nag; machines are installed by the deployment.
+      if (bind.mainIsInstalled() && bind.mainIsInstalledLowerVersion()) {
         return buildInstallCard(
             "Status", "Your installation is lower version.", "Click to upgrade",
             () async {

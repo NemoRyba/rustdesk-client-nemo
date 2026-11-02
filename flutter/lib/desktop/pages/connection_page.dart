@@ -35,6 +35,8 @@ class OnlineStatusWidget extends StatefulWidget {
 class _OnlineStatusWidgetState extends State<OnlineStatusWidget> {
   final _svcStopped = Get.find<RxBool>(tag: 'stop-service');
   final _svcIsUsingPublicServer = true.obs;
+  // TBFDesk (A15): whether the server confirmed this machine's key / ID.
+  final _keyConfirmed = false.obs;
   Timer? _updateTimer;
 
   double get em => 14.0;
@@ -87,21 +89,11 @@ class _OnlineStatusWidgetState extends State<OnlineStatusWidget> {
               crossAxisAlignment: CrossAxisAlignment.center,
               children: [
                 Text(', ', style: TextStyle(fontSize: em)),
+                // TBFDesk: plain text; there is nowhere of ours to link to.
                 Flexible(
-                  child: InkWell(
-                    onTap: onUsePublicServerGuide,
-                    child: Row(
-                      children: [
-                        Flexible(
-                          child: Text(
-                            translate('setup_server_tip'),
-                            style: TextStyle(
-                                decoration: TextDecoration.underline,
-                                fontSize: em),
-                          ),
-                        ),
-                      ],
-                    ),
+                  child: Text(
+                    translate('setup_server_tip'),
+                    style: TextStyle(fontSize: em),
                   ),
                 )
               ],
@@ -134,6 +126,7 @@ class _OnlineStatusWidgetState extends State<OnlineStatusWidget> {
             // ready && public
             // No need to show the guide if is custom client.
             if (!isIncomingOnly) setupServerWidget(),
+            _buildRegistrationBadge(),
           ],
         );
 
@@ -151,6 +144,39 @@ class _OnlineStatusWidgetState extends State<OnlineStatusWidget> {
             )
           : basicWidget()),
     ).paddingOnly(right: isIncomingOnly ? 8 : 0);
+  }
+
+  // TBFDesk (A15): after "Ready", whether the server registered this ID with a verified
+  // device key. Shown only once the server is answering.
+  Widget _buildRegistrationBadge() {
+    if (_svcStopped.value || stateGlobal.svcStatus.value != SvcStatus.ready) {
+      return const SizedBox.shrink();
+    }
+    final String label;
+    final String tip;
+    final bool ok;
+    if (!_keyConfirmed.value) {
+      label = 'Not registered';
+      tip = 'nemo_reg_not_tip';
+      ok = false;
+    } else if (bind.mainNemoDeviceKeyPresent()) {
+      label = 'Registered';
+      tip = 'nemo_reg_ok_tip';
+      ok = true;
+    } else {
+      label = 'No device key';
+      tip = 'nemo_reg_nokey_tip';
+      ok = false;
+    }
+    return Tooltip(
+      message: translate(tip),
+      child: Text(translate(label),
+              style: TextStyle(
+                  fontSize: em,
+                  fontWeight: FontWeight.bold,
+                  color: ok ? const Color(0xFF1A7A34) : kColorWarn))
+          .marginOnly(left: em),
+    );
   }
 
   _buildConnStatusMsg() {
@@ -181,6 +207,7 @@ class _OnlineStatusWidgetState extends State<OnlineStatusWidget> {
       stateGlobal.svcStatus.value = SvcStatus.notReady;
     }
     _svcIsUsingPublicServer.value = await bind.mainIsUsingPublicServer();
+    _keyConfirmed.value = status['key_confirmed'] == true;
     try {
       stateGlobal.videoConnCount.value = status['video_conn_count'] as int;
     } catch (_) {}
@@ -512,6 +539,8 @@ class _ConnectionPageState extends State<ConnectionPage>
                 )),
               ],
             ),
+            // TBFDesk (A14): "Direct access possible — host:port" + knock line.
+            NemoDirectHint(controller: _idController),
             Padding(
               padding: const EdgeInsets.only(top: 13.0),
               child: Row(mainAxisAlignment: MainAxisAlignment.end, children: [
@@ -611,5 +640,85 @@ class _ConnectionPageState extends State<ConnectionPage>
     );
     return Container(
         constraints: const BoxConstraints(maxWidth: 600), child: w);
+  }
+}
+
+/// TBFDesk (A14): under the remote-ID box, whether the typed id is reachable without the
+/// relay ("Direct access possible — host:port") and, when its port is knock-gated, the
+/// knock line. Refreshed on typing and once a second (the policy can deliver or withdraw
+/// an endpoint at any time).
+class NemoDirectHint extends StatefulWidget {
+  final IDTextEditingController controller;
+
+  const NemoDirectHint({Key? key, required this.controller}) : super(key: key);
+
+  @override
+  State<NemoDirectHint> createState() => _NemoDirectHintState();
+}
+
+class _NemoDirectHintState extends State<NemoDirectHint> {
+  Timer? _timer;
+  String _ep = '';
+  String _knock = '';
+
+  @override
+  void initState() {
+    super.initState();
+    widget.controller.addListener(_refresh);
+    _timer = Timer.periodic(const Duration(seconds: 1), (_) => _refresh());
+    _refresh();
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    widget.controller.removeListener(_refresh);
+    super.dispose();
+  }
+
+  void _refresh() {
+    if (!mounted) return;
+    final id = widget.controller.id.replaceAll(RegExp(r'\s'), '');
+    final ep = id.isEmpty ? '' : bind.mainNemoDirectEndpoint(id: id);
+    final knock = ep.isEmpty ? '' : bind.mainNemoKnockHint(id: id);
+    if (ep != _ep || knock != _knock) {
+      setState(() {
+        _ep = ep;
+        _knock = knock;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_ep.isEmpty) return const SizedBox.shrink();
+    const green = Color(0xFF1A7A34);
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.bolt, size: 16, color: green),
+              const SizedBox(width: 4),
+              Expanded(
+                child: Text(
+                  '${translate('Direct access possible')} \u2014 $_ep',
+                  style: const TextStyle(color: green, fontSize: 12),
+                ),
+              ),
+            ],
+          ),
+          if (_knock.isNotEmpty)
+            Tooltip(
+              message: translate(
+                  'The forwarded port stays closed until this machine sends a valid knock.'),
+              child: Text('\u26a1 $_knock',
+                  style: const TextStyle(fontSize: 12, color: Colors.grey)),
+            ).marginOnly(top: 2),
+        ],
+      ),
+    );
   }
 }
