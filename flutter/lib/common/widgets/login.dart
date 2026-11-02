@@ -11,6 +11,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../../common.dart';
 import './dialog.dart';
+import './nemo_login.dart';
 
 const kOpSvgList = [
   'github',
@@ -429,6 +430,8 @@ const kAuthReqTypeOidc = 'oidc/';
 
 // call this directly
 Future<bool?> loginDialog() async {
+  // TBFDesk: every Login button uses the sealed sign-in card.
+  if (!isWeb) return nemoLoginDialog();
   var username =
       TextEditingController(text: UserModel.getLocalUserInfo()?['name'] ?? '');
   var password = TextEditingController();

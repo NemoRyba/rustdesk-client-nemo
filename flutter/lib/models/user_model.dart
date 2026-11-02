@@ -1,13 +1,13 @@
 import 'dart:async';
 import 'dart:convert';
 
-import 'package:bot_toast/bot_toast.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_hbb/common/hbbs/hbbs.dart';
 import 'package:flutter_hbb/models/ab_model.dart';
 import 'package:get/get.dart';
 
 import '../common.dart';
+import '../common/widgets/nemo_login.dart';
 import '../utils/http_service.dart' as http;
 import 'model.dart';
 import 'platform_model.dart';
@@ -64,9 +64,10 @@ class UserModel {
     if (refreshingUser) return;
     try {
       refreshingUser = true;
-      final http.Response response;
+      // TBFDesk: Rust HTTP client, so the self-signed API is reachable.
+      final NemoHttpResult response;
       try {
-        response = await http.post(Uri.parse('$url/api/currentUser'),
+        response = await nemoHttpPost('$url/api/currentUser',
             headers: {
               'Content-Type': 'application/json',
               'Authorization': 'Bearer $token'
@@ -77,12 +78,12 @@ class UserModel {
         rethrow;
       }
       refreshingUser = false;
-      final status = response.statusCode;
+      final status = response.status;
       if (status == 401 || status == 400) {
         reset(resetOther: status == 401);
         return;
       }
-      final data = json.decode(decode_http_response(response));
+      final data = json.decode(response.body);
       final error = data['error'];
       if (error != null) {
         throw error;
@@ -123,6 +124,8 @@ class UserModel {
   Future<void> reset({bool resetOther = false}) async {
     await bind.mainSetLocalOption(key: 'access_token', value: '');
     await bind.mainSetLocalOption(key: 'user_info', value: '');
+    // TBFDesk: the signed-out user's session authorization.
+    await bind.mainSetLocalOption(key: 'nemo-user-control-ticket', value: '');
     if (resetOther) {
       await gFFI.abModel.reset();
       await gFFI.groupModel.reset();
@@ -158,8 +161,8 @@ class UserModel {
       final url = apiServer ?? await bind.mainGetApiServer();
       final authHeaders = getHttpHeaders();
       authHeaders['Content-Type'] = "application/json";
-      await http
-          .post(Uri.parse('$url/api/logout'),
+      // TBFDesk: Rust HTTP client, so the self-signed API is reachable.
+      await nemoHttpPost('$url/api/logout',
               body: jsonEncode({
                 'id': await bind.mainGetMyId(),
                 'uuid': await bind.mainGetUuid(),
@@ -175,29 +178,11 @@ class UserModel {
   }
 
   /// throw [RequestException]
-  Future<LoginResponse> login(LoginRequest loginRequest) async {
-    final url = await bind.mainGetApiServer();
-    final resp = await http.post(Uri.parse('$url/api/login'),
-        body: jsonEncode(loginRequest.toJson()));
-
-    final Map<String, dynamic> body;
-    try {
-      body = jsonDecode(decode_http_response(resp));
-    } catch (e) {
-      debugPrint("login: jsonDecode resp body failed: ${e.toString()}");
-      if (resp.statusCode != 200) {
-        BotToast.showText(
-            contentColor: Colors.red, text: 'HTTP ${resp.statusCode}');
-      }
-      rethrow;
-    }
-    if (resp.statusCode != 200) {
-      throw RequestException(resp.statusCode, body['error'] ?? '');
-    }
-    if (body['error'] != null) {
-      throw RequestException(0, body['error']);
-    }
-
+  Future<LoginResponse> login(LoginRequest loginRequest,
+      {String? apiServer}) async {
+    final url = apiServer ?? await bind.mainGetApiServer();
+    // TBFDesk: sealed login (never a plaintext password), sealed token reply.
+    final body = await nemoLoginRequest(url, loginRequest);
     return getLoginResponseFromAuthBody(body);
   }
 
