@@ -3199,6 +3199,34 @@ pub(super) fn change_resolution_directly(
     }
 }
 
+/// TBFDesk: whether `path` lives on a network share - a UNC path (`\\server\share\...`,
+/// `\\?\UNC\...`, e.g. a Videos folder redirected to a roaming profile) or a drive letter
+/// mapped to one. Decided from the string and the drive type alone, so the path does not
+/// have to exist yet. Used to rank the default recording folders.
+pub fn is_network_path(path: &Path) -> bool {
+    let s = path.to_string_lossy();
+    if s.starts_with(r"\\?\UNC\") {
+        return true;
+    }
+    // `\\?\C:\...` (long path) or `\\.\C:\...` (device path): judge by the drive.
+    let s = if s.starts_with(r"\\?\") || s.starts_with(r"\\.\") {
+        &s[4..]
+    } else if s.starts_with(r"\\") || s.starts_with("//") {
+        return true;
+    } else {
+        &s[..]
+    };
+    let b = s.as_bytes();
+    if b.len() < 2 || b[1] != b':' || !b[0].is_ascii_alphabetic() {
+        return false;
+    }
+    let root: Vec<u16> = format!("{}:\\", b[0] as char)
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    unsafe { winapi::um::fileapi::GetDriveTypeW(root.as_ptr()) == winapi::um::winbase::DRIVE_REMOTE }
+}
+
 pub fn user_accessible_folder() -> ResultType<PathBuf> {
     let disk = std::env::var("SystemDrive").unwrap_or("C:".to_string());
     let dir1 = PathBuf::from(format!("{}\\ProgramData", disk));

@@ -315,6 +315,16 @@ class MsgboxComponent: Reactor.Component {
         }
     }
 
+    // TBFDesk: open the recording folder. #folderPath is what the dialog shows right now,
+    // including a folder just picked with "Change" but not saved yet.
+    event click $(button#open_record_dir) {
+        handler.open_folder($(#folderPath).text);
+    }
+
+    event click $(button#open_record_root_dir) {
+        handler.open_folder(handler.video_save_directory(true));
+    }
+
     event click $(button#select_directory) {
         var folder = view.selectFolder(translate("Change"), $(#folderPath).text);
         if (folder) {

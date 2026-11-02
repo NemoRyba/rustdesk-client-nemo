@@ -463,9 +463,9 @@ class Enhancements: Reactor.Component {
                     <div><button|checkbox(auto_record_incoming) {ts1} .wrap-text>{translate('Automatically record incoming sessions')}</button></div>
                     <div><button|checkbox(auto_record_outgoing) {ts2} .wrap-text>{translate('Automatically record outgoing sessions')}</button></div>
                     <div class={is_opt_fixed_video_dir ? "grey-text" : ""}>
-                        {show_root_dir ? <div style="word-wrap:break-word"><span>{translate("Incoming")}:&nbsp;&nbsp;</span><span>{root_dir}</span></div> : ""}
+                        {show_root_dir ? <div style="word-wrap:break-word"><span>{translate("Incoming")}:&nbsp;&nbsp;</span><span>{root_dir}</span>&nbsp;&nbsp;<button #open_record_root_dir .link>{translate('Open')}</button></div> : ""}
                         <div style="word-wrap:break-word"><span>{translate(show_root_dir ? "Outgoing" : "Directory")}:&nbsp;&nbsp;</span><span #folderPath>{user_dir}</span></div>
-                        {is_opt_fixed_video_dir ? "" : <div> <button #select_directory .link>{translate('Change')}</button> </div>}
+                        <div> <button #open_record_dir .link>{translate('Open')}</button>{is_opt_fixed_video_dir ? "" : <span>&nbsp;&nbsp;<button #select_directory .link>{translate('Change')}</button></span>} </div>
                     </div>
                 </div>
                 , "", function(res=null) {

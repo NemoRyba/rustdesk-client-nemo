@@ -964,6 +964,38 @@ impl UI {
         allow_err!(std::process::Command::new(p).arg(url).spawn());
     }
 
+    /// TBFDesk: open a folder (the recording directory) in the system file manager.
+    /// A missing folder is created first; the recorder would create it on the first
+    /// recording anyway. On Windows the path goes to explorer as a plain path with
+    /// backslashes, which also covers redirected / roaming-profile folders on a share
+    /// (`\\dc\profiles$\<user>\Videos\TBFDesk`). Not `open_url`: on Linux that
+    /// prefers firefox.
+    fn open_folder(&self, path: String) {
+        let path = path.trim();
+        if path.is_empty() {
+            return;
+        }
+        let path = path.strip_prefix("file://").unwrap_or(path);
+        #[cfg(windows)]
+        let path = path.replace('/', "\\");
+        #[cfg(not(windows))]
+        let path = path.to_owned();
+        let dir = std::path::Path::new(&path);
+        if !dir.exists() {
+            if let Err(e) = std::fs::create_dir_all(dir) {
+                log::error!("Failed to create folder {}: {}", path, e);
+                return;
+            }
+        }
+        #[cfg(windows)]
+        let p = "explorer";
+        #[cfg(target_os = "macos")]
+        let p = "open";
+        #[cfg(not(any(windows, target_os = "macos")))]
+        let p = "xdg-open";
+        allow_err!(std::process::Command::new(p).arg(&path).spawn());
+    }
+
     fn change_id(&self, id: String) {
         reset_async_job_status();
         let old_id = self.get_id();
@@ -1452,6 +1484,7 @@ impl sciter::EventHandler for UI {
         fn get_software_store_path();
         fn get_software_ext();
         fn open_url(String);
+        fn open_folder(String);
         fn change_id(String);
         fn get_async_job_status();
         fn post_request(String, String, String);

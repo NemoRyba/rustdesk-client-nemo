@@ -678,6 +678,41 @@ class _GeneralState extends State<_General> {
     return AudioInput(builder: builder, isCm: false, isVoiceCall: false);
   }
 
+  /// Opens the recording folder in the system file manager.
+  ///
+  /// The path is resolved again at click time, not taken from the card's last
+  /// build, so a folder picked with "Change", set from another window or pushed
+  /// as an option is the one that opens. A missing folder is created first (the
+  /// recorder would create it on the first recording anyway).
+  ///
+  /// On Windows the Videos folder may be redirected to a roaming profile share
+  /// (e.g. `\\dc\profiles$\<user>\Videos\TBFDesk`). A `file://` URL through
+  /// ShellExecute is unreliable for UNC paths and non-ASCII user names, so hand
+  /// the plain path to explorer.exe instead.
+  Future<void> _openRecordingFolder({required bool root}) async {
+    final dir = bind.mainVideoSaveDirectory(root: root);
+    try {
+      if (dir.isEmpty) {
+        throw 'no recording directory';
+      }
+      final d = Directory(dir);
+      if (!await d.exists()) {
+        await d.create(recursive: true);
+      }
+      if (isWindows) {
+        // explorer.exe returns a non-zero exit code even on success; ignore it.
+        await Process.start('explorer.exe', [dir]);
+      } else {
+        await launchUrl(Uri.file(dir));
+      }
+    } catch (e) {
+      debugPrint('Failed to open recording folder "$dir": $e');
+      showToast('${translate('Failed')}: $dir');
+    }
+    // Refresh the shown path and its existence state.
+    if (mounted) setState(() {});
+  }
+
   Widget record(BuildContext context) {
     final showRootDir = isWindows && bind.mainIsInstalled();
     return futureBuilder(future: () async {
@@ -715,7 +750,7 @@ class _GeneralState extends State<_General> {
               Expanded(
                 child: GestureDetector(
                     onTap: root_dir_exists
-                        ? () => launchUrl(Uri.file(root_dir))
+                        ? () => _openRecordingFolder(root: true)
                         : null,
                     child: Text(
                       root_dir,
@@ -726,6 +761,10 @@ class _GeneralState extends State<_General> {
                           : null,
                     )).marginOnly(left: 10),
               ),
+              ElevatedButton(
+                      onPressed: () => _openRecordingFolder(root: true),
+                      child: Text(translate('Open')))
+                  .marginOnly(left: 5),
             ],
           ).marginOnly(left: _kContentHMargin),
         if (!(showRootDir && bind.isIncomingOnly()))
@@ -736,7 +775,7 @@ class _GeneralState extends State<_General> {
               Expanded(
                 child: GestureDetector(
                     onTap: user_dir_exists
-                        ? () => launchUrl(Uri.file(user_dir))
+                        ? () => _openRecordingFolder(root: false)
                         : null,
                     child: Text(
                       user_dir,
@@ -747,6 +786,10 @@ class _GeneralState extends State<_General> {
                           : null,
                     )).marginOnly(left: 10),
               ),
+              ElevatedButton(
+                      onPressed: () => _openRecordingFolder(root: false),
+                      child: Text(translate('Open')))
+                  .marginOnly(left: 5),
               ElevatedButton(
                       onPressed: isOptionFixed(kOptionVideoSaveDirectory)
                           ? null
