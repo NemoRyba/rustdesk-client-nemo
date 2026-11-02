@@ -329,5 +329,11 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("nemo_update_now", "Update now"),
         ("nemo_update_postpone", "Postpone 1 hour"),
         ("nemo_update_countdown", "Starts automatically in {} s."),
+        ("Paste or load from file", "Paste or load from file"),
+        ("Scan QR code", "Scan QR code"),
+        ("Share log", "Share log"),
+        ("Support", "Support"),
+        ("Build", "Build"),
+        ("Use the ⋮ menu for a direct-only connection.", "Use the ⋮ menu for a direct-only connection."),
     ].iter().cloned().collect();
 }

@@ -1143,7 +1143,12 @@ pub fn main_get_connect_status() -> String {
         if state > 0 {
             state = 1;
         }
-        serde_json::json!({ "status_num": state }).to_string()
+        // TBFDesk: key_confirmed for the registration badge on the phone.
+        serde_json::json!({
+            "status_num": state,
+            "key_confirmed": hbb_common::config::Config::get_key_confirmed(),
+        })
+        .to_string()
     }
 }
 

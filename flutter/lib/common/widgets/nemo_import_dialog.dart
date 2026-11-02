@@ -25,8 +25,10 @@ const int _kMaxSetupFileBytes = 64 * 1024;
 Future<String?> _pickSetupFile() async {
   final result = await FilePicker.platform.pickFiles(
     dialogTitle: translate('Import setup string or device key'),
-    type: FileType.custom,
-    allowedExtensions: ['tbfsetup', 'txt', 'json'],
+    // TBFDesk: phones reject unknown extensions (tbfsetup) in the picker filter.
+    type: (isAndroid || isIOS) ? FileType.any : FileType.custom,
+    allowedExtensions:
+        (isAndroid || isIOS) ? null : ['tbfsetup', 'txt', 'json'],
   );
   final path = result?.files.single.path;
   if (path == null) return null;

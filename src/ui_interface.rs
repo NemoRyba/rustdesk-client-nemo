@@ -37,7 +37,7 @@ pub type Children = Arc<Mutex<(bool, HashMap<(String, String), Child>)>>;
 #[derive(Clone, Debug, Serialize)]
 pub struct UiStatus {
     pub status_num: i32,
-    #[cfg(not(feature = "flutter"))]
+    // TBFDesk: also in the Flutter status (registration badge, FLUTTER-PORT A15).
     pub key_confirmed: bool,
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     pub mouse_time: i64,
@@ -57,7 +57,6 @@ pub struct LoginDeviceInfo {
 lazy_static::lazy_static! {
     static ref UI_STATUS : Arc<Mutex<UiStatus>> = Arc::new(Mutex::new(UiStatus{
         status_num: 0,
-        #[cfg(not(feature = "flutter"))]
         key_confirmed: false,
         #[cfg(not(any(target_os = "android", target_os = "ios")))]
         mouse_time: 0,
@@ -1377,7 +1376,6 @@ pub fn get_login_device_info_json() -> String {
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tokio::main(flavor = "current_thread")]
 async fn check_connect_status_(reconnect: bool, rx: mpsc::UnboundedReceiver<ipc::Data>) {
-    #[cfg(not(feature = "flutter"))]
     let mut key_confirmed = false;
     let mut rx = rx;
     let mut mouse_time = 0;
@@ -1428,13 +1426,9 @@ async fn check_connect_status_(reconnect: bool, rx: mpsc::UnboundedReceiver<ipc:
                                 if x > 0 {
                                     x = 1
                                 }
-                                #[cfg(not(feature = "flutter"))]
-                                {
-                                    key_confirmed = _c;
-                                }
+                                key_confirmed = _c;
                                 *UI_STATUS.lock().unwrap() = UiStatus {
                                     status_num: x as _,
-                                    #[cfg(not(feature = "flutter"))]
                                     key_confirmed: _c,
                                     #[cfg(not(any(target_os = "android", target_os = "ios")))]
                                     mouse_time,
@@ -1486,7 +1480,6 @@ async fn check_connect_status_(reconnect: bool, rx: mpsc::UnboundedReceiver<ipc:
         }
         *UI_STATUS.lock().unwrap() = UiStatus {
             status_num: -1,
-            #[cfg(not(feature = "flutter"))]
             key_confirmed,
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
             mouse_time,

@@ -65,7 +65,7 @@ Widget nemoDirectChip(String id) {
     final ep = nemoDirectEndpoint(id);
     if (ep.isEmpty) return const SizedBox.shrink();
     final tip =
-        '${translate('Direct access possible')} — $ep. ${translate('Right-click for a direct-only connection.')}';
+        '${translate('Direct access possible')} — $ep. ${translate(isMobile ? 'Use the ⋮ menu for a direct-only connection.' : 'Right-click for a direct-only connection.')}';
     return Tooltip(
       message: tip,
       child: Container(

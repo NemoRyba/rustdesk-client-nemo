@@ -7,6 +7,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
+import 'package:share_plus/share_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_hbb/common.dart';
@@ -388,6 +389,19 @@ Future<void> _nemoDownloadCert(Map<String, dynamic> info) async {
   final pem = (info['pem'] ?? '').toString();
   if (pem.isEmpty) return;
   final host = (info['server_host'] ?? '').toString();
+  // TBFDesk: phones have no save dialog for raw bytes in file_picker 5 -> share sheet.
+  if (isAndroid || isIOS) {
+    try {
+      final f = File(
+          '${Directory.systemTemp.path}/tbfdesk-${host.isEmpty ? 'tbfdesk' : host}.crt');
+      await f.writeAsString(pem);
+      await Share.shareXFiles([XFile(f.path)],
+          subject: translate('Download certificate'));
+    } catch (e) {
+      showToast('$e');
+    }
+    return;
+  }
   var path = await FilePicker.platform.saveFile(
     dialogTitle: translate('Save certificate'),
     fileName: 'tbfdesk-${host.isEmpty ? 'tbfdesk' : host}.crt',

@@ -966,5 +966,11 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("malformed ticket key", "ungültiger Autorisierungsschlüssel"),
         ("the connecting computer did not prove the authorization is its own", "der verbindende Computer konnte nicht nachweisen, dass die Autorisierung ihm gehört"),
         ("this computer has no management key to check the authorization with", "dieser Computer hat keinen Verwaltungsschlüssel, um die Autorisierung zu prüfen"),
+        ("Paste or load from file", "Einfügen oder aus Datei laden"),
+        ("Scan QR code", "QR-Code scannen"),
+        ("Share log", "Protokoll teilen"),
+        ("Support", "Support"),
+        ("Build", "Build"),
+        ("Use the ⋮ menu for a direct-only connection.", "Über das ⋮-Menü ausschließlich direkt verbinden."),
     ].iter().cloned().collect();
 }
