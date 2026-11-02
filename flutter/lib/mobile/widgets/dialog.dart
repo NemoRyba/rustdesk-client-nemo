@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter_hbb/common/nemo_policy.dart';
 import 'package:flutter_hbb/common/widgets/setting_widgets.dart';
 import 'package:flutter_hbb/common/widgets/toolbar.dart';
 import 'package:get/get.dart';
@@ -53,8 +54,50 @@ void setTemporaryPasswordLengthDialog(
   }, backDismiss: true, clickMaskDismiss: true);
 }
 
+// TBFDesk: server keys whose admin-fixed state locks the ID/Relay server dialog.
+const List<String> _kNemoServerLockKeys = [
+  'custom-rendezvous-server',
+  'relay-server',
+  'api-server',
+  'key',
+  kNemoCompanyNetworkOnly,
+];
+
+/// TBFDesk: any server key is pushed (fixed) by the management server.
+bool nemoManagementServerSettingsLocked() =>
+    _kNemoServerLockKeys.any((k) => isOptionFixed(k) == true);
+
+/// TBFDesk: read-only notice instead of the editable server dialog.
+void _nemoShowServerSettingsLocked(
+    OverlayDialogManager dialogManager, String message) {
+  dialogManager.show((setState, close, context) {
+    return CustomAlertDialog(
+      title: Text(translate('ID/Relay Server')),
+      content: ConstrainedBox(
+        constraints: const BoxConstraints(minWidth: 400),
+        child: SelectionArea(child: Text(message)),
+      ),
+      actions: [dialogButton('Close', onPressed: close)],
+      onSubmit: close,
+      onCancel: close,
+    );
+  }, backDismiss: true, clickMaskDismiss: true);
+}
+
 void showServerSettings(OverlayDialogManager dialogManager,
     void Function(VoidCallback) setState) async {
+  // TBFDesk: locked by the exe name (show the licence) or by management policy.
+  final license = await bind.mainGetLicense();
+  if (license.isNotEmpty) {
+    _nemoShowServerSettingsLocked(dialogManager,
+        '${translate('Server settings are locked by this executable name.')}\n$license');
+    return;
+  }
+  if (nemoManagementServerSettingsLocked()) {
+    _nemoShowServerSettingsLocked(dialogManager,
+        translate('Server settings are locked by management policy.'));
+    return;
+  }
   Map<String, dynamic> options = {};
   try {
     options = jsonDecode(await bind.mainGetOptions());
@@ -85,9 +128,21 @@ void showServerSettingsWithValue(
     relayServerMsg,
     apiServerMsg,
   ];
+  // TBFDesk: "Company network only" checkbox
+  final oldCompanyOnly =
+      bind.mainGetOptionSync(key: kNemoCompanyNetworkOnly) == 'Y';
+  final companyOnly = oldCompanyOnly.obs;
+  final companyOnlyFixed = isOptionFixed(kNemoCompanyNetworkOnly) == true;
 
   dialogManager.show((setState, close, context) {
     Future<bool> submit() async {
+      // TBFDesk: company network only needs an ID server; keep the dialog open.
+      idServerMsg.value = '';
+      if (companyOnly.value && idCtrl.text.trim().isEmpty) {
+        idServerMsg.value =
+            translate('Company network only requires an ID server');
+        return false;
+      }
       setState(() {
         isInProgress = true;
       });
@@ -99,6 +154,12 @@ void showServerSettingsWithValue(
               relayServer: relayCtrl.text.trim(),
               apiServer: apiCtrl.text.trim(),
               key: keyCtrl.text.trim()));
+      // TBFDesk: store the company-only flag after the server keys
+      if (ret && companyOnly.value != oldCompanyOnly) {
+        await bind.mainSetOption(
+            key: kNemoCompanyNetworkOnly,
+            value: companyOnly.value ? 'Y' : '');
+      }
       setState(() {
         isInProgress = false;
       });
@@ -179,6 +240,32 @@ void showServerSettingsWithValue(
                   ),
                   SizedBox(height: 8),
                   buildField('Key', keyCtrl, ''),
+                  // TBFDesk: Company network only + its explanation
+                  if (!isWeb) ...[
+                    SizedBox(height: 8),
+                    InkWell(
+                      onTap: companyOnlyFixed
+                          ? null
+                          : () => companyOnly.value = !companyOnly.value,
+                      child: Row(
+                        children: [
+                          Checkbox(
+                            value: companyOnly.value,
+                            onChanged: companyOnlyFixed
+                                ? null
+                                : (v) => companyOnly.value = v ?? false,
+                          ),
+                          SizedBox(width: 5),
+                          Expanded(
+                              child: Text(translate('Company network only'))),
+                        ],
+                      ),
+                    ),
+                    Text(
+                      translate('nemo_company_only_tip'),
+                      style: TextStyle(fontSize: 12, color: Colors.grey),
+                    ),
+                  ],
                   if (isInProgress)
                     Padding(
                       padding: EdgeInsets.only(top: 8),

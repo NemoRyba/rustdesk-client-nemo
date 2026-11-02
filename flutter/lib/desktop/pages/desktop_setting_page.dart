@@ -6,7 +6,10 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_hbb/common.dart';
+import 'package:flutter_hbb/common/nemo_policy.dart';
 import 'package:flutter_hbb/common/widgets/audio_input.dart';
+import 'package:flutter_hbb/common/widgets/nemo_import_dialog.dart';
+import 'package:flutter_hbb/common/widgets/nemo_lang_flag.dart';
 import 'package:flutter_hbb/common/widgets/setting_widgets.dart';
 import 'package:flutter_hbb/consts.dart';
 import 'package:flutter_hbb/desktop/pages/desktop_home_page.dart';
@@ -22,7 +25,6 @@ import 'package:flutter_hbb/plugin/widgets/desktop_settings.dart';
 import 'package:get/get.dart';
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
-import 'package:url_launcher/url_launcher_string.dart';
 
 import '../../common/widgets/dialog.dart';
 import '../../common/widgets/login.dart';
@@ -415,8 +417,13 @@ class _GeneralState extends State<_General> {
       controller: scrollController,
       children: [
         if (!isWeb) service(),
+        // TBFDesk: friendly device name (managed by the management server)
+        if (!isWeb && !bind.isDisableSettings()) alias(),
         theme(),
-        _Card(title: 'Language', children: [language()]),
+        _Card(
+            title: 'Language',
+            tip: _nemoTip('language'),
+            children: [language()]),
         if (!isWeb) hwcodec(),
         if (!isWeb) audio(context),
         if (!isWeb) record(context),
@@ -434,7 +441,7 @@ class _GeneralState extends State<_General> {
     }
 
     final isOptFixed = isOptionFixed(kCommConfKeyTheme);
-    return _Card(title: 'Theme', children: [
+    return _Card(title: 'Theme', tip: _nemoTip('allow-darktheme'), children: [
       _Radio<String>(context,
           value: 'light',
           groupValue: current,
@@ -476,13 +483,43 @@ class _GeneralState extends State<_General> {
               serviceBtnEnabled.value = true;
             });
           }();
-        }, enabled: serviceBtnEnabled.value)
+        }, enabled: serviceBtnEnabled.value, tip: _nemoTip('stop-service'))
       ]);
     });
   }
 
+  // TBFDesk: Alias row (option nemo-alias), like the Sciter settings dialog.
+  Widget alias() {
+    final value = bind.mainGetOptionSync(key: kNemoOptionAlias);
+    return _Card(title: 'Alias', tip: _nemoTip('nemo-alias'), children: [
+      Row(
+        children: [
+          Expanded(
+            child: SelectionArea(
+              child: Text(
+                value.isEmpty ? '-' : value,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                    fontSize: _kContentFontSize,
+                    color: disabledTextColor(
+                        context, !isOptionFixed(kNemoOptionAlias))),
+              ),
+            ),
+          ),
+          ElevatedButton(
+            onPressed: () =>
+                _nemoAliasDialog(onChanged: () => setState(() {})),
+            child: Text(translate('Change')).marginSymmetric(horizontal: 15),
+          ),
+        ],
+      ).marginOnly(left: _kContentHMargin),
+    ]);
+  }
+
   Widget other() {
-    final showAutoUpdate = isWindows && bind.mainIsInstalled();
+    // TBFDesk: the Auto update row is shown like the Sciter UI (greyed, inert)
+    // unless installation is disabled; see _nemoAutoUpdateRow.
+    final showAutoUpdate = !isWeb && !bind.isDisableInstallation();
     final children = <Widget>[
       if (!isWeb && !bind.isIncomingOnly())
         _OptionCheckBox(context, 'Confirm before closing multiple tabs',
@@ -536,13 +573,15 @@ class _GeneralState extends State<_General> {
             kOptionEnableCheckUpdate,
             isServer: false,
           ),
-        if (showAutoUpdate)
-          _OptionCheckBox(
-            context,
-            'Auto update',
-            kOptionAllowAutoUpdate,
-            isServer: true,
-          ),
+        // TBFDesk: per-user local option, as in the Sciter settings dialog.
+        _OptionCheckBox(
+          context,
+          'Sync clipboard between sessions',
+          kNemoOptionSyncClipboardBetweenSessions,
+          isServer: false,
+          tip: _nemoTip(kNemoOptionSyncClipboardBetweenSessions),
+        ),
+        if (showAutoUpdate) _nemoAutoUpdateRow(context),
         if (isWindows && !bind.isOutgoingOnly())
           _OptionCheckBox(
             context,
@@ -642,7 +681,10 @@ class _GeneralState extends State<_General> {
     final vram = bind.mainHasVram();
     return Offstage(
       offstage: !(hwcodec || vram),
-      child: _Card(title: 'Hardware Codec', children: [
+      child: _Card(
+          title: 'Hardware Codec',
+          tip: _nemoTip('enhancements'),
+          children: [
         _OptionCheckBox(
           context,
           'Enable hardware codec',
@@ -672,7 +714,10 @@ class _GeneralState extends State<_General> {
           setState(() {});
         },
       ).marginOnly(left: _kContentHMargin);
-      return _Card(title: 'Audio Input Device', children: [child]);
+      return _Card(
+          title: 'Audio Input Device',
+          tip: _nemoTip('audio'),
+          children: [child]);
     }
 
     return AudioInput(builder: builder, isCm: false, isVoiceCall: false);
@@ -818,36 +863,62 @@ class _GeneralState extends State<_General> {
     });
   }
 
+  // TBFDesk: only German (Germany), German (Austria) and English, each with a
+  // drawn flag (see nemo_lang_flag.dart). An unset / "default" option is German.
   Widget language() {
-    return futureBuilder(future: () async {
-      String langs = await bind.mainGetLangs();
-      return {'langs': langs};
-    }(), hasData: (res) {
-      Map<String, String> data = res as Map<String, String>;
-      List<dynamic> langsList = jsonDecode(data['langs']!);
-      Map<String, String> langsMap = {for (var v in langsList) v[0]: v[1]};
-      List<String> keys = langsMap.keys.toList();
-      List<String> values = langsMap.values.toList();
-      keys.insert(0, defaultOptionLang);
-      values.insert(0, translate('Default'));
-      String currentKey = bind.mainGetLocalOption(key: kCommConfKeyLang);
-      if (!keys.contains(currentKey)) {
-        currentKey = defaultOptionLang;
-      }
-      final isOptFixed = isOptionFixed(kCommConfKeyLang);
-      return ComboBox(
-        keys: keys,
-        values: values,
-        initialKey: currentKey,
-        onChanged: (key) async {
-          await bind.mainSetLocalOption(key: kCommConfKeyLang, value: key);
-          if (isWeb) reloadCurrentWindow();
-          if (!isWeb) reloadAllWindows();
-          if (!isWeb) bind.mainChangeLanguage(lang: key);
-        },
-        enabled: !isOptFixed,
-      ).marginOnly(left: _kContentHMargin);
-    });
+    final current = nemoCurrentLang();
+    final isOptFixed = isOptionFixed(kCommConfKeyLang);
+    final enabled = !isOptFixed;
+    return Container(
+      decoration: BoxDecoration(
+        border: Border.all(
+          color: enabled
+              ? MyTheme.color(context).border2 ?? MyTheme.border
+              : MyTheme.border,
+        ),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      height: 42,
+      child: DropdownButton<String>(
+        isExpanded: true,
+        value: current,
+        elevation: 16,
+        underline: Container(),
+        icon: const Icon(Icons.expand_more_sharp, size: 20)
+            .marginOnly(right: 15),
+        onChanged: enabled
+            ? (String? key) async {
+                if (key == null || key == current) return;
+                await bind.mainSetLocalOption(
+                    key: kCommConfKeyLang, value: key);
+                if (isWeb) reloadCurrentWindow();
+                if (!isWeb) reloadAllWindows();
+                if (!isWeb) bind.mainChangeLanguage(lang: key);
+                if (mounted) setState(() {});
+              }
+            : null,
+        items: kNemoLangChoices
+            .map((c) => DropdownMenuItem<String>(
+                  value: c.code,
+                  child: Row(children: [
+                    Opacity(
+                        opacity: enabled ? 1 : 0.5,
+                        child: NemoLangFlag(code: c.code)),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        c.label,
+                        style: TextStyle(
+                            fontSize: 15,
+                            color: disabledTextColor(context, enabled)),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ]).marginOnly(left: 15),
+                ))
+            .toList(),
+      ),
+    ).marginOnly(left: _kContentHMargin, bottom: 5);
   }
 }
 
@@ -886,9 +957,12 @@ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
               child: Column(children: [
                 permissions(context),
                 password(context),
-                _Card(title: '2FA', children: [tfa()]),
+                _Card(title: '2FA', tip: _nemoTip('tfa'), children: [tfa()]),
                 if (!isChangeIdDisabled())
-                  _Card(title: 'ID', children: [changeId()]),
+                  _Card(
+                      title: 'ID',
+                      tip: _nemoTip('change-id'),
+                      children: [changeId()]),
                 more(context),
               ]),
             ),
@@ -1076,42 +1150,64 @@ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
           children: [
             _OptionCheckBox(
                 context, 'Enable keyboard/mouse', kOptionEnableKeyboard,
-                enabled: enabled, fakeValue: fakeValue),
+                enabled: enabled,
+                fakeValue: fakeValue,
+                tip: _nemoTip(kOptionEnableKeyboard)),
             if (isWindows)
               _OptionCheckBox(
                   context, 'Enable remote printer', kOptionEnableRemotePrinter,
                   enabled: enabled, fakeValue: fakeValue),
             _OptionCheckBox(context, 'Enable clipboard', kOptionEnableClipboard,
-                enabled: enabled, fakeValue: fakeValue),
+                enabled: enabled,
+                fakeValue: fakeValue,
+                tip: _nemoTip(kOptionEnableClipboard)),
             _OptionCheckBox(
                 context, 'Enable file transfer', kOptionEnableFileTransfer,
-                enabled: enabled, fakeValue: fakeValue),
+                enabled: enabled,
+                fakeValue: fakeValue,
+                tip: _nemoTip(kOptionEnableFileTransfer)),
             _OptionCheckBox(context, 'Enable audio', kOptionEnableAudio,
                 enabled: enabled, fakeValue: fakeValue),
             _OptionCheckBox(context, 'Enable camera', kOptionEnableCamera,
-                enabled: enabled, fakeValue: fakeValue),
+                enabled: enabled,
+                fakeValue: fakeValue,
+                tip: _nemoTip(kOptionEnableCamera)),
             _OptionCheckBox(context, 'Enable terminal', kOptionEnableTerminal,
-                enabled: enabled, fakeValue: fakeValue),
+                enabled: enabled,
+                fakeValue: fakeValue,
+                tip: _nemoTip(kOptionEnableTerminal)),
             _OptionCheckBox(
                 context, 'Enable TCP tunneling', kOptionEnableTunnel,
-                enabled: enabled, fakeValue: fakeValue),
+                enabled: enabled,
+                fakeValue: fakeValue,
+                tip: _nemoTip(kOptionEnableTunnel)),
             _OptionCheckBox(
                 context, 'Enable remote restart', kOptionEnableRemoteRestart,
-                enabled: enabled, fakeValue: fakeValue),
+                enabled: enabled,
+                fakeValue: fakeValue,
+                tip: _nemoTip(kOptionEnableRemoteRestart)),
             _OptionCheckBox(
                 context, 'Enable recording session', kOptionEnableRecordSession,
                 enabled: enabled, fakeValue: fakeValue),
             if (isWindows)
               _OptionCheckBox(context, 'Enable blocking user input',
                   kOptionEnableBlockInput,
-                  enabled: enabled, fakeValue: fakeValue),
-            if (bind.mainSupportedPrivacyModeImpls() != '[]')
-              _OptionCheckBox(
-                  context, 'Enable privacy mode', kOptionEnablePrivacyMode,
-                  enabled: enabled, fakeValue: fakeValue),
+                  enabled: enabled,
+                  fakeValue: fakeValue,
+                  tip: _nemoTip(kOptionEnableBlockInput)),
+            // TBFDesk: privacy mode is not offered (removed from Settings, as in
+            // the Sciter UI).
+            // TBFDesk: LAN discovery sits with the permissions (as in the Sciter
+            // UI), as a positive "Enable" toggle instead of "Deny LAN discovery".
+            // It is not part of the access mode, so no fakeValue.
+            _OptionCheckBox(
+                context, 'Enable LAN discovery', kOptionEnableLanDiscovery,
+                enabled: enabled, tip: _nemoTip(kOptionEnableLanDiscovery)),
             _OptionCheckBox(context, 'Enable remote configuration modification',
                 kOptionAllowRemoteConfigModification,
-                enabled: enabled, fakeValue: fakeValue),
+                enabled: enabled,
+                fakeValue: fakeValue,
+                tip: _nemoTip(kOptionAllowRemoteConfigModification)),
           ],
         ),
       ]);
@@ -1139,7 +1235,10 @@ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
           String currentValue =
               passwordValues[passwordKeys.indexOf(model.verificationMethod)];
           List<Widget> radios = passwordValues
-              .map((value) => _Radio<String>(
+              .map((value) => _nemoTipped(
+                  // TBFDesk: plain-language tooltip per verification method
+                  _nemoTip(passwordKeys[passwordValues.indexOf(value)]),
+                  _Radio<String>(
                     context,
                     value: value,
                     groupValue: currentValue,
@@ -1168,7 +1267,7 @@ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
                               await callback();
                             }
                           }),
-                  ))
+                  )))
               .toList();
 
           var onChanged = tmpEnabled && !locked
@@ -1182,7 +1281,9 @@ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
                 }
               : null;
           List<Widget> lengthRadios = ['6', '8', '10']
-              .map((value) => GestureDetector(
+              .map((value) => _nemoTipped(
+                  _nemoTip('tpl-$value'),
+                  GestureDetector(
                     child: Row(
                       children: [
                         Radio(
@@ -1198,7 +1299,7 @@ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
                       ],
                     ).paddingOnly(right: 10),
                     onTap: () => onChanged?.call(value),
-                  ))
+                  )))
               .toList();
 
           final isOptFixedNumOTP =
@@ -1246,14 +1347,25 @@ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
           final usePassword = model.approveMode != 'click';
 
           final isApproveModeFixed = isOptionFixed(kOptionApproveMode);
+          // TBFDesk: Clear permanent password (Sciter parity), shown only when a
+          // locally set permanent password exists.
+          final localPermanentPasswordSet =
+              bind.mainGetCommonSync(key: 'local-permanent-password-set') ==
+                  'true';
           return _Card(title: 'Password', children: [
-            ComboBox(
-              enabled: !locked && !isApproveModeFixed,
-              keys: modeKeys,
-              values: modeValues,
-              initialKey: modeInitialKey,
-              onChanged: (key) => model.setApproveMode(key),
-            ).marginOnly(left: _kContentHMargin),
+            _nemoTipped(
+                _nemoTip(modeInitialKey == 'password'
+                    ? 'approve-mode-password'
+                    : (modeInitialKey == 'click'
+                        ? 'approve-mode-click'
+                        : 'approve-mode-both')),
+                ComboBox(
+                  enabled: !locked && !isApproveModeFixed,
+                  keys: modeKeys,
+                  values: modeValues,
+                  initialKey: modeInitialKey,
+                  onChanged: (key) => model.setApproveMode(key),
+                ).marginOnly(left: _kContentHMargin)),
             if (usePassword) radios[0],
             if (usePassword)
               _SubLabeledWidget(
@@ -1268,8 +1380,21 @@ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
             if (usePassword) numericOneTimePassword,
             if (usePassword) radios[1],
             if (usePassword && !isChangePermanentPasswordDisabled())
-              _SubButton('Set permanent password', setPasswordDialog,
-                  permEnabled && !locked),
+              _nemoTipped(
+                  _nemoTip('set-permanent-password'),
+                  _SubButton('Set permanent password', setPasswordDialog,
+                      permEnabled && !locked)),
+            if (usePassword &&
+                !isChangePermanentPasswordDisabled() &&
+                localPermanentPasswordSet)
+              _nemoTipped(
+                  _nemoTip('clear-permanent-password'),
+                  _SubButton('Clear permanent password', () async {
+                    await bind.mainSetPermanentPasswordWithResult(
+                        password: '');
+                    await model.updatePasswordModel();
+                    if (mounted) setState(() {});
+                  }, !locked)),
             // if (usePassword)
             //   hide_cm(!locked).marginOnly(left: _kContentHSubMargin - 6),
             if (usePassword) radios[2],
@@ -1281,8 +1406,6 @@ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
     bool enabled = !locked;
     return _Card(title: 'Security', children: [
       shareRdp(context, enabled),
-      _OptionCheckBox(context, 'Deny LAN discovery', 'enable-lan-discovery',
-          reverse: true, enabled: enabled),
       ...directIp(context),
       whitelist(),
       ...autoDisconnect(context),
@@ -1306,7 +1429,7 @@ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
     bool value = bind.mainIsShareRdp();
     return Offstage(
       offstage: !(isWindows && bind.mainIsInstalled()),
-      child: GestureDetector(
+      child: _nemoTipped(_nemoTip('share-rdp'), GestureDetector(
           child: Row(
             children: [
               Checkbox(
@@ -1320,7 +1443,7 @@ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
               )
             ],
           ).marginOnly(left: _kCheckBoxLeftMargin),
-          onTap: enabled ? () => onChanged(!value) : null),
+          onTap: enabled ? () => onChanged(!value) : null)),
     );
   }
 
@@ -1330,7 +1453,9 @@ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
     RxBool applyEnabled = false.obs;
     return [
       _OptionCheckBox(context, 'Enable direct IP access', kOptionDirectServer,
-          update: update, enabled: !locked),
+          update: update,
+          enabled: !locked,
+          tip: _nemoTip(kOptionDirectServer)),
       () {
         // Simple temp wrapper for PR check
         tmpWrapper() {
@@ -1342,7 +1467,7 @@ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
           final isOptFixed = isOptionFixed(kOptionDirectAccessPort);
           return Offstage(
             offstage: !enabled,
-            child: _SubLabeledWidget(
+            child: _nemoTipped(_nemoTip('edit-direct-port'), _SubLabeledWidget(
               context,
               'Port',
               Row(children: [
@@ -1381,7 +1506,7 @@ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
                     ))
               ]),
               enabled: enabled && !locked && !isOptFixed,
-            ),
+            )),
           );
         }
 
@@ -1406,7 +1531,8 @@ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
       final isOptFixed = isOptionFixed(kOptionWhitelist);
       return GestureDetector(
         child: Tooltip(
-          message: translate('whitelist_tip'),
+          // TBFDesk: plain-language tooltip (Sciter NEMO_SETTING_TIPS)
+          message: translate(_nemoTip('whitelist')!),
           child: Obx(() => Row(
                 children: [
                   Checkbox(
@@ -1425,13 +1551,15 @@ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
                   Expanded(
                       child: Text(
                     translate('Use IP Whitelisting'),
-                    style:
-                        TextStyle(color: disabledTextColor(context, enabled)),
+                    // TBFDesk: greyed and inert when admin-fixed
+                    style: TextStyle(
+                        color: disabledTextColor(
+                            context, enabled && !isOptFixed)),
                   ))
                 ],
               )),
         ),
-        onTap: enabled
+        onTap: enabled && !isOptFixed
             ? () {
                 onChanged(!hasWhitelist.value);
               }
@@ -1588,8 +1716,21 @@ class _NetworkState extends State<_Network> with AutomaticKeepAliveClientMixin {
   @override
   bool get wantKeepAlive => true;
   bool locked = !isWeb && bind.mainIsInstalled();
+  // TBFDesk: server settings locked by the exe name (licence present)
+  bool _exeServerLocked = false;
 
   final scrollController = ScrollController();
+
+  @override
+  void initState() {
+    super.initState();
+    // TBFDesk: same check as the Sciter UI (nemoExeServerSettingsLocked).
+    nemoExeServerSettingsLocked().then((v) {
+      if (mounted && v != _exeServerLocked) {
+        setState(() => _exeServerLocked = v);
+      }
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1628,6 +1769,8 @@ class _NetworkState extends State<_Network> with AutomaticKeepAliveClientMixin {
       Widget? trailing,
       bool showTooltip = false,
       String tooltipMessage = '',
+      String titleSuffix = '', // TBFDesk: e.g. " (locked)"
+      bool fixed = false, // TBFDesk: admin-fixed rows are greyed
     }) {
       final titleWidget = showTooltip
           ? Row(
@@ -1638,7 +1781,7 @@ class _NetworkState extends State<_Network> with AutomaticKeepAliveClientMixin {
                   child: Row(
                     children: [
                       Text(
-                        translate(title),
+                        translate(title) + titleSuffix,
                         style: TextStyle(fontSize: _kContentFontSize),
                       ),
                       SizedBox(width: 5),
@@ -1657,14 +1800,14 @@ class _NetworkState extends State<_Network> with AutomaticKeepAliveClientMixin {
               ],
             )
           : Text(
-              translate(title),
+              translate(title) + titleSuffix,
               style: TextStyle(fontSize: _kContentFontSize),
             );
 
       return ListTile(
         leading: Icon(icon, color: _accentColor),
         title: titleWidget,
-        enabled: !locked,
+        enabled: !locked && !fixed,
         onTap: onTap,
         trailing: trailing,
         shape: RoundedRectangleBorder(
@@ -1683,6 +1826,7 @@ class _NetworkState extends State<_Network> with AutomaticKeepAliveClientMixin {
           title: title,
           showTooltip: true,
           tooltipMessage: tooltipMessage,
+          fixed: isOptionFixed(optionKey) == true,
           trailing: Switch(
             value: mainGetBoolOptionSync(optionKey),
             onChanged: locked || isOptionFixed(optionKey)
@@ -1708,22 +1852,52 @@ class _NetworkState extends State<_Network> with AutomaticKeepAliveClientMixin {
                 listTile(
                   icon: Icons.dns_outlined,
                   title: 'ID/Relay Server',
+                  // TBFDesk: "(locked)" when locked by exe name or management
+                  titleSuffix: (_exeServerLocked ||
+                          nemoManagementServerSettingsLocked())
+                      ? ' (${translate('locked')})'
+                      : '',
+                  showTooltip: true,
+                  tooltipMessage: _nemoTip('custom-server')!,
                   onTap: () => showServerSettings(gFFI.dialogManager, setState),
                 ),
-              if (!hideProxy && !hideServer) divider,
+              // TBFDesk: Management server dialog
+              if (!hideServer) divider,
+              if (!hideServer)
+                listTile(
+                  icon: Icons.admin_panel_settings_outlined,
+                  title: 'Management',
+                  showTooltip: true,
+                  tooltipMessage: _nemoTip('nemo-management')!,
+                  onTap: () => _nemoManagementDialog(() => setState(() {})),
+                ),
+              // TBFDesk: import a setup string or a bare device key
+              if (!isWeb) divider,
+              if (!isWeb)
+                listTile(
+                  icon: Icons.key_outlined,
+                  title: 'Import setup string or device key',
+                  showTooltip: true,
+                  tooltipMessage: _nemoTip('import-device-key')!,
+                  onTap: () async {
+                    await showNemoImportDialog(context);
+                    if (mounted) setState(() {});
+                  },
+                ),
+              if (!hideProxy && (!hideServer || !isWeb)) divider,
               if (!hideProxy)
                 listTile(
                   icon: Icons.network_ping_outlined,
                   title: 'Socks5/Http(s) Proxy',
+                  showTooltip: true,
+                  tooltipMessage: _nemoTip('socks5-server')!,
                   onTap: changeSocks5Proxy,
                 ),
-              if (!hideWebSocket && (!hideServer || !hideProxy)) divider,
+              if (!hideWebSocket && (!hideServer || !hideProxy || !isWeb))
+                divider,
               if (!hideWebSocket)
-                switchWidget(
-                    Icons.web_asset_outlined,
-                    'Use WebSocket',
-                    '${translate('websocket_tip')}\n\n${translate('server-oss-not-support-tip')}',
-                    kOptionAllowWebSocket),
+                switchWidget(Icons.web_asset_outlined, 'Use WebSocket',
+                    _nemoTip(kOptionAllowWebSocket)!, kOptionAllowWebSocket),
               if (!isWeb)
                 futureBuilder(
                   future: bind.mainIsUsingPublicServer(),
@@ -1738,7 +1912,7 @@ class _NetworkState extends State<_Network> with AutomaticKeepAliveClientMixin {
                           switchWidget(
                               Icons.no_encryption_outlined,
                               'Allow insecure TLS fallback',
-                              'allow-insecure-tls-fallback-tip',
+                              _nemoTip(kOptionAllowInsecureTLSFallback)!,
                               kOptionAllowInsecureTLSFallback),
                           if (!outgoingOnly) divider,
                           if (!outgoingOnly)
@@ -1746,8 +1920,8 @@ class _NetworkState extends State<_Network> with AutomaticKeepAliveClientMixin {
                               icon: Icons.lan_outlined,
                               title: 'Disable UDP',
                               showTooltip: true,
-                              tooltipMessage:
-                                  '${translate('disable-udp-tip')}\n\n${translate('server-oss-not-support-tip')}',
+                              tooltipMessage: _nemoTip(kOptionDisableUdp)!,
+                              fixed: isOptionFixed(kOptionDisableUdp) == true,
                               trailing: Switch(
                                 value: bind.mainGetOptionSync(
                                         key: kOptionDisableUdp) ==
@@ -1793,7 +1967,7 @@ class _DisplayState extends State<_Display> {
       imageQuality(context),
       codec(context),
       if (isDesktop) trackpadSpeed(context),
-      if (!isWeb) privacyModeImpl(context),
+      // TBFDesk: privacy mode is not offered; its implementation picker is gone.
       other(context),
     ]).marginOnly(bottom: _kListViewBottomMargin);
   }
@@ -1981,42 +2155,6 @@ class _DisplayState extends State<_Display> {
     ]);
   }
 
-  Widget privacyModeImpl(BuildContext context) {
-    final supportedPrivacyModeImpls = bind.mainSupportedPrivacyModeImpls();
-    late final List<dynamic> privacyModeImpls;
-    try {
-      privacyModeImpls = jsonDecode(supportedPrivacyModeImpls);
-    } catch (e) {
-      debugPrint('failed to parse supported privacy mode impls, err=$e');
-      return Offstage();
-    }
-    if (privacyModeImpls.length < 2) {
-      return Offstage();
-    }
-
-    final key = 'privacy-mode-impl-key';
-    onChanged(String value) async {
-      await bind.mainSetOption(key: key, value: value);
-      setState(() {});
-    }
-
-    String groupValue = bind.mainGetOptionSync(key: key);
-    if (groupValue.isEmpty) {
-      groupValue = bind.mainDefaultPrivacyModeImpl();
-    }
-    return _Card(
-      title: 'Privacy mode',
-      children: privacyModeImpls.map((impl) {
-        final d = impl as List<dynamic>;
-        return _Radio(context,
-            value: d[0] as String,
-            groupValue: groupValue,
-            label: d[1] as String,
-            onChanged: onChanged);
-      }).toList(),
-    );
-  }
-
   Widget otherRow(String label, String key) {
     final value = bind.mainGetUserDefaultOption(key: key) == 'Y';
     final isOptFixed = isOptionFixed(key);
@@ -2065,21 +2203,11 @@ class _AccountState extends State<_Account> {
     return ListView(
       controller: scrollController,
       children: [
-        _Card(title: 'Account', children: [accountAction(), useInfo()]),
+        // TBFDesk: no Login/Logout here (as in the Sciter UI); the account bar
+        // on the home page handles it. Only the signed-in account is shown.
+        _Card(title: 'Account', children: [useInfo()]),
       ],
     ).marginOnly(bottom: _kListViewBottomMargin);
-  }
-
-  Widget accountAction() {
-    return Obx(() => _Button(
-        gFFI.userModel.userName.value.isEmpty
-            ? 'Login'
-            : '${translate('Logout')} (${gFFI.userModel.accountLabelWithHandle})',
-        () => {
-              gFFI.userModel.userName.value.isEmpty
-                  ? loginDialog()
-                  : logOutConfirmDialog()
-            }));
   }
 
   Widget useInfo() {
@@ -2395,6 +2523,9 @@ class _About extends StatefulWidget {
 }
 
 class _AboutState extends State<_About> {
+  // TBFDesk: "About TBFDesk" (Sciter showAbout parity): version, build id,
+  // fingerprint, TBF GmbH copyright + licence and the RustDesk attribution. No
+  // upstream rustdesk.com links, Purslane copyright or slogan.
   @override
   Widget build(BuildContext context) {
     return futureBuilder(future: () async {
@@ -2413,73 +2544,64 @@ class _AboutState extends State<_About> {
       final version = data['version'].toString();
       final buildDate = data['buildDate'].toString();
       final fingerprint = data['fingerprint'].toString();
-      const linkStyle = TextStyle(decoration: TextDecoration.underline);
+      final buildId = isWeb ? '' : bind.mainGetBuildId();
       final scrollController = ScrollController();
       return SingleChildScrollView(
         controller: scrollController,
-        child: _Card(title: translate('About RustDesk'), children: [
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+        child: _Card(
+            title: '${translate('About')} TBFDesk',
+            tip: _nemoTip('about'),
             children: [
-              const SizedBox(
-                height: 8.0,
-              ),
-              SelectionArea(
-                  child: Text('${translate('Version')}: $version')
-                      .marginSymmetric(vertical: 4.0)),
-              SelectionArea(
-                  child: Text('${translate('Build Date')}: $buildDate')
-                      .marginSymmetric(vertical: 4.0)),
-              if (!isWeb)
-                SelectionArea(
-                    child: Text('${translate('Fingerprint')}: $fingerprint')
-                        .marginSymmetric(vertical: 4.0)),
-              InkWell(
-                  onTap: () {
-                    launchUrlString('https://rustdesk.com/privacy.html');
-                  },
-                  child: Text(
-                    translate('Privacy Statement'),
-                    style: linkStyle,
-                  ).marginSymmetric(vertical: 4.0)),
-              InkWell(
-                  onTap: () {
-                    launchUrlString('https://rustdesk.com');
-                  },
-                  child: Text(
-                    translate('Website'),
-                    style: linkStyle,
-                  ).marginSymmetric(vertical: 4.0)),
-              Container(
-                decoration: const BoxDecoration(color: Color(0xFF2c8cff)),
-                padding:
-                    const EdgeInsets.symmetric(vertical: 24, horizontal: 8),
-                child: SelectionArea(
-                    child: Row(
-                  children: [
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'Copyright © ${DateTime.now().toString().substring(0, 4)} Purslane Ltd.\n$license',
-                            style: const TextStyle(color: Colors.white),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const SizedBox(
+                    height: 8.0,
+                  ),
+                  SelectionArea(
+                      child: Text('${translate('Version')}: $version')
+                          .marginSymmetric(vertical: 4.0)),
+                  if (buildId.isNotEmpty)
+                    SelectionArea(
+                        child: Text('${translate('Build')} $buildId')
+                            .marginSymmetric(vertical: 4.0)),
+                  SelectionArea(
+                      child: Text('${translate('Build Date')}: $buildDate')
+                          .marginSymmetric(vertical: 4.0)),
+                  if (!isWeb)
+                    SelectionArea(
+                        child: Text('${translate('Fingerprint')}: $fingerprint')
+                            .marginSymmetric(vertical: 4.0)),
+                  Container(
+                    decoration: const BoxDecoration(color: Color(0xFF2c8cff)),
+                    padding:
+                        const EdgeInsets.symmetric(vertical: 24, horizontal: 8),
+                    child: SelectionArea(
+                        child: Row(
+                      children: [
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Copyright © 2026 TBF GmbH'
+                                '${license.isEmpty ? '' : '\n$license'}',
+                                style: const TextStyle(color: Colors.white),
+                              ),
+                              Text(
+                                translate(
+                                    'Based on the open-source RustDesk project.'),
+                                style: const TextStyle(color: Colors.white),
+                              ).marginOnly(top: 8),
+                            ],
                           ),
-                          Text(
-                            translate('Slogan_tip'),
-                            style: TextStyle(
-                                fontWeight: FontWeight.w800,
-                                color: Colors.white),
-                          )
-                        ],
-                      ),
-                    ),
-                  ],
-                )),
-              ).marginSymmetric(vertical: 4.0)
-            ],
-          ).marginOnly(left: _kContentHMargin)
-        ]),
+                        ),
+                      ],
+                    )),
+                  ).marginSymmetric(vertical: 4.0)
+                ],
+              ).marginOnly(left: _kContentHMargin)
+            ]),
       );
     });
   }
@@ -2493,7 +2615,8 @@ class _AboutState extends State<_About> {
 Widget _Card(
     {required String title,
     required List<Widget> children,
-    List<Widget>? title_suffix}) {
+    List<Widget>? title_suffix,
+    String? tip}) {
   return Row(
     children: [
       Flexible(
@@ -2505,13 +2628,23 @@ Widget _Card(
                 Row(
                   children: [
                     Expanded(
-                        child: Text(
-                      translate(title),
-                      textAlign: TextAlign.start,
-                      style: const TextStyle(
-                        fontSize: _kTitleFontSize,
-                      ),
-                    )),
+                        child: Row(children: [
+                      Flexible(
+                          child: Text(
+                        translate(title),
+                        textAlign: TextAlign.start,
+                        style: const TextStyle(
+                          fontSize: _kTitleFontSize,
+                        ),
+                      )),
+                      // TBFDesk: plain-language tooltip for the whole card
+                      if (tip != null)
+                        _nemoTipped(
+                                tip,
+                                const Icon(Icons.help_outline,
+                                    size: 14, color: Colors.grey))
+                            .marginOnly(left: 5),
+                    ])),
                     ...?title_suffix
                   ],
                 ).marginOnly(left: _kContentHMargin, top: 10, bottom: 10),
@@ -2539,6 +2672,7 @@ Widget _OptionCheckBox(
   bool isServer = true,
   bool Function()? optGetter,
   Future<void> Function(String, bool)? optSetter,
+  String? tip, // TBFDesk: plain-language tooltip
 }) {
   getOpt() => optGetter != null
       ? optGetter()
@@ -2570,32 +2704,36 @@ Widget _OptionCheckBox(
     enabled = false;
   }
 
-  return GestureDetector(
-    child: Obx(
-      () => Row(
-        children: [
-          Checkbox(
-                  value: ref.value,
-                  onChanged: enabled && !isOptFixed ? onChanged : null)
-              .marginOnly(right: 5),
-          Offstage(
-            offstage: !ref.value || checkedIcon == null,
-            child: checkedIcon?.marginOnly(right: 5),
+  return _nemoTipped(
+      tip,
+      GestureDetector(
+        child: Obx(
+          () => Row(
+            children: [
+              Checkbox(
+                      value: ref.value,
+                      onChanged: enabled && !isOptFixed ? onChanged : null)
+                  .marginOnly(right: 5),
+              Offstage(
+                offstage: !ref.value || checkedIcon == null,
+                child: checkedIcon?.marginOnly(right: 5),
+              ),
+              Expanded(
+                  child: Text(
+                translate(label),
+                // TBFDesk: admin-fixed rows are greyed, not only inert
+                style: TextStyle(
+                    color: disabledTextColor(context, enabled && !isOptFixed)),
+              ))
+            ],
           ),
-          Expanded(
-              child: Text(
-            translate(label),
-            style: TextStyle(color: disabledTextColor(context, enabled)),
-          ))
-        ],
-      ),
-    ).marginOnly(left: _kCheckBoxLeftMargin),
-    onTap: enabled && !isOptFixed
-        ? () {
-            onChanged(!ref.value);
-          }
-        : null,
-  );
+        ).marginOnly(left: _kCheckBoxLeftMargin),
+        onTap: enabled && !isOptFixed
+            ? () {
+                onChanged(!ref.value);
+              }
+            : null,
+      ));
 }
 
 // ignore: non_constant_identifier_names
@@ -3161,6 +3299,321 @@ void changeSocks5Proxy() async {
       actions: [
         dialogButton('Cancel', onPressed: close, isOutline: true),
         if (!isOptFixed) dialogButton('OK', onPressed: submit),
+      ],
+      onSubmit: submit,
+      onCancel: close,
+    );
+  });
+}
+
+//#endregion
+
+//#region TBFDesk
+
+// TBFDesk: option keys used only by the settings page.
+const String kNemoOptionAlias = 'nemo-alias';
+const String kNemoOptionSyncClipboardBetweenSessions =
+    'allow-sync-clipboard-between-sessions';
+const String kNemoOptionManagementEnabled = 'nemo-management-enabled';
+const String kNemoOptionManagementServer = 'nemo-management-server';
+const String kNemoOptionManagementPublicKey = 'nemo-management-public-key';
+const String kNemoOptionAutoUpdateCheckInterval = 'auto-update-check-interval';
+
+// TBFDesk: plain-language, one-line tooltips for the settings rows, keyed by
+// option / action id. Same table as NEMO_SETTING_TIPS in src/ui/index.tis; the
+// English text is the translate() key (German in src/lang/de.rs).
+const Map<String, String> _kNemoSettingTips = {
+  'enable-keyboard':
+      "Let the person connecting control this computer's keyboard and mouse.",
+  'enable-clipboard':
+      'Share copy & paste (clipboard) between this computer and the remote one.',
+  'enable-file-transfer':
+      'Allow copying files to and from this computer during a session.',
+  'enable-camera': "Let the connecting person view this computer's camera.",
+  'enable-terminal':
+      'Allow opening a command line (terminal) on this computer.',
+  'enable-remote-restart':
+      'Allow the connecting person to restart this computer.',
+  'enable-tunnel':
+      'Allow forwarding a network port through the connection (advanced).',
+  'enable-block-input':
+      "Let the controller block this computer's own keyboard and mouse during a session.",
+  'enable-lan-discovery':
+      'Let other TBFDesk clients on the same local network find this computer.',
+  'allow-remote-config-modification':
+      "Allow a connected controller to change this computer's TBFDesk settings remotely.",
+  'custom-server':
+      'Choose which server this client uses to find and reach other computers.',
+  'nemo-management':
+      'Central management server settings (address and key).',
+  'nemo-alias':
+      'Give this computer a friendly name shown instead of its number.',
+  'import-device-key':
+      'Import a setup string (server settings + key) or a bare device key issued by your administrator, so the server trusts this device.',
+  'whitelist': 'Only accept incoming connections from these specific IP addresses.',
+  'socks5-server': 'Send TBFDesk traffic through a proxy server.',
+  'allow-websocket':
+      'Connect using WebSocket, which can help get through strict firewalls.',
+  'disable-udp':
+      'Turn off UDP and use only TCP; can help on restrictive networks (usually slower).',
+  'allow-insecure-tls-fallback':
+      "Accept the server's self-signed certificate. Needed until a trusted certificate is installed; the login stays encrypted.",
+  'stop-service':
+      'Run TBFDesk as a background service so this computer is reachable even when nobody is logged in.',
+  'direct-server':
+      'Allow connecting straight to this computer by its IP address, without going through the server.',
+  'edit-direct-port': 'The network port used for direct IP access.',
+  'share-rdp':
+      'Share Windows Remote Desktop (RDP) sessions through TBFDesk.',
+  'allow-darktheme': 'Use the dark color scheme for the app.',
+  'allow-sync-clipboard-between-sessions':
+      'Text or images copied in one remote session are also sent to the clipboard of your other connected sessions.',
+  'audio':
+      'Choose which microphone or sound the connecting person hears from this computer.',
+  'enhancements':
+      'Extra image and session options (hardware acceleration, adaptive quality, and more).',
+  'language': "Choose the app's display language.",
+  'about': 'Show the version, fingerprint and license information.',
+  'change-id': "Change this computer's TBFDesk ID number.",
+  'approve-mode-password':
+      "Incoming connections must type this computer's password.",
+  'approve-mode-click':
+      'Incoming connections must wait for you here to click Accept.',
+  'approve-mode-both':
+      'Incoming connections are accepted by either the password or your click.',
+  'use-temporary-password':
+      'Use the one-time password shown on screen (it changes each time).',
+  'use-permanent-password': 'Use a fixed password that you set yourself.',
+  'use-both-passwords':
+      'Accept either the one-time password or your fixed password.',
+  'set-permanent-password':
+      'Set or change the fixed password for incoming access.',
+  'clear-permanent-password':
+      'Remove the fixed password so only the one-time password works.',
+  'tpl-6': 'Make the one-time password 6 characters long.',
+  'tpl-8': 'Make the one-time password 8 characters long.',
+  'tpl-10': 'Make the one-time password 10 characters long.',
+  'tfa':
+      'Require a second code from an authenticator app to connect (two-factor).',
+  'update-interval': 'How often the app checks for a new version.',
+};
+
+/// TBFDesk: the untranslated tooltip key for a settings row id, or null.
+String? _nemoTip(String id) => _kNemoSettingTips[id];
+
+/// TBFDesk: wraps [child] in a tooltip showing translate([tip]) (no-op for null).
+Widget _nemoTipped(String? tip, Widget child) {
+  if (tip == null || tip.isEmpty) return child;
+  return Tooltip(
+    waitDuration: const Duration(milliseconds: 300),
+    message: translate(tip),
+    child: child,
+  );
+}
+
+/// TBFDesk: "Auto update (1 day) >" like the Sciter UI. Dormant until the TBF
+/// update server exists: greyed and fully non-interactive.
+Widget _nemoAutoUpdateRow(BuildContext context) {
+  final secs = int.tryParse(
+          bind.mainGetOptionSync(key: kNemoOptionAutoUpdateCheckInterval)) ??
+      0;
+  String interval = translate('1 day');
+  if (secs > 0 && secs % 86400 == 0 && secs ~/ 86400 != 1) {
+    interval = '${secs ~/ 86400} ${translate('days')}';
+  }
+  final style = TextStyle(color: disabledTextColor(context, false));
+  return Tooltip(
+    waitDuration: const Duration(milliseconds: 300),
+    message: translate('Automatic updates are not available yet.'),
+    child: Row(
+      children: [
+        const Checkbox(value: false, onChanged: null).marginOnly(right: 5),
+        Expanded(child: Text(translate('Auto update'), style: style)),
+        Text('($interval)  >', style: style),
+      ],
+    ).marginOnly(left: _kCheckBoxLeftMargin),
+  );
+}
+
+/// TBFDesk: Alias dialog (option nemo-alias). Read-only, with a note, when the
+/// value is pushed by the management server.
+void _nemoAliasDialog({VoidCallback? onChanged}) {
+  final isFixed = isOptionFixed(kNemoOptionAlias) == true;
+  final oldAlias = bind.mainGetOptionSync(key: kNemoOptionAlias);
+  final controller = TextEditingController(text: oldAlias);
+  gFFI.dialogManager.show((setState, close, context) {
+    submit() async {
+      if (!isFixed) {
+        final alias = controller.text.trim();
+        if (alias != oldAlias) {
+          await bind.mainSetOption(key: kNemoOptionAlias, value: alias);
+          onChanged?.call();
+        }
+      }
+      close();
+    }
+
+    return CustomAlertDialog(
+      title: Text(translate('Alias')),
+      content: ConstrainedBox(
+        constraints: const BoxConstraints(minWidth: 400),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            TextField(
+              controller: controller,
+              enabled: !isFixed,
+              autofocus: !isFixed,
+              decoration: InputDecoration(
+                labelText: translate('Alias'),
+              ),
+            ).workaroundFreezeLinuxMint(),
+            if (isFixed)
+              Opacity(
+                opacity: 0.7,
+                child: Text(
+                    translate('This value is managed by your administrator.')),
+              ).marginOnly(top: 6),
+          ],
+        ),
+      ),
+      actions: [
+        if (!isFixed) dialogButton('Cancel', onPressed: close, isOutline: true),
+        dialogButton(isFixed ? 'Close' : 'OK', onPressed: submit),
+      ],
+      onSubmit: submit,
+      onCancel: close,
+    );
+  });
+}
+
+/// TBFDesk: Management dialog (management server URL, its public key, and
+/// whether management control is enabled). Same validation as the Sciter UI:
+/// enabling needs a server, and the server must be an http(s) URL.
+void _nemoManagementDialog(VoidCallback onChanged) {
+  final oldEnabled =
+      bind.mainGetOptionSync(key: kNemoOptionManagementEnabled) == 'Y';
+  final oldServer = bind.mainGetOptionSync(key: kNemoOptionManagementServer);
+  final oldPublicKey =
+      bind.mainGetOptionSync(key: kNemoOptionManagementPublicKey);
+  final enabledFixed = isOptionFixed(kNemoOptionManagementEnabled) == true;
+  final serverFixed = isOptionFixed(kNemoOptionManagementServer) == true;
+  final publicKeyFixed = isOptionFixed(kNemoOptionManagementPublicKey) == true;
+  final serverCtrl = TextEditingController(text: oldServer);
+  final publicKeyCtrl = TextEditingController(text: oldPublicKey);
+  var enabled = oldEnabled;
+  var errMsg = '';
+  var isInProgress = false;
+
+  gFFI.dialogManager.show((setState, close, context) {
+    submit() async {
+      final server = serverCtrl.text.trim();
+      final publicKey = publicKeyCtrl.text.trim();
+      if (enabled && server.isEmpty) {
+        setState(() => errMsg = translate('Management Server is required'));
+        return;
+      }
+      if (server.isNotEmpty &&
+          !server.startsWith('https://') &&
+          !server.startsWith('http://')) {
+        setState(() => errMsg =
+            '${translate('Management Server')}: ${translate('invalid_http')}');
+        return;
+      }
+      if (enabled == oldEnabled &&
+          server == oldServer &&
+          publicKey == oldPublicKey) {
+        close();
+        return;
+      }
+      setState(() {
+        errMsg = '';
+        isInProgress = true;
+      });
+      // Switch management off before touching its address, and on only after
+      // the address and key are in place.
+      if (!enabled) {
+        await bind.mainSetOption(key: kNemoOptionManagementEnabled, value: '');
+      }
+      await bind.mainSetOption(key: kNemoOptionManagementServer, value: server);
+      await bind.mainSetOption(
+          key: kNemoOptionManagementPublicKey, value: publicKey);
+      if (enabled) {
+        await bind.mainSetOption(key: kNemoOptionManagementEnabled, value: 'Y');
+      }
+      setState(() => isInProgress = false);
+      close();
+      onChanged();
+    }
+
+    Widget field(String label, TextEditingController ctrl, bool fixed,
+        {bool autofocus = false}) {
+      return Row(
+        children: [
+          SizedBox(width: 140, child: Text(translate(label))),
+          const SizedBox(width: 8),
+          Expanded(
+            child: TextField(
+              controller: ctrl,
+              enabled: !fixed,
+              autofocus: autofocus,
+              decoration: const InputDecoration(
+                contentPadding:
+                    EdgeInsets.symmetric(horizontal: 8, vertical: 12),
+              ),
+            ).workaroundFreezeLinuxMint(),
+          ),
+        ],
+      );
+    }
+
+    return CustomAlertDialog(
+      title: Text(translate('Management')),
+      content: ConstrainedBox(
+        constraints: const BoxConstraints(minWidth: 500),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            field('Management Server', serverCtrl, serverFixed,
+                autofocus: !serverFixed),
+            const SizedBox(height: 8),
+            field('Public Key', publicKeyCtrl, publicKeyFixed),
+            const SizedBox(height: 8),
+            InkWell(
+              onTap: enabledFixed
+                  ? null
+                  : () => setState(() => enabled = !enabled),
+              child: Row(
+                children: [
+                  Checkbox(
+                    value: enabled,
+                    onChanged: enabledFixed
+                        ? null
+                        : (v) => setState(() => enabled = v ?? false),
+                  ).marginOnly(right: 5),
+                  Expanded(
+                    child: Text(
+                      translate('Enable management control'),
+                      style: TextStyle(
+                          color: disabledTextColor(context, !enabledFixed)),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            if (errMsg.isNotEmpty)
+              Text(errMsg, style: const TextStyle(color: Colors.red))
+                  .marginOnly(top: 8),
+            if (isInProgress)
+              const LinearProgressIndicator().marginOnly(top: 8),
+          ],
+        ),
+      ),
+      actions: [
+        dialogButton('Cancel', onPressed: close, isOutline: true),
+        dialogButton('OK', onPressed: submit),
       ],
       onSubmit: submit,
       onCancel: close,
