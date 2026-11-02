@@ -19,7 +19,13 @@ class HttpService {
 
     // Use Rust HTTP implementation for non-web platforms for consistency.
     var useFlutterHttp = (isWeb || kIsWeb);
-    if (!useFlutterHttp) {
+    // TBFDesk: always the Rust client off the web. Dart's client rejects the
+    // self-signed certificates allow-insecure-tls-fallback accepts and ignores the
+    // nemo-api certificate pin; every API call must behave like the Sciter client.
+    const nemoAlwaysRustHttp = true;
+    if (!useFlutterHttp && nemoAlwaysRustHttp) {
+      useFlutterHttp = false;
+    } else if (!useFlutterHttp) {
       final enableFlutterHttpOnRust =
           mainGetLocalBoolOptionSync(kOptionEnableFlutterHttpOnRust);
       // Use flutter http if:
