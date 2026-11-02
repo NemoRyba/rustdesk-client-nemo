@@ -308,116 +308,10 @@ struct UI {}
 // The update prompt's arguments, as JSON for update.html.
 static NEMO_UPDATE_PROMPT: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
 
-// Options that script may write but must never read back. Keep this list tight and
-// keep the reason with it: an entry here is a secret whose value the GUI has no
-// legitimate use for. `nemo-device-key` is the Layer 1 private key; the import dialog
-// writes it and `nemo_device_key_present()` reports whether one exists, which is all
-// the interface needs.
-const NEMO_SCRIPT_SECRET_OPTIONS: &[&str] = &["nemo-device-key"];
+// The secret filter and the managed-state restore for script-side option maps live in
+// ui_interface (nemo_is_script_secret, nemo_reinject_script_secrets,
+// nemo_restore_managed_state) so the Flutter bindings apply the same rules.
 
-/// Server/security STATE the policy client maintains between polls. Unlike the
-/// secrets above, script CAN read these (they are not filtered by get_option/
-/// get_options), so a settings dialog captures a real snapshot when it opens --
-/// and the snapshot goes stale the moment a poll updates the live value while the
-/// dialog is still open (a session cut is acked, a policy is accepted, a peer key
-/// pins, a peer is blocked). Round-tripping that snapshot on Save would revert the
-/// live value, undoing the cut or re-arming a downgrade/replay guard. These are
-/// always overwritten with the CURRENT live value before saving, discarding
-/// whatever the dialog happened to be holding.
-const NEMO_SCRIPT_MANAGED_OPTIONS: &[&str] = &[
-    "nemo-terminate-acked",
-    "nemo-policy-issued-ts",
-    "nemo-policy-seal-seen",
-    "nemo-blocked-ids",
-    "nemo-peer-keys",
-    "nemo-require-encrypted-session",
-];
-
-#[inline]
-fn nemo_is_script_secret(key: &str) -> bool {
-    NEMO_SCRIPT_SECRET_OPTIONS.contains(&key.trim())
-}
-
-/// A map coming back from script cannot carry the secret keys, because script was never
-/// shown them. Re-insert each one from the live config unless script supplied a value
-/// itself (the import dialog does, through set_option, not through here).
-fn nemo_reinject_script_secrets(
-    m: &mut HashMap<String, String>,
-    live: impl Fn(&str) -> String,
-) {
-    for key in NEMO_SCRIPT_SECRET_OPTIONS {
-        if !m.contains_key(*key) {
-            let v = live(key);
-            if !v.is_empty() {
-                m.insert((*key).to_owned(), v);
-            }
-        }
-    }
-}
-
-/// Unlike nemo_reinject_script_secrets (fill ONLY if absent), this always takes the
-/// live value for NEMO_SCRIPT_MANAGED_OPTIONS, overwriting anything script sent --
-/// that stale snapshot is exactly the bug. An empty live value clears the key, same
-/// as any other option a user has never set.
-fn nemo_restore_managed_state(m: &mut HashMap<String, String>, live: impl Fn(&str) -> String) {
-    for key in NEMO_SCRIPT_MANAGED_OPTIONS {
-        let v = live(key);
-        if v.is_empty() {
-            m.remove(*key);
-        } else {
-            m.insert((*key).to_owned(), v);
-        }
-    }
-}
-
-#[cfg(test)]
-mod nemo_script_secret_tests {
-    use super::*;
-
-    #[test]
-    fn managed_state_always_takes_the_live_value_over_a_stale_snapshot() {
-        // The dialog opened with terminate-acked=100, then a cut bumped it to 200
-        // while the dialog was still open; Save must not revert it to 100.
-        let mut m: HashMap<String, String> = HashMap::new();
-        m.insert("nemo-terminate-acked".into(), "100".into());
-        m.insert("codec-preference".into(), "vp9".into());
-        nemo_restore_managed_state(&mut m, |k| {
-            if k == "nemo-terminate-acked" { "200".into() } else { String::new() }
-        });
-        assert_eq!(m.get("nemo-terminate-acked").map(String::as_str), Some("200"));
-        assert_eq!(m.get("codec-preference").map(String::as_str), Some("vp9"));
-    }
-
-    #[test]
-    fn managed_state_absent_live_clears_the_stale_snapshot() {
-        let mut m: HashMap<String, String> = HashMap::new();
-        m.insert("nemo-blocked-ids".into(), "old-blocked-list".into());
-        nemo_restore_managed_state(&mut m, |_| String::new());
-        assert!(!m.contains_key("nemo-blocked-ids"));
-    }
-
-    #[test]
-    fn a_round_tripped_map_keeps_the_device_key() {
-        let mut m: HashMap<String, String> = HashMap::new();
-        m.insert("codec-preference".into(), "vp9".into());
-        nemo_reinject_script_secrets(&mut m, |k| {
-            if k == "nemo-device-key" { "live-secret".into() } else { String::new() }
-        });
-        assert_eq!(m.get("nemo-device-key").map(String::as_str), Some("live-secret"));
-        assert_eq!(m.get("codec-preference").map(String::as_str), Some("vp9"));
-    }
-
-    #[test]
-    fn a_value_script_did_supply_is_left_alone_and_an_empty_live_value_is_not_inserted() {
-        let mut m: HashMap<String, String> = HashMap::new();
-        m.insert("nemo-device-key".into(), "from-script".into());
-        nemo_reinject_script_secrets(&mut m, |_| "live-secret".into());
-        assert_eq!(m.get("nemo-device-key").map(String::as_str), Some("from-script"));
-        let mut empty: HashMap<String, String> = HashMap::new();
-        nemo_reinject_script_secrets(&mut empty, |_| String::new());
-        assert!(!empty.contains_key("nemo-device-key"));
-    }
-}
 
 impl UI {
     fn recent_sessions_updated(&self) -> bool {
@@ -588,9 +482,7 @@ impl UI {
         // the live value back, or the settings dialog wipes this machine's Layer 1
         // identity on every save. (Found by the correctness sweep the same day the
         // filter landed.)
-        nemo_reinject_script_secrets(&mut m, |k| get_option(k.to_owned()));
-        nemo_restore_managed_state(&mut m, |k| get_option(k.to_owned()));
-        set_options(m);
+        set_options_from_ui(m);
     }
 
     fn set_option(&self, key: String, value: String) {

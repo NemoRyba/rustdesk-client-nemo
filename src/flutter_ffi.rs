@@ -952,11 +952,12 @@ pub fn main_get_http_status(url: String) -> Option<String> {
 }
 
 pub fn main_get_option(key: String) -> String {
-    get_option(key)
+    // The device key's private half is never handed to Dart (ui_interface secret filter).
+    get_option_for_ui(key)
 }
 
 pub fn main_get_option_sync(key: String) -> SyncReturn<String> {
-    SyncReturn(get_option(key))
+    SyncReturn(get_option_for_ui(key))
 }
 
 pub fn main_get_error() -> String {
@@ -1032,11 +1033,11 @@ pub fn main_set_option(key: String, value: String) {
 }
 
 pub fn main_get_options() -> String {
-    get_options()
+    get_options_for_ui()
 }
 
 pub fn main_get_options_sync() -> SyncReturn<String> {
-    SyncReturn(get_options())
+    SyncReturn(get_options_for_ui())
 }
 
 pub fn main_set_options(json: String) {
@@ -1064,7 +1065,10 @@ pub fn main_set_options(json: String) {
         }
     }
     if !map.is_empty() {
-        set_options(map)
+        // Dart never sees the device key and may hold a stale snapshot of the
+        // server-managed state: re-inject / restore both before the map replaces the
+        // live one (ui_interface::set_options_from_ui).
+        set_options_from_ui(map)
     }
 }
 
