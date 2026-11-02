@@ -2253,6 +2253,12 @@ pub fn main_get_build_date() -> String {
 // See FLUTTER-PORT.md section 4 in the superproject.
 // ---------------------------------------------------------------------------------------
 
+/// Server settings locked by a `host=…,key=…` exe name that no imported setup string has
+/// overridden (same rule the Rust option guards apply).
+pub fn main_nemo_exe_server_locked() -> SyncReturn<bool> {
+    SyncReturn(crate::common::nemo_exe_custom_server_configured())
+}
+
 /// Build id (NEMO_BUILD_ID) shown bottom-left and on the gates.
 pub fn main_get_build_id() -> SyncReturn<String> {
     SyncReturn(get_build_id())

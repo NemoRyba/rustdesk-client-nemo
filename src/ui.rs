@@ -692,6 +692,10 @@ impl UI {
         get_build_id()
     }
 
+    fn nemo_exe_server_locked(&self) -> bool {
+        crate::common::nemo_exe_custom_server_configured()
+    }
+
     // ⋮ menu → "Open log folder". The log root, which holds the main log and the
     // `connect/` directory with the session logs.
     fn nemo_open_log_folder(&self) -> String {
@@ -1201,6 +1205,7 @@ impl sciter::EventHandler for UI {
         fn nemo_update_answer(String);
         fn get_version();
         fn get_build_id();
+        fn nemo_exe_server_locked();
         fn nemo_open_log_folder();
         fn nemo_copy_recent_log();
         fn get_fingerprint();

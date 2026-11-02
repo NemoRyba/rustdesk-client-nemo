@@ -133,7 +133,9 @@ class ConnectStatus: Reactor.Component {
 }
 
 function nemoExeServerSettingsLocked() {
-    return nemo_gui_server_settings && handler.get_license() != "";
+    // Locked only while no imported setup string overrides the exe-name server (the rule
+    // the Rust option guards apply); a non-empty licence alone is not enough.
+    return nemo_gui_server_settings && handler.nemo_exe_server_locked();
 }
 
 function nemoManagementServerSettingsLocked() {

@@ -10,9 +10,10 @@ const String kNemoOutboundTargets = 'nemo-outbound-targets';
 
 String _opt(String key) => bind.mainGetOptionSync(key: key).trim();
 
-/// The server is locked by a `host=…,key=…` executable name.
-Future<bool> nemoExeServerSettingsLocked() async =>
-    (await bind.mainGetLicense()).isNotEmpty;
+/// The server is locked by a `host=…,key=…` executable name AND no imported setup string
+/// has overridden it (common::nemo_exe_custom_server_configured — the rule the Rust side
+/// enforces when it drops / re-writes the server options).
+Future<bool> nemoExeServerSettingsLocked() async => bind.mainNemoExeServerLocked();
 
 bool nemoCompanyNetworkOnly() => _opt(kNemoCompanyNetworkOnly) == 'Y';
 

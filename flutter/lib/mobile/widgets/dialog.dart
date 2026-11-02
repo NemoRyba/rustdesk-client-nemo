@@ -88,7 +88,7 @@ void showServerSettings(OverlayDialogManager dialogManager,
     void Function(VoidCallback) setState) async {
   // TBFDesk: locked by the exe name (show the licence) or by management policy.
   final license = await bind.mainGetLicense();
-  if (license.isNotEmpty) {
+  if (bind.mainNemoExeServerLocked()) {
     _nemoShowServerSettingsLocked(dialogManager,
         '${translate('Server settings are locked by this executable name.')}\n$license');
     return;
