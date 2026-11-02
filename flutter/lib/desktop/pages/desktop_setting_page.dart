@@ -678,6 +678,24 @@ class _GeneralState extends State<_General> {
     return AudioInput(builder: builder, isCm: false, isVoiceCall: false);
   }
 
+  /// Opens a recording folder in the system file manager.
+  /// On Windows the Videos folder may be redirected to a roaming profile share
+  /// (e.g. `\\dc\profiles$\<user>\Videos\TBFDesk`). A `file://` URL through
+  /// ShellExecute is unreliable for UNC paths and non-ASCII user names, so hand
+  /// the plain path to explorer.exe instead.
+  Future<void> _openFolder(String dir) async {
+    try {
+      if (isWindows) {
+        // explorer.exe returns a non-zero exit code even on success; ignore it.
+        await Process.start('explorer.exe', [dir]);
+      } else {
+        await launchUrl(Uri.file(dir));
+      }
+    } catch (e) {
+      debugPrint('Failed to open folder $dir: $e');
+    }
+  }
+
   Widget record(BuildContext context) {
     final showRootDir = isWindows && bind.mainIsInstalled();
     return futureBuilder(future: () async {
@@ -714,9 +732,7 @@ class _GeneralState extends State<_General> {
                   '${translate(bind.isIncomingOnly() ? "Directory" : "Incoming")}:'),
               Expanded(
                 child: GestureDetector(
-                    onTap: root_dir_exists
-                        ? () => launchUrl(Uri.file(root_dir))
-                        : null,
+                    onTap: root_dir_exists ? () => _openFolder(root_dir) : null,
                     child: Text(
                       root_dir,
                       softWrap: true,
@@ -727,9 +743,8 @@ class _GeneralState extends State<_General> {
                     )).marginOnly(left: 10),
               ),
               ElevatedButton(
-                      onPressed: root_dir_exists
-                          ? () => launchUrl(Uri.file(root_dir))
-                          : null,
+                      onPressed:
+                          root_dir_exists ? () => _openFolder(root_dir) : null,
                       child: Text(translate('Open')))
                   .marginOnly(left: 5),
             ],
@@ -741,9 +756,7 @@ class _GeneralState extends State<_General> {
                   '${translate((showRootDir && !bind.isOutgoingOnly()) ? "Outgoing" : "Directory")}:'),
               Expanded(
                 child: GestureDetector(
-                    onTap: user_dir_exists
-                        ? () => launchUrl(Uri.file(user_dir))
-                        : null,
+                    onTap: user_dir_exists ? () => _openFolder(user_dir) : null,
                     child: Text(
                       user_dir,
                       softWrap: true,
@@ -754,9 +767,8 @@ class _GeneralState extends State<_General> {
                     )).marginOnly(left: 10),
               ),
               ElevatedButton(
-                      onPressed: user_dir_exists
-                          ? () => launchUrl(Uri.file(user_dir))
-                          : null,
+                      onPressed:
+                          user_dir_exists ? () => _openFolder(user_dir) : null,
                       child: Text(translate('Open')))
                   .marginOnly(left: 5),
               ElevatedButton(
