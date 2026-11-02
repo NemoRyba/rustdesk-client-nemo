@@ -229,7 +229,11 @@ impl VideoQoS {
                 Quality::Best
             } else {
                 let b = ((q >> 8 & 0xFFF) * 2) as f32 / 100.0;
-                Quality::Custom(b.clamp(BR_MIN, BR_MAX))
+                // Nemo: floor at BR_MIN_HIGH_RESOLUTION, not BR_MIN (0.2 = 10 %): with
+                // BR_MIN a 1-9 % custom quality from the controller was raised to 10 %
+                // here, although ratio() and the comment on BR_MIN_HIGH_RESOLUTION
+                // honour it.
+                Quality::Custom(b.clamp(BR_MIN_HIGH_RESOLUTION, BR_MAX))
             }
         };
 
