@@ -726,6 +726,12 @@ class _GeneralState extends State<_General> {
                           : null,
                     )).marginOnly(left: 10),
               ),
+              ElevatedButton(
+                      onPressed: root_dir_exists
+                          ? () => launchUrl(Uri.file(root_dir))
+                          : null,
+                      child: Text(translate('Open')))
+                  .marginOnly(left: 5),
             ],
           ).marginOnly(left: _kContentHMargin),
         if (!(showRootDir && bind.isIncomingOnly()))
@@ -747,6 +753,12 @@ class _GeneralState extends State<_General> {
                           : null,
                     )).marginOnly(left: 10),
               ),
+              ElevatedButton(
+                      onPressed: user_dir_exists
+                          ? () => launchUrl(Uri.file(user_dir))
+                          : null,
+                      child: Text(translate('Open')))
+                  .marginOnly(left: 5),
               ElevatedButton(
                       onPressed: isOptionFixed(kOptionVideoSaveDirectory)
                           ? null
