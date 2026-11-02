@@ -54,9 +54,10 @@ customImageQualityWidget(
                   value: qualityValue.value,
                   min: kMinQuality,
                   max: moreQualityChecked.value ? kMaxMoreQuality : kMaxQuality,
+                  // TBFDesk: minimum is 1 %, so step by whole percent.
                   divisions: moreQualityChecked.value
-                      ? ((kMaxMoreQuality - kMinQuality) / 10).round()
-                      : ((kMaxQuality - kMinQuality) / 5).round(),
+                      ? (kMaxMoreQuality - kMinQuality).round()
+                      : (kMaxQuality - kMinQuality).round(),
                   onChanged: setQuality == null
                       ? null
                       : (double value) async {
