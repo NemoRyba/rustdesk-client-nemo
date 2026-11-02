@@ -261,6 +261,13 @@ class _RemoteToolbarState extends State<RemoteToolbar> {
   int get windowId => stateGlobal.windowId;
 
   void _setFullscreen(bool v) {
+    // TBFDesk: while spanning only the UI is full screen (R4, see
+    // NemoDisplayMode._enterSpan); "exit full screen" leaves the span.
+    final nemo = NemoDisplayMode.find(widget.ffi);
+    if (nemo != null && nemo.mode.value == NemoDisplayMode.span) {
+      if (!v) nemo.setMode(NemoDisplayMode.all);
+      return;
+    }
     stateGlobal.setFullscreen(v);
     // stateGlobal.fullscreen is RxBool now, no need to call setState.
     // setState(() {});
@@ -332,12 +339,26 @@ class _RemoteToolbarState extends State<RemoteToolbar> {
       if (hide.value) {
         return const SizedBox.shrink();
       }
-      return Align(
+      final toolbar = Align(
         alignment: Alignment.topCenter,
         child: collapse.isFalse
             ? _buildToolbar(context)
             : _buildDraggableCollapse(context),
       );
+      // TBFDesk: while spanning, centred on the leftmost monitor rather than
+      // on the seam between two (R4, Sciter header.tis span_first_width).
+      final span = widget.ffi.ffiModel.nemoSpan.value;
+      if (span == null) return toolbar;
+      final m = NemoSpanLayout.toLogical(span.firstMonitor);
+      return Stack(children: [
+        Positioned(
+          left: m.left - CanvasModel.leftToEdge,
+          top: m.top - CanvasModel.topToEdge,
+          width: m.width,
+          height: m.height,
+          child: toolbar,
+        ),
+      ]);
     });
   }
 
@@ -2899,8 +2920,9 @@ class _NemoConnTypeBadge extends StatelessWidget {
 //   single   one remote display in this window (upstream behaviour)
 //   all      the picked displays together in this window (upstream "all
 //            displays" view, restricted to the display picker's subset)
-//   span     this window stretched across all local monitors, showing the
-//            picked displays as in "all"
+//   span     this window stretched across all local monitors; the picked
+//            displays, left to right, each fitted into its own local monitor,
+//            left to right (as "all" when the counts differ)
 //   windows  one window per picked display, each full screen on its own
 //            local monitor, left to right (upstream monitor windows); closing
 //            one of them returns to "all"
@@ -2934,7 +2956,15 @@ class NemoDisplayMode {
   static NemoDisplayMode? findByPeerId(String peerId) => _byPeer[peerId];
 
   static void remove(FFI ffi) {
-    if (identical(_byPeer[ffi.id]?.ffi, ffi)) _byPeer.remove(ffi.id);
+    final cur = _byPeer[ffi.id];
+    if (cur == null || !identical(cur.ffi, ffi)) return;
+    _byPeer.remove(ffi.id);
+    // TBFDesk: the session went away while spanning: give the window its tab
+    // bar (only the UI was "full screen", see _enterSpan) and its placement
+    // back, before the closing window saves its position.
+    if (cur._spanChromeHidden || cur.mode.value == span) {
+      cur._restorePlacement();
+    }
   }
 
   final FFI ffi;
@@ -2950,6 +2980,8 @@ class NemoDisplayMode {
   Rect? _savedFrame;
   bool _savedFullscreen = false;
   bool _savedMaximized = false;
+  // "span" hid the tab bar and window border (UI-only full screen).
+  bool _spanChromeHidden = false;
 
   NemoDisplayMode._(this.ffi) {
     mode =
@@ -3036,6 +3068,8 @@ class NemoDisplayMode {
       final m = mode.value;
       if (m == all || m == span) {
         await _applyAll();
+        // A different number of displays may now match the monitors.
+        if (m == span) await _updateSpanLayout(await refreshMonitors());
       } else if (m == windows) {
         mode.value = single;
         await _leave(windows);
@@ -3103,6 +3137,7 @@ class NemoDisplayMode {
 
   Future<void> _leave(String prev) async {
     pi.nemoShownDisplays = null;
+    if (prev == span) ffi.ffiModel.nemoSetSpan(null);
     if (prev == windows) await _closeDisplayWindows();
     if (prev == span || prev == windows) await _restorePlacement();
   }
@@ -3143,6 +3178,10 @@ class NemoDisplayMode {
   }
 
   Future<void> _restorePlacement() async {
+    if (_spanChromeHidden) {
+      _spanChromeHidden = false;
+      stateGlobal.setFullscreen(false, procWnd: false);
+    }
     if (!_placementSaved) return;
     _placementSaved = false;
     final wc = WindowController.fromWindowId(windowId);
@@ -3170,8 +3209,12 @@ class NemoDisplayMode {
       await Future.delayed(Duration(milliseconds: ms));
       if (mode.value != span) return;
       final cur = await wc.getFrame();
+      // TBFDesk: the size too -- on Windows a DPI change of the window
+      // (WM_DPICHANGED) resizes it to the suggested rect.
       if ((cur.left - frame.left).abs() <= 1 &&
-          (cur.top - frame.top).abs() <= 1) {
+          (cur.top - frame.top).abs() <= 1 &&
+          (cur.width - frame.width).abs() <= 1 &&
+          (cur.height - frame.height).abs() <= 1) {
         return;
       }
       debugPrint('nemo span: window at $cur instead of $frame, moving back');
@@ -3179,13 +3222,16 @@ class NemoDisplayMode {
     }
   }
 
-  // "span": one window covering every local monitor.
-  // TODO(TBFDesk): exact per-monitor mapping. Sciter (remote.tis enterSpan,
-  // span_map) fits remote display i onto local monitor i when the counts
-  // match; that needs one pointer mapping per tile, while Flutter's
-  // InputModel maps through a single rectangle. Here the picked displays are
-  // laid out as in "all" across the whole spanning window, which is Sciter's
-  // fallback for unequal counts and close to 1:1 for matching layouts.
+  // TBFDesk: "span": one window covering every local monitor (Sciter
+  // remote.tis enterSpan / layoutViewAll). The picked displays, left to right
+  // by their remote position, go onto the local monitors, left to right; each
+  // is fitted into its own monitor, aspect kept and letterboxed
+  // (FfiModel.nemoSpanTiles draws them, InputModel maps the pointer through
+  // the tile it is over). With a different number of displays than monitors
+  // the "all" layout is spread across the whole span instead (Sciter's
+  // fallback). Like Sciter's hidden header, the tab bar and window border are
+  // hidden while spanning -- UI-only full screen, the OS window stays a plain
+  // window -- and the toolbar sits on the leftmost monitor (header.tis).
   Future<bool> _enterSpan(List<Rect> mons) async {
     if (mons.length < 2) return false;
     await _savePlacement();
@@ -3198,8 +3244,45 @@ class NemoDisplayMode {
       await Future.delayed(const Duration(milliseconds: 300));
     }
     await _applyAll();
+    stateGlobal.setFullscreen(true, procWnd: false);
+    _spanChromeHidden = true;
     await _placeWindow(bbox);
+    if (mode.value != span) return true;
+    await _updateSpanLayout(mons);
     return true;
+  }
+
+  // Where each local monitor is relative to the window as it actually landed
+  // (not where it was asked to go: if the window manager would not place it,
+  // the tiles still line up with the real monitors).
+  Future<void> _updateSpanLayout(List<Rect> mons) async {
+    if (mons.isEmpty) {
+      ffi.ffiModel.nemoSetSpan(null);
+      return;
+    }
+    Rect frame;
+    try {
+      frame = await WindowController.fromWindowId(windowId).getFrame();
+    } catch (e) {
+      debugPrint('nemo span: failed to read the window frame: $e');
+      frame = mons[0];
+      for (final m in mons.skip(1)) {
+        frame = frame.expandToInclude(m);
+      }
+    }
+    if (mode.value != span) return;
+    Rect rel(Rect m) => m.shift(Offset(-frame.left, -frame.top));
+    final order = _leftToRight(selectedDisplays());
+    final monitors = <int, Rect>{};
+    if (order.length == mons.length) {
+      for (var k = 0; k < order.length; k++) {
+        monitors[order[k]] = rel(mons[k]);
+      }
+    }
+    ffi.ffiModel.nemoSetSpan(
+        NemoSpanLayout(monitors: monitors, firstMonitor: rel(mons[0])));
+    debugPrint('nemo span: ${mons.length} monitors, window $frame, '
+        '${monitors.isNotEmpty ? '1:1 mapping $monitors' : 'proportional'}');
   }
 
   // "windows": this window shows the leftmost picked display, full screen on

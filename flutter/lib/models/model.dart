@@ -1708,6 +1708,54 @@ class FfiModel with ChangeNotifier {
     notifyListeners();
   }
 
+  // TBFDesk: exact "span" display mode (R4, Sciter remote.tis enterSpan /
+  // layoutViewAll / handleTileMouse). Set by NemoDisplayMode while this window
+  // spans the local monitors, null otherwise.
+  final nemoSpan = Rxn<NemoSpanLayout>();
+
+  void nemoSetSpan(NemoSpanLayout? span) {
+    nemoSpan.value = span;
+    notifyListeners();
+  }
+
+  // TBFDesk: the span tiles -- remote display i fitted (aspect kept,
+  // letterboxed, centred) into the local monitor it was given, in
+  // window-local logical pixels. Null when the window does not show exactly
+  // one shown display per monitor: then the upstream "all displays" layout
+  // (proportional, one rectangle) is used, as Sciter does for unequal counts.
+  List<NemoSpanTile>? nemoSpanTiles() {
+    final span = nemoSpan.value;
+    if (span == null || span.monitors.isEmpty) return null;
+    if (_pi.currentDisplay != kAllDisplayValue) return null;
+    final indices = _pi.getCurDisplayIndices();
+    if (indices.length != span.monitors.length) return null;
+    final tiles = <NemoSpanTile>[];
+    for (final i in indices) {
+      final m = span.monitors[i];
+      if (m == null || i < 0 || i >= _pi.displays.length) return null;
+      final d = _pi.displays[i];
+      // Same remote size as _getDisplaysRect() / the texture layout.
+      final w = isPeerLinux
+          ? (d.width.toDouble() ~/ d.scale).toDouble()
+          : d.width.toDouble();
+      final h = isPeerLinux
+          ? (d.height.toDouble() ~/ d.scale).toDouble()
+          : d.height.toDouble();
+      if (w <= 0 || h <= 0 || m.width <= 0 || m.height <= 0) return null;
+      final box = NemoSpanLayout.toLogical(m);
+      final fit = min(box.width / w, box.height / h);
+      final tw = w * fit;
+      final th = h * fit;
+      tiles.add(NemoSpanTile(
+        display: i,
+        rect: Rect.fromLTWH((box.left + (box.width - tw) / 2).roundToDouble(),
+            (box.top + (box.height - th) / 2).roundToDouble(), tw, th),
+        remote: Rect.fromLTWH(d.x, d.y, w, h),
+      ));
+    }
+    return tiles;
+  }
+
   // Directly switch to the new display without waiting for the response.
   switchToNewDisplay(int display, SessionID sessionId, String peerId,
       {bool updateCursorPos = false}) {
@@ -3008,6 +3056,9 @@ class CursorModel with ChangeNotifier {
 
   double get x => _x - _displayOriginX;
   double get y => _y - _displayOriginY;
+  // TBFDesk: the remote cursor in remote desktop coordinates ("span" tiles).
+  double get nemoRemoteX => _x;
+  double get nemoRemoteY => _y;
 
   double get devicePixelRatio => parent.target!.canvasModel.devicePixelRatio;
 
@@ -4053,6 +4104,42 @@ class Features {
 }
 
 const kInvalidDisplayIndex = -1;
+
+// TBFDesk: where the local monitors are while a window spans them (R4
+// "span"), relative to the window's top-left, in window-frame units (see
+// FfiModel.nemoSpanTiles).
+class NemoSpanLayout {
+  // Remote display index -> the local monitor it is shown on. Empty when the
+  // shown displays and the monitors differ in number (proportional layout).
+  final Map<int, Rect> monitors;
+  // The leftmost monitor: the toolbar is centred on it, not on the seam.
+  final Rect firstMonitor;
+
+  const NemoSpanLayout({required this.monitors, required this.firstMonitor});
+
+  // Window-frame units (mainGetDisplays / WindowController.getFrame) ->
+  // window-local logical pixels: frame units are physical pixels on Windows
+  // and logical ones everywhere else -- the convention
+  // InputModel._isInCurrentWindow uses too. The ratio is read on every use,
+  // not once when spanning starts, so a DPI change of the window (Windows
+  // moves it to the DPI of the monitor holding most of it) is followed.
+  static Rect toLogical(Rect r) {
+    final k = isWindows ? ui.window.devicePixelRatio : 1.0;
+    return Rect.fromLTWH(r.left / k, r.top / k, r.width / k, r.height / k);
+  }
+}
+
+// TBFDesk: one remote display of the exact "span" layout.
+class NemoSpanTile {
+  final int display;
+  // Where it is drawn, window-local logical pixels.
+  final Rect rect;
+  // What it shows, remote desktop coordinates.
+  final Rect remote;
+
+  const NemoSpanTile(
+      {required this.display, required this.rect, required this.remote});
+}
 
 class PeerInfo with ChangeNotifier {
   String version = '';

@@ -1876,6 +1876,12 @@ class InputModel {
     bool edgeScroll = false,
   }) {
     final ffiModel = parent.target!.ffiModel;
+    // TBFDesk: exact "span" -- one rectangle per remote display (R4).
+    final spanTiles = isDesktop ? ffiModel.nemoSpanTiles() : null;
+    if (spanTiles != null) {
+      return _nemoSpanPointerPos(spanTiles, kind, x, y, isMove, evtType,
+          onExit: onExit, buttons: buttons);
+    }
     CanvasCoords canvas =
         CanvasCoords.fromCanvasModel(parent.target!.canvasModel);
     Rect? rect = ffiModel.rect;
@@ -1925,6 +1931,58 @@ class InputModel {
       onExit: onExit,
       buttons: buttons,
     );
+  }
+
+  // TBFDesk: exact "span" display mode (R4, Sciter remote.tis
+  // handleTileMouse). Each remote display is drawn in its own tile on its own
+  // local monitor, so a pointer position (window-local logical pixels, as
+  // the events carry it) maps through the tile it is over:
+  //   fit    = tile.width / display.width   (= tile.height / display.height)
+  //   remote = display.origin + (pointer - tile.topLeft) / fit
+  // Over a letterbox gap nothing is sent -- except a release or a leave, which
+  // go to the edge of the tile last used, so a held button is not left stuck.
+  NemoSpanTile? _nemoSpanLastTile;
+
+  Point? _nemoSpanPointerPos(List<NemoSpanTile> tiles, String kind, double x,
+      double y, bool isMove, String evtType,
+      {bool onExit = false, int buttons = kPrimaryMouseButton}) {
+    if (isMove) {
+      // No canvas to pan or edge-scroll: every tile is shown whole.
+      parent.target!.canvasModel.updateLocalCursor(
+          x - CanvasModel.leftToEdge, y - CanvasModel.topToEdge);
+    }
+    NemoSpanTile? tile;
+    for (final t in tiles) {
+      if (t.rect.contains(Offset(x, y))) {
+        tile = t;
+        break;
+      }
+    }
+    final inGap = tile == null;
+    if (tile == null) {
+      if (!(onExit || evtType == kMouseEventTypeUp)) return null;
+      final last = _nemoSpanLastTile;
+      if (last == null) return null;
+      for (final t in tiles) {
+        if (t.display == last.display) tile = t;
+      }
+      if (tile == null) return null;
+    }
+    _nemoSpanLastTile = tile;
+    final r = tile.remote;
+    var rx = r.left + (x - tile.rect.left) * r.width / tile.rect.width;
+    var ry = r.top + (y - tile.rect.top) * r.height / tile.rect.height;
+    if (onExit) {
+      final pos = setNearestEdge(rx, ry, r);
+      rx = pos.dx;
+      ry = pos.dy;
+    } else if (inGap) {
+      rx = rx.clamp(r.left, r.right - 1).toDouble();
+      ry = ry.clamp(r.top, r.bottom - 1).toDouble();
+    }
+    return InputModel.getPointInRemoteRect(
+        true, peerPlatform, kind, evtType, rx, ry, r,
+        buttons: buttons);
   }
 
   bool _isInCurrentWindow(double x, double y) {

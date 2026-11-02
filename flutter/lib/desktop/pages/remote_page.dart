@@ -622,6 +622,8 @@ class _RemotePageState extends State<RemotePage>
                   ? Container(color: Colors.transparent)
                   : Obx(() {
                       _ffi.textureModel.updateCurrentDisplay(peerDisplay.value);
+                      // TBFDesk: re-lay out when "span" starts / ends (R4).
+                      _ffi.ffiModel.nemoSpan.value;
                       return ImagePaint(
                         id: widget.id,
                         zoomCursor: _zoomCursor,
@@ -809,6 +811,14 @@ class _ImagePaintState extends State<ImagePaint> {
               onHover: (evt) {},
               child: child);
         });
+    // TBFDesk: exact "span" (R4): every remote display on its own local
+    // monitor, whatever the view style; no scrolling, nothing to pan.
+    final spanTiles = widget.ffi.ffiModel.nemoSpanTiles();
+    if (spanTiles != null) {
+      if (c.size.width <= 0 || c.size.height <= 0) return Container();
+      return mouseRegion(
+          child: _buildListener(_nemoBuildSpanRender(c, spanTiles)));
+    }
     if (c.imageOverflow.isTrue && c.scrollStyle != ScrollStyle.scrollauto) {
       final paintWidth = c.getDisplayWidth() * s;
       final paintHeight = c.getDisplayHeight() * s;
@@ -918,6 +928,32 @@ class _ImagePaintState extends State<ImagePaint> {
     return SizedBox(
       width: size.width,
       height: size.height,
+      child: Stack(children: children),
+    );
+  }
+
+  // TBFDesk: the "span" tiles. Tile rects are window-local; this widget
+  // starts at the canvas origin, below the (hidden while spanning) tab bar.
+  // The gaps between tiles are part of the listener, so a click there is
+  // seen -- and dropped by InputModel.
+  Widget _nemoBuildSpanRender(CanvasModel c, List<NemoSpanTile> tiles) {
+    final children = <Widget>[];
+    for (final t in tiles) {
+      final textureId = widget.ffi.textureModel.getTextureId(t.display);
+      children.add(Positioned(
+        left: t.rect.left - CanvasModel.leftToEdge,
+        top: t.rect.top - CanvasModel.topToEdge,
+        width: t.rect.width,
+        height: t.rect.height,
+        child: Obx(() => Texture(
+              textureId: textureId.value,
+              filterQuality: FilterQuality.low,
+            )),
+      ));
+    }
+    return SizedBox(
+      width: c.size.width,
+      height: c.size.height,
       child: Stack(children: children),
     );
   }
@@ -1047,6 +1083,32 @@ class CursorPaint extends StatelessWidget {
         hotx = preDefaultCursor.image!.width / 2;
         hoty = preDefaultCursor.image!.height / 2;
       }
+    }
+
+    // TBFDesk: exact "span" (R4): draw the remote cursor in the tile of the
+    // display it is on, scaled like that tile when the cursor is zoomed.
+    final spanTiles = c.parent.target?.ffiModel.nemoSpanTiles();
+    if (spanTiles != null) {
+      final rx = m.nemoRemoteX;
+      final ry = m.nemoRemoteY;
+      for (final t in spanTiles) {
+        if (!t.remote.contains(Offset(rx, ry))) continue;
+        final fit = t.rect.width / t.remote.width;
+        final scale = zoomCursor.value ? fit : 1.0;
+        final px =
+            t.rect.left - CanvasModel.leftToEdge + (rx - t.remote.left) * fit;
+        final py =
+            t.rect.top - CanvasModel.topToEdge + (ry - t.remote.top) * fit;
+        return CustomPaint(
+          painter: ImagePainter(
+            image: m.image ?? preDefaultCursor.image,
+            x: px / scale - hotx,
+            y: py / scale - hoty,
+            scale: scale,
+          ),
+        );
+      }
+      return Container();
     }
 
     double cx = c.x;
