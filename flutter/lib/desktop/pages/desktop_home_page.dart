@@ -12,7 +12,6 @@ import 'package:flutter_hbb/consts.dart';
 import 'package:flutter_hbb/desktop/pages/connection_page.dart';
 import 'package:flutter_hbb/desktop/pages/desktop_setting_page.dart';
 import 'package:flutter_hbb/desktop/pages/desktop_tab_page.dart';
-import 'package:flutter_hbb/desktop/widgets/update_progress.dart';
 import 'package:flutter_hbb/models/platform_model.dart';
 import 'package:flutter_hbb/models/server_model.dart';
 import 'package:flutter_hbb/models/state_model.dart';
@@ -430,31 +429,13 @@ class _DesktopHomePageState extends State<DesktopHomePage>
   }
 
   Widget buildHelpCards(String updateUrl) {
-    if (!bind.isCustomClient() &&
-        updateUrl.isNotEmpty &&
-        !isCardClosed &&
-        bind.mainUriPrefixSync().contains('rustdesk')) {
-      final isToUpdate = (isWindows || isMacOS) && bind.mainIsInstalled();
-      String btnText = isToUpdate ? 'Update' : 'Download';
-      GestureTapCallback onPressed = () async {
-        final Uri url = Uri.parse('https://rustdesk.com/download');
-        await launchUrl(url);
-      };
-      if (isToUpdate) {
-        onPressed = () {
-          handleUpdate(updateUrl);
-        };
-      }
-      return buildInstallCard(
-          "Status",
-          "${translate("new-version-of-{${bind.mainGetAppNameSync()}}-tip")} (${bind.mainGetNewVersion()}).",
-          btnText,
-          onPressed,
-          closeButton: true,
-          help: isToUpdate ? 'Changelog' : null,
-          link: isToUpdate
-              ? 'https://github.com/rustdesk/rustdesk/releases/tag/${bind.mainGetNewVersion()}'
-              : null);
+    // TBFDesk (FLUTTER-PORT A16): an update offered by the management server. Never a
+    // download link (upstream opened rustdesk.com): either the service installs it by
+    // itself -- outside sessions, after asking -- or the administrator does. The UI
+    // only ever ASKS the service (mainNemoUpdateNow); it never runs an installer.
+    final nemoUpdate = _buildNemoUpdateCard(updateUrl);
+    if (nemoUpdate != null) {
+      return nemoUpdate;
     }
     if (systemError.isNotEmpty) {
       return buildInstallCard("", systemError, "", () {});
@@ -571,6 +552,33 @@ class _DesktopHomePageState extends State<DesktopHomePage>
       ).marginAll(14);
     }
     return Container();
+  }
+
+  bool _nemoUpdateRequested = false;
+
+  Widget? _buildNemoUpdateCard(String updateUrl) {
+    Map<String, dynamic> st = {};
+    try {
+      st = jsonDecode(bind.mainNemoUpdateState()) as Map<String, dynamic>;
+    } catch (_) {}
+    String version = (st['version'] as String?) ?? '';
+    if (version.isEmpty) version = bind.mainGetNewVersion();
+    if (version.isEmpty && updateUrl.isEmpty) return null;
+    final auto = st['auto'] == true;
+    final text =
+        translate(auto ? 'nemo_update_ready_auto' : 'nemo_update_ready_admin')
+            .replaceAll('{}', version);
+    if (!auto) {
+      return buildInstallCard('Status', text, '', () {});
+    }
+    if (_nemoUpdateRequested) {
+      return buildInstallCard('Status',
+          '$text\n\n${translate('nemo_update_requested')}', '', () {});
+    }
+    return buildInstallCard('Status', text, 'nemo_update_install_now', () {
+      bind.mainNemoUpdateNow();
+      setState(() => _nemoUpdateRequested = true);
+    });
   }
 
   Widget buildInstallCard(String title, String content, String btnText,

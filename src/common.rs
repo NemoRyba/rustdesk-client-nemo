@@ -1039,15 +1039,6 @@ pub fn do_check_software_update() -> hbb_common::ResultType<()> {
         );
     };
     if get_version_number(&manifest.version) > get_version_number(crate::VERSION) {
-        #[cfg(feature = "flutter")]
-        {
-            let mut m = HashMap::new();
-            m.insert("name", "check_software_update_finish");
-            m.insert("url", &manifest.url);
-            if let Ok(data) = serde_json::to_string(&m) {
-                let _ = crate::flutter::push_global_event(crate::flutter::APP_TYPE_MAIN, data);
-            }
-        }
         log::info!(
             "Nemo update {} offered by the management server (this build: {})",
             manifest.version,
@@ -1063,6 +1054,19 @@ pub fn do_check_software_update() -> hbb_common::ResultType<()> {
         };
         log::info!("Nemo update download: {}", download);
         nemo_set_update_offer(&manifest.version, &download, &manifest.sha256);
+        // Flutter: tells the main window an update is on offer (the banner). The resolved
+        // download URL, not the manifest's: the manifest url can name the server's other
+        // address. Nothing in the UI downloads it (main_set_common refuses); the banner
+        // asks the service, which verifies the SHA-256.
+        #[cfg(feature = "flutter")]
+        {
+            let mut m = HashMap::new();
+            m.insert("name", "check_software_update_finish");
+            m.insert("url", &download);
+            if let Ok(data) = serde_json::to_string(&m) {
+                let _ = crate::flutter::push_global_event(crate::flutter::APP_TYPE_MAIN, data);
+            }
+        }
     } else {
         nemo_set_update_offer("", "", "");
     }

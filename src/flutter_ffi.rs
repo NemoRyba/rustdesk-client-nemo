@@ -2389,11 +2389,11 @@ pub fn main_nemo_recent_log() -> String {
 }
 
 /// Update banner state `{"version": .., "auto": bool}`.
-pub fn main_nemo_update_state() -> String {
+pub fn main_nemo_update_state() -> SyncReturn<String> {
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    return nemo_update_state();
+    return SyncReturn(nemo_update_state());
     #[cfg(any(target_os = "android", target_os = "ios"))]
-    return serde_json::json!({ "version": "", "auto": false }).to_string();
+    return SyncReturn(serde_json::json!({ "version": "", "auto": false }).to_string());
 }
 
 /// "Install now": ask the service's updater (verified download + install).
@@ -3057,6 +3057,30 @@ pub fn main_get_common_sync(key: String) -> SyncReturn<String> {
 }
 
 pub fn main_set_common(_key: String, _value: String) {
+    // TBFDesk: an installer is never downloaded or started from the UI process. The
+    // upstream path below fetched the URL and ran `platform::update_to` WITHOUT checking
+    // the SHA-256 the signed manifest carries. Updates go only through the service's
+    // updater (ui_interface::nemo_update_now -> verified download + install).
+    if _key == "download-new-version" || _key == "update-me" {
+        log::warn!(
+            "{} refused: updates are installed only by the service's verified updater",
+            _key
+        );
+        if _key == "download-new-version" {
+            let data = HashMap::from([
+                ("name", "download-new-version".to_owned()),
+                (
+                    "error",
+                    "Updates are installed by the TBFDesk service".to_owned(),
+                ),
+            ]);
+            let _res = flutter::push_global_event(
+                flutter::APP_TYPE_MAIN,
+                serde_json::ser::to_string(&data).unwrap_or("".to_owned()),
+            );
+        }
+        return;
+    }
     #[cfg(target_os = "windows")]
     if _key == "install-printer" && crate::platform::is_win_10_or_greater() {
         std::thread::spawn(move || {
