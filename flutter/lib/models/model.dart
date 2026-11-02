@@ -1169,11 +1169,15 @@ class FfiModel with ChangeNotifier {
           label: 'invalid display size (${_rect!.width},${_rect!.height})');
     } else {
       final displays = _pi.getCurDisplays();
+      // TBFDesk: real display indices -- with a display subset (R4) the i-th
+      // entry of getCurDisplays() is not display i.
+      final indices = _pi.getCurDisplayIndices();
       if (displays.length == 1) {
         bind.sessionSetSize(
           sessionId: sessionId,
-          display:
-              pi.currentDisplay == kAllDisplayValue ? 0 : pi.currentDisplay,
+          display: pi.currentDisplay == kAllDisplayValue
+              ? (indices.isNotEmpty ? indices[0] : 0)
+              : pi.currentDisplay,
           width: displays[0].width,
           height: displays[0].height,
         );
@@ -1181,7 +1185,7 @@ class FfiModel with ChangeNotifier {
         for (int i = 0; i < displays.length; ++i) {
           bind.sessionSetSize(
             sessionId: sessionId,
-            display: i,
+            display: i < indices.length ? indices[i] : i,
             width: displays[i].width,
             height: displays[i].height,
           );
@@ -1690,6 +1694,20 @@ class FfiModel with ChangeNotifier {
     notifyListeners();
   }
 
+  // TBFDesk: show only these displays in the "all displays" view (R4 display
+  // picker); null = all. Re-lays out the view and creates the textures.
+  Future<void> nemoSetShownDisplays(List<int>? shown) async {
+    _pi.nemoShownDisplays =
+        (shown == null || shown.isEmpty) ? null : List<int>.from(shown);
+    if (_pi.currentDisplay == kAllDisplayValue) {
+      if (isDesktop) {
+        parent.target?.textureModel.updateCurrentDisplay(kAllDisplayValue);
+      }
+      await updateCurDisplay(sessionId);
+    }
+    notifyListeners();
+  }
+
   // Directly switch to the new display without waiting for the response.
   switchToNewDisplay(int display, SessionID sessionId, String peerId,
       {bool updateCursorPos = false}) {
@@ -2061,7 +2079,8 @@ class ViewStyle {
 
   double get scale {
     double s = 1.0;
-    if (style == kRemoteViewStyleAdaptive) {
+    // TBFDesk: "shrink" is "adaptive" that never enlarges (R14).
+    if (style == kRemoteViewStyleAdaptive || style == kRemoteViewStyleShrink) {
       if (width != 0 &&
           height != 0 &&
           displayWidth != 0 &&
@@ -2069,6 +2088,7 @@ class ViewStyle {
         final s1 = width / displayWidth;
         final s2 = height / displayHeight;
         s = s1 < s2 ? s1 : s2;
+        if (style == kRemoteViewStyleShrink && s > 1.0) s = 1.0;
       }
     } else if (style == kRemoteViewStyleCustom) {
       // Custom scale is session-scoped and applied in CanvasModel.updateViewStyle()
@@ -4103,8 +4123,31 @@ class PeerInfo with ChangeNotifier {
     }
   }
 
+  // TBFDesk: the displays the "all displays" view shows (R4 display picker);
+  // null = every display. Only ever set for remote-control sessions.
+  List<int>? nemoShownDisplays;
+
+  // TBFDesk: the real display index of each entry of getCurDisplays().
+  List<int> getCurDisplayIndices() {
+    if (currentDisplay == kAllDisplayValue) {
+      final all = List<int>.generate(displays.length, (i) => i);
+      final shown = nemoShownDisplays;
+      if (shown == null || shown.isEmpty) return all;
+      final picked = all.where((i) => shown.contains(i)).toList();
+      return picked.isEmpty ? all : picked;
+    } else if (currentDisplay >= 0 && currentDisplay < displays.length) {
+      return [currentDisplay];
+    } else {
+      return [];
+    }
+  }
+
   List<Display> getCurDisplays() {
     if (currentDisplay == kAllDisplayValue) {
+      // TBFDesk: restricted to the picked displays (R4), see above.
+      if (nemoShownDisplays != null) {
+        return getCurDisplayIndices().map((i) => displays[i]).toList();
+      }
       return displays;
     } else {
       if (currentDisplay >= 0 && currentDisplay < displays.length) {

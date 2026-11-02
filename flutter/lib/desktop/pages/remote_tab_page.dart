@@ -498,6 +498,32 @@ class _ConnectionTabPageState extends State<ConnectionTabPage> {
         windowOnTop(windowId());
       }
       return jumpOk;
+    } else if (call.method == kWindowEventNemoCloseDisplaySessions) {
+      // TBFDesk: the window `opener` leaves its "windows" display mode (R4):
+      // close the tabs it opened here for single displays.
+      final args = jsonDecode(call.arguments);
+      final id = args['id'];
+      final opener = args['opener'];
+      final displays = (args['displays'] as List<dynamic>).cast<int>();
+      final tabs = tabController.state.value.tabs;
+      for (int i = tabs.length - 1; i >= 0; i--) {
+        final page = tabs[i].page;
+        if (tabs[i].key == id &&
+            page is RemotePage &&
+            page.tabWindowId == opener &&
+            page.display != null &&
+            displays.contains(page.display)) {
+          tabController.remove(i);
+        }
+      }
+    } else if (call.method == kWindowEventNemoDisplayWindowClosed) {
+      // TBFDesk: a window this one opened for a display was closed (R4).
+      final args = jsonDecode(call.arguments);
+      final display = args['display'];
+      if (display is int) {
+        NemoDisplayMode.findByPeerId(args['id'] as String)
+            ?.onDisplayWindowClosed(display);
+      }
     } else if (call.method == kWindowEventGetRemoteList) {
       return tabController.state.value.tabs
           .map((e) => e.key)

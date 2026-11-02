@@ -77,6 +77,16 @@ const String kWindowEventSetFullscreen = "set_fullscreen";
 const String kWindowEventMoveTabToNewWindow = "move_tab_to_new_window";
 const String kWindowEventGetCachedSessionData = "get_cached_session_data";
 const String kWindowEventOpenMonitorSession = "open_monitor_session";
+// TBFDesk: display modes (R4). A session window asks the windows it opened
+// for single displays to close; such a window tells its opener it was closed.
+const String kWindowEventNemoCloseDisplaySessions =
+    "tbf_close_display_sessions";
+const String kWindowEventNemoDisplayWindowClosed = "tbf_display_window_closed";
+// TBFDesk: per-peer options, same names as the Sciter UI so saved choices
+// survive the switch: last display mode ('' = single, all, span, windows) and
+// the displays picked for the multi-display modes ('' = all, else "0,2").
+const String kNemoOptionDisplayMode = "nemo-display-mode";
+const String kNemoOptionDisplaysShown = "nemo-displays-shown";
 
 const String kOptionViewStyle = "view_style";
 const String kOptionScrollStyle = "scroll_style";
@@ -257,7 +267,8 @@ const double kMinFps = 5;
 const double kDefaultFps = 30;
 const double kMaxFps = 120;
 
-const double kMinQuality = 10;
+// TBFDesk: custom quality slider down to 1 % (Sciter header.tis min="1").
+const double kMinQuality = 1;
 const double kDefaultQuality = 50;
 const double kMaxQuality = 100;
 const double kMaxMoreQuality = 2000;
@@ -368,6 +379,11 @@ const kRemoteViewStyleAdaptive = 'adaptive';
 
 /// [kRemoteViewStyleCustom] Show remote image at a user-defined scale percent.
 const kRemoteViewStyleCustom = 'custom';
+
+/// TBFDesk: [kRemoteViewStyleShrink] Scale the remote image down to fit, never
+/// up. What the fork's Rust side reports until a style is chosen for the peer
+/// (Session::get_view_style, the Sciter "Shrink" style).
+const kRemoteViewStyleShrink = 'shrink';
 
 /// [kRemoteScrollStyleAuto] Scroll image auto by position.
 const kRemoteScrollStyleAuto = 'scrollauto';

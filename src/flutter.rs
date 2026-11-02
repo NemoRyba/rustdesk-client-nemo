@@ -1463,22 +1463,55 @@ pub fn send_clipboard_msg(msg: Message, _is_file: bool) {
             }
             continue;
         }
-        if s.is_text_clipboard_required() {
-            // Check if the client supports multi clipboards
-            if let Some(message::Union::MultiClipboards(multi_clipboards)) = &msg.union {
-                let version = s.ui_handler.peer_info.read().unwrap().version.clone();
-                let platform = s.ui_handler.peer_info.read().unwrap().platform.clone();
-                if let Some(msg_out) = crate::clipboard::get_msg_if_not_support_multi_clip(
-                    &version,
-                    &platform,
-                    multi_clipboards,
-                ) {
-                    s.send(Data::Message(msg_out));
-                    continue;
-                }
+        send_text_clipboard_msg(&s, &msg);
+    }
+}
+
+#[cfg(not(target_os = "ios"))]
+fn send_text_clipboard_msg(s: &FlutterSession, msg: &Message) {
+    if s.is_text_clipboard_required() {
+        // Check if the client supports multi clipboards
+        if let Some(message::Union::MultiClipboards(multi_clipboards)) = &msg.union {
+            let version = s.ui_handler.peer_info.read().unwrap().version.clone();
+            let platform = s.ui_handler.peer_info.read().unwrap().platform.clone();
+            if let Some(msg_out) = crate::clipboard::get_msg_if_not_support_multi_clip(
+                &version,
+                &platform,
+                multi_clipboards,
+            ) {
+                s.send(Data::Message(msg_out));
+                return;
             }
-            s.send(Data::Message(msg.clone()));
         }
+        s.send(Data::Message(msg.clone()));
+    }
+}
+
+// TBFDesk (FLUTTER-PORT R7): "sync clipboard between sessions" for the one-process
+// Flutter desktop UI. A clipboard the remote-control session to `origin_peer` received
+// from its peer goes to every OTHER live remote-control session of this process, so it
+// is never echoed back to where it came from. Called by `clipboard::update_clipboard`
+// when the local option is on; see `SESSION_CLIPBOARD_ORIGIN` there.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub fn send_clipboard_to_other_sessions(
+    origin_peer: &str,
+    origin_conn_type: ConnType,
+    clipboards: Vec<Clipboard>,
+) {
+    if origin_conn_type != ConnType::DEFAULT_CONN {
+        return;
+    }
+    let others = sessions::get_other_sessions(origin_peer, ConnType::DEFAULT_CONN);
+    if others.is_empty() {
+        return;
+    }
+    let mut msg = Message::new();
+    msg.set_multi_clipboards(MultiClipboards {
+        clipboards,
+        ..Default::default()
+    });
+    for s in others {
+        send_text_clipboard_msg(&s, &msg);
     }
 }
 
@@ -2288,6 +2321,20 @@ pub mod sessions {
     #[inline]
     pub fn get_sessions() -> Vec<FlutterSession> {
         SESSIONS.read().unwrap().values().cloned().collect()
+    }
+
+    // TBFDesk (R7): the live sessions of `conn_type` other than the one to `peer_id`.
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    pub fn get_other_sessions(peer_id: &str, conn_type: ConnType) -> Vec<FlutterSession> {
+        SESSIONS
+            .read()
+            .unwrap()
+            .iter()
+            .filter(|((id, t), s)| {
+                *t == conn_type && id != peer_id && !s.session_handlers.read().unwrap().is_empty()
+            })
+            .map(|(_, s)| s.clone())
+            .collect()
     }
 
     #[inline]

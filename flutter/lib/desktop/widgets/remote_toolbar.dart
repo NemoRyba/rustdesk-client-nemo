@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -232,6 +233,9 @@ class RemoteToolbar extends StatefulWidget {
   final Function(int, Function(bool)) onEnterOrLeaveImageSetter;
   final Function(int) onEnterOrLeaveImageCleaner;
   final Function(VoidCallback) setRemoteState;
+  // TBFDesk: this window was opened for a single display of a session that
+  // lives in another window; the display-mode control belongs to that one.
+  final bool nemoDisplayWindow;
 
   RemoteToolbar({
     Key? key,
@@ -241,6 +245,7 @@ class RemoteToolbar extends StatefulWidget {
     required this.onEnterOrLeaveImageSetter,
     required this.onEnterOrLeaveImageCleaner,
     required this.setRemoteState,
+    this.nemoDisplayWindow = false,
   }) : super(key: key);
 
   @override
@@ -371,6 +376,8 @@ class _RemoteToolbarState extends State<RemoteToolbar> {
   Widget _buildToolbar(BuildContext context) {
     final List<Widget> toolbarItems = [];
     toolbarItems.add(_PinMenu(state: widget.state));
+    // TBFDesk: Direct / Relay badge (R6, Sciter header.tis #conn-type).
+    toolbarItems.add(_NemoConnTypeBadge(id: widget.id));
     if (!isWebDesktop) {
       toolbarItems.add(_MobileActionMenu(ffi: widget.ffi));
     }
@@ -387,6 +394,20 @@ class _RemoteToolbarState extends State<RemoteToolbar> {
         return Offstage();
       }
     }));
+    // TBFDesk: display modes + display picker (R4).
+    if (widget.ffi.connType == ConnType.defaultConn &&
+        !widget.nemoDisplayWindow &&
+        !isWeb) {
+      toolbarItems.add(Obx(() {
+        if (PrivacyModeState.find(widget.id).isEmpty &&
+            pi.displaysCount.value > 1 &&
+            pi.isSupportMultiDisplay) {
+          return _NemoDisplayModeMenu(ffi: widget.ffi);
+        } else {
+          return Offstage();
+        }
+      }));
+    }
 
     toolbarItems
         .add(_ControlMenu(id: widget.id, ffi: widget.ffi, state: widget.state));
@@ -608,11 +629,12 @@ class _MonitorMenu extends StatelessWidget {
                 width, Colors.white, _ToolbarTheme.blueColor);
           }
           return _IconMenuButton(
+            // TBFDesk: translated tooltips (R11).
             tooltip: isMulti
                 ? ''
                 : isAllMonitors
-                    ? 'all monitors'
-                    : '#${i + 1} monitor',
+                    ? 'nemo_pick_all'
+                    : '${translate('nemo_display')} ${i + 1}',
             hMargin: isMulti ? null : 6,
             vMargin: isMulti ? null : 12,
             topLevel: false,
@@ -728,6 +750,26 @@ class _MonitorMenu extends StatelessWidget {
     if (!isMulti) {
       // If show monitors in toolbar(`buildMultiMonitorMenu()`), then the menu will dismiss automatically.
       _menuDismissCallback(ffi);
+    }
+    // TBFDesk: with the display-mode control (R4), a display chip in a
+    // multi-display mode goes back to the single view of that display, and
+    // the "all monitors" chip is the "all" mode.
+    final nemo = NemoDisplayMode.find(ffi);
+    if (nemo != null) {
+      final individualWindows = pi.isSupportMultiDisplay &&
+          bind.sessionGetDisplaysAsIndividualWindows(
+                  sessionId: ffi.sessionId) ==
+              'Y';
+      if (i == kAllDisplayValue && !individualWindows) {
+        if (nemo.mode.value != NemoDisplayMode.all) {
+          nemo.setMode(NemoDisplayMode.all);
+        }
+        return;
+      }
+      if (i != kAllDisplayValue && nemo.mode.value != NemoDisplayMode.single) {
+        nemo.setMode(NemoDisplayMode.single, display: i);
+        return;
+      }
     }
     RxInt display = CurrentDisplayState.find(id);
     if (display.value != i) {
@@ -997,6 +1039,8 @@ class _DisplayMenuState extends State<_DisplayMenu> {
         toggles(),
       ];
       // privacy mode
+      // TBFDesk: toolbarPrivacyMode() returns nothing unless privacy mode is
+      // already active on the peer (removed from the UI, R8).
       final privacyModeState = PrivacyModeState.find(id);
       if (ffi.connType == ConnType.defaultConn &&
           (pi.features.privacyMode || privacyModeState.isNotEmpty) &&
@@ -2305,7 +2349,8 @@ class _IconMenuButtonState extends State<_IconMenuButton> {
         horizontal: widget.hMargin ?? _ToolbarTheme.buttonHMargin,
         vertical: widget.vMargin ?? _ToolbarTheme.buttonVMargin);
     button = Tooltip(
-      message: widget.tooltip,
+      // TBFDesk: translated like the inner one (R11).
+      message: translate(widget.tooltip),
       child: button,
     );
     if (widget.topLevel) {
@@ -2798,5 +2843,569 @@ class EdgeThicknessControl extends StatelessWidget {
     );
 
     return slider;
+  }
+}
+
+// TBFDesk: Direct / Relay badge (R6), as in the Sciter header (header.tis
+// #conn-type, header.css): green "Direct", orange "Relay", the full
+// connection text as tooltip. Hidden until the connection type is known.
+class _NemoConnTypeBadge extends StatelessWidget {
+  final String id;
+  const _NemoConnTypeBadge({Key? key, required this.id}) : super(key: key);
+
+  static const Color _directColor = Color(0xFF2E9E5B);
+  static const Color _relayColor = Color(0xFFD98324);
+
+  @override
+  Widget build(BuildContext context) {
+    if (!Get.isRegistered<ConnectionType>(tag: ConnectionTypeState.tag(id))) {
+      return Offstage();
+    }
+    final connectionType = ConnectionTypeState.find(id);
+    return Obx(() {
+      if (!connectionType.isValid()) return Offstage();
+      final secure = connectionType.secure.value == ConnectionType.strSecure;
+      final direct = connectionType.direct.value == ConnectionType.strDirect;
+      return Tooltip(
+        message:
+            getConnectionText(secure, direct, connectionType.stream_type.value),
+        child: Container(
+          height: _ToolbarTheme.buttonSize - 8,
+          alignment: Alignment.center,
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+          decoration: BoxDecoration(
+            color: direct ? _directColor : _relayColor,
+            borderRadius: BorderRadius.circular(4),
+          ),
+          child: Text(
+            translate(direct ? 'Direct' : 'Relay'),
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 13,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+        ),
+      ).marginSymmetric(
+          horizontal: _ToolbarTheme.buttonHMargin + 1,
+          vertical: _ToolbarTheme.buttonVMargin);
+    });
+  }
+}
+
+// TBFDesk: display modes of a remote session window (R4), ported from the
+// Sciter UI (remote.tis display_mode / setDisplayMode, header.tis
+// renderDisplayModes):
+//   single   one remote display in this window (upstream behaviour)
+//   all      the picked displays together in this window (upstream "all
+//            displays" view, restricted to the display picker's subset)
+//   span     this window stretched across all local monitors, showing the
+//            picked displays as in "all"
+//   windows  one window per picked display, each full screen on its own
+//            local monitor, left to right (upstream monitor windows); closing
+//            one of them returns to "all"
+// Mode and picked displays are kept per peer in the peer options
+// nemo-display-mode / nemo-displays-shown, the names the Sciter UI uses, so a
+// saved choice survives the switch. The saved mode is restored 1.2 s after
+// the first peer info of a new session (remote_page.dart).
+//
+// One instance per session window (each Flutter window is its own isolate).
+class NemoDisplayMode {
+  static const String single = 'single';
+  static const String all = 'all';
+  static const String span = 'span';
+  static const String windows = 'windows';
+
+  static final Map<String, NemoDisplayMode> _byPeer = {};
+
+  static NemoDisplayMode of(FFI ffi) {
+    final cur = _byPeer[ffi.id];
+    if (cur != null && identical(cur.ffi, ffi)) return cur;
+    final created = NemoDisplayMode._(ffi);
+    _byPeer[ffi.id] = created;
+    return created;
+  }
+
+  static NemoDisplayMode? find(FFI ffi) {
+    final cur = _byPeer[ffi.id];
+    return (cur != null && identical(cur.ffi, ffi)) ? cur : null;
+  }
+
+  static NemoDisplayMode? findByPeerId(String peerId) => _byPeer[peerId];
+
+  static void remove(FFI ffi) {
+    if (identical(_byPeer[ffi.id]?.ffi, ffi)) _byPeer.remove(ffi.id);
+  }
+
+  final FFI ffi;
+  late final RxString mode;
+  final RxInt monitorCount = 1.obs;
+  final RxString shownRaw = ''.obs;
+  bool _restoreStarted = false;
+  bool _busy = false;
+  // Displays this window opened a window for, in "windows" mode.
+  List<int> _openedDisplayWindows = [];
+  // Window placement to return to after "span" / "windows".
+  bool _placementSaved = false;
+  Rect? _savedFrame;
+  bool _savedFullscreen = false;
+  bool _savedMaximized = false;
+
+  NemoDisplayMode._(this.ffi) {
+    mode =
+        (ffi.ffiModel.pi.currentDisplay == kAllDisplayValue ? all : single).obs;
+    _loadShown();
+    refreshMonitors();
+  }
+
+  PeerInfo get pi => ffi.ffiModel.pi;
+  SessionID get sessionId => ffi.sessionId;
+  int get windowId => stateGlobal.windowId;
+  bool get supported => pi.isSupportMultiDisplay && pi.displays.length > 1;
+  bool get multiMonitor => monitorCount.value > 1;
+
+  Future<void> _loadShown() async {
+    shownRaw.value = await bind.sessionGetOption(
+            sessionId: sessionId, arg: kNemoOptionDisplaysShown) ??
+        '';
+  }
+
+  // The local monitors, left to right (then top to bottom).
+  Future<List<Rect>> refreshMonitors() async {
+    var list = <Rect>[];
+    try {
+      list = await getScreenRectList();
+    } catch (e) {
+      debugPrint('nemo display mode: failed to list monitors: $e');
+    }
+    list.sort((a, b) =>
+        a.left != b.left ? a.left.compareTo(b.left) : a.top.compareTo(b.top));
+    monitorCount.value = list.isEmpty ? 1 : list.length;
+    return list;
+  }
+
+  // The picked displays, sorted; empty / invalid / stale -> all of them.
+  List<int> selectedDisplays() {
+    final n = pi.displays.length;
+    final sel = <int>[];
+    for (final part in shownRaw.value.split(',')) {
+      final i = int.tryParse(part.trim());
+      if (i != null && i >= 0 && i < n && !sel.contains(i)) sel.add(i);
+    }
+    if (sel.isEmpty) return List<int>.generate(n, (i) => i);
+    sel.sort();
+    return sel;
+  }
+
+  // Remote displays in left-to-right order, so the left remote screen lands
+  // on the left local monitor whatever order the peer numbered them in.
+  List<int> _leftToRight(List<int> idx) {
+    final list = List<int>.from(idx);
+    list.sort((a, b) {
+      final da = pi.displays[a];
+      final db = pi.displays[b];
+      return da.x != db.x ? da.x.compareTo(db.x) : da.y.compareTo(db.y);
+    });
+    return list;
+  }
+
+  // Tick / untick one display. The last one cannot be unticked.
+  Future<void> toggleDisplay(int i) async {
+    final n = pi.displays.length;
+    final next = selectedDisplays();
+    if (next.contains(i)) {
+      if (next.length <= 1) return;
+      next.remove(i);
+    } else {
+      next.add(i);
+      next.sort();
+    }
+    await _setShown(next.length == n ? '' : next.join(','));
+  }
+
+  Future<void> selectAll() => _setShown('');
+
+  Future<void> _setShown(String raw) async {
+    shownRaw.value = raw;
+    await bind.sessionPeerOption(
+        sessionId: sessionId, name: kNemoOptionDisplaysShown, value: raw);
+    // Re-run the current multi-display mode with the new selection.
+    if (_busy) return;
+    _busy = true;
+    try {
+      final m = mode.value;
+      if (m == all || m == span) {
+        await _applyAll();
+      } else if (m == windows) {
+        mode.value = single;
+        await _leave(windows);
+        await _setMode(windows, false, null);
+      }
+    } finally {
+      _busy = false;
+    }
+  }
+
+  Future<void> setMode(String m, {bool persist = true, int? display}) async {
+    if (_busy) return;
+    _busy = true;
+    try {
+      await _setMode(m, persist, display);
+    } finally {
+      _busy = false;
+    }
+  }
+
+  Future<void> _setMode(String m, bool persist, int? display) async {
+    if (m != single && !supported) return;
+    if (m == mode.value) {
+      if (m == single && display != null && display != pi.currentDisplay) {
+        _showSingle(display);
+      }
+      return;
+    }
+    final mons = await refreshMonitors();
+    if ((m == span || m == windows) && mons.length < 2) return;
+    final prev = mode.value;
+    // Set first: the display windows closed by _leave() report back, and that
+    // must not be taken as the user closing one (Sciter does the same).
+    mode.value = m;
+    await _leave(prev);
+    var ok = true;
+    if (m == single) {
+      _showSingle(display ?? _singleDisplay());
+    } else if (m == all) {
+      await _applyAll();
+    } else if (m == span) {
+      ok = await _enterSpan(mons);
+    } else if (m == windows) {
+      ok = await _enterWindows(mons);
+    }
+    if (!ok) {
+      mode.value = single;
+      await _restorePlacement();
+      _showSingle(_singleDisplay());
+    }
+    if (persist && ok) {
+      await bind.sessionPeerOption(
+          sessionId: sessionId,
+          name: kNemoOptionDisplayMode,
+          value: m == single ? '' : m);
+    }
+  }
+
+  int _singleDisplay() {
+    final cur = pi.currentDisplay;
+    if (cur >= 0 && cur < pi.displays.length) return cur;
+    final sel = _leftToRight(selectedDisplays());
+    return sel.isNotEmpty ? sel[0] : 0;
+  }
+
+  Future<void> _leave(String prev) async {
+    pi.nemoShownDisplays = null;
+    if (prev == windows) await _closeDisplayWindows();
+    if (prev == span || prev == windows) await _restorePlacement();
+  }
+
+  void _showSingle(int display) {
+    pi.nemoShownDisplays = null;
+    openMonitorInTheSameTab(display, ffi, pi);
+  }
+
+  // The picked displays in this window: stream only those and lay out only
+  // those (FfiModel.nemoSetShownDisplays / PeerInfo.getCurDisplayIndices).
+  // The displays keep their real positions relative to each other, so an
+  // unpicked display between two picked ones leaves a gap (Sciter packs them
+  // side by side instead; Flutter maps the pointer through one rectangle).
+  Future<void> _applyAll() async {
+    final sel = selectedDisplays();
+    final subset = sel.length == pi.displays.length ? null : sel;
+    bind.sessionSwitchDisplay(
+      isDesktop: isDesktop,
+      sessionId: sessionId,
+      value: Int32List.fromList(sel),
+    );
+    if (pi.currentDisplay == kAllDisplayValue) {
+      await ffi.ffiModel.nemoSetShownDisplays(subset);
+    } else {
+      pi.nemoShownDisplays = subset;
+      ffi.ffiModel.switchToNewDisplay(kAllDisplayValue, sessionId, ffi.id);
+    }
+  }
+
+  Future<void> _savePlacement() async {
+    if (_placementSaved) return; // keep the ORIGINAL placement across hops
+    final wc = WindowController.fromWindowId(windowId);
+    _savedFullscreen = stateGlobal.fullscreen.isTrue;
+    _savedMaximized = !_savedFullscreen && await wc.isMaximized();
+    _savedFrame = _savedFullscreen ? null : await wc.getFrame();
+    _placementSaved = true;
+  }
+
+  Future<void> _restorePlacement() async {
+    if (!_placementSaved) return;
+    _placementSaved = false;
+    final wc = WindowController.fromWindowId(windowId);
+    if (stateGlobal.fullscreen.isTrue && !_savedFullscreen) {
+      stateGlobal.setFullscreen(false);
+      await Future.delayed(const Duration(milliseconds: 300));
+    }
+    if (_savedFullscreen) {
+      stateGlobal.setFullscreen(true);
+    } else if (_savedMaximized) {
+      await wc.maximize();
+    } else if (_savedFrame != null) {
+      await wc.setFrame(_savedFrame!);
+    }
+  }
+
+  // Move + resize, then put the window back if the window manager moved it:
+  // a frame larger than one monitor is not always honoured for the position
+  // (Sciter remote.tis placeWindowAt, found in the lab on openbox).
+  Future<void> _placeWindow(Rect frame) async {
+    final wc = WindowController.fromWindowId(windowId);
+    if (await wc.isMaximized()) await wc.unmaximize();
+    await wc.setFrame(frame);
+    for (final ms in [250, 400]) {
+      await Future.delayed(Duration(milliseconds: ms));
+      if (mode.value != span) return;
+      final cur = await wc.getFrame();
+      if ((cur.left - frame.left).abs() <= 1 &&
+          (cur.top - frame.top).abs() <= 1) {
+        return;
+      }
+      debugPrint('nemo span: window at $cur instead of $frame, moving back');
+      await wc.setFrame(frame);
+    }
+  }
+
+  // "span": one window covering every local monitor.
+  // TODO(TBFDesk): exact per-monitor mapping. Sciter (remote.tis enterSpan,
+  // span_map) fits remote display i onto local monitor i when the counts
+  // match; that needs one pointer mapping per tile, while Flutter's
+  // InputModel maps through a single rectangle. Here the picked displays are
+  // laid out as in "all" across the whole spanning window, which is Sciter's
+  // fallback for unequal counts and close to 1:1 for matching layouts.
+  Future<bool> _enterSpan(List<Rect> mons) async {
+    if (mons.length < 2) return false;
+    await _savePlacement();
+    var bbox = mons[0];
+    for (final m in mons.skip(1)) {
+      bbox = bbox.expandToInclude(m);
+    }
+    if (stateGlobal.fullscreen.isTrue) {
+      stateGlobal.setFullscreen(false);
+      await Future.delayed(const Duration(milliseconds: 300));
+    }
+    await _applyAll();
+    await _placeWindow(bbox);
+    return true;
+  }
+
+  // "windows": this window shows the leftmost picked display, full screen on
+  // the leftmost monitor; every other picked display gets a window of its own
+  // on the next monitor (more displays than monitors: the extras share the
+  // last one). Same connection, upstream's monitor windows.
+  Future<bool> _enterWindows(List<Rect> mons) async {
+    if (mons.length < 2) return false;
+    final order = _leftToRight(selectedDisplays());
+    if (order.length < 2) return false;
+    await _savePlacement();
+    _showSingle(order[0]);
+    if (stateGlobal.fullscreen.isTrue) {
+      stateGlobal.setFullscreen(false);
+      await Future.delayed(const Duration(milliseconds: 300));
+    }
+    await tryMoveToScreenAndSetFullscreen(mons[0]);
+    _openedDisplayWindows = order.sublist(1);
+    for (var k = 1; k < order.length; k++) {
+      final m = mons[k < mons.length ? k : mons.length - 1];
+      openMonitorInNewTabOrWindow(order[k], ffi.id, pi, screenRect: m);
+    }
+    return true;
+  }
+
+  Future<void> _closeDisplayWindows() async {
+    final displays = _openedDisplayWindows;
+    _openedDisplayWindows = [];
+    if (displays.isEmpty) return;
+    var ids = <int>[];
+    try {
+      ids = await DesktopMultiWindow.getAllSubWindowIds();
+    } catch (e) {
+      debugPrint('nemo display mode: failed to list windows: $e');
+    }
+    final args =
+        jsonEncode({'id': ffi.id, 'opener': windowId, 'displays': displays});
+    for (final id in ids) {
+      if (id == windowId) continue;
+      try {
+        await DesktopMultiWindow.invokeMethod(
+            id, kWindowEventNemoCloseDisplaySessions, args);
+      } catch (e) {
+        debugPrint('nemo display mode: failed to close window $id: $e');
+      }
+    }
+  }
+
+  // A window this one opened for a display was closed. On purpose (we left
+  // "windows"): nothing to do. By hand: that display would be streamed into
+  // nothing, so the session returns to "all" in this window.
+  void onDisplayWindowClosed(int display) {
+    if (mode.value != windows || !_openedDisplayWindows.contains(display)) {
+      return;
+    }
+    _openedDisplayWindows.remove(display);
+    Future.delayed(Duration.zero, () => setMode(all));
+  }
+
+  // The mode last chosen for this peer, once per session, after the window
+  // has settled (Sciter header.tis updatePi). Not persisted again, so a mode
+  // that cannot apply today (span without a second monitor) keeps the choice
+  // made on the docked machine.
+  Future<void> restoreSaved() async {
+    if (_restoreStarted) return;
+    _restoreStarted = true;
+    await Future.delayed(const Duration(milliseconds: 1200));
+    if (ffi.closed || find(ffi) == null) return;
+    // Upstream's "use all my displays for the remote session" has already
+    // opened its own windows; don't fight it.
+    if (bind.sessionGetUseAllMyDisplaysForTheRemoteSession(
+            sessionId: sessionId) ==
+        'Y') {
+      return;
+    }
+    final saved = await bind.sessionGetOption(
+            sessionId: sessionId, arg: kNemoOptionDisplayMode) ??
+        '';
+    if (saved != all && saved != span && saved != windows) return;
+    await _loadShown();
+    if (mode.value != single || pi.currentDisplay == kAllDisplayValue) return;
+    await setMode(saved, persist: false);
+  }
+}
+
+class _NemoDisplayModeMenu extends StatelessWidget {
+  final FFI ffi;
+  const _NemoDisplayModeMenu({Key? key, required this.ffi}) : super(key: key);
+
+  static String _tipKey(String m) {
+    switch (m) {
+      case NemoDisplayMode.all:
+        return 'nemo_mode_all_tip';
+      case NemoDisplayMode.span:
+        return 'nemo_mode_span_tip';
+      case NemoDisplayMode.windows:
+        return 'nemo_mode_windows_tip';
+      default:
+        return 'nemo_mode_single_tip';
+    }
+  }
+
+  static IconData _icon(String m) {
+    switch (m) {
+      case NemoDisplayMode.all:
+        return Icons.grid_view;
+      case NemoDisplayMode.span:
+        return Icons.open_in_full;
+      case NemoDisplayMode.windows:
+        return Icons.filter_none;
+      default:
+        return Icons.desktop_windows_outlined;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = NemoDisplayMode.of(ffi);
+    return Obx(() {
+      final m = c.mode.value;
+      // Rebuild the menu when these change, too.
+      c.monitorCount.value;
+      c.shownRaw.value;
+      return _IconSubmenuButton(
+        tooltip: _tipKey(m),
+        icon: SizedBox(
+          width: _ToolbarTheme.buttonSize,
+          height: _ToolbarTheme.buttonSize,
+          child: Center(child: Icon(_icon(m), size: 18, color: Colors.white)),
+        ),
+        ffi: ffi,
+        color: _ToolbarTheme.blueColor,
+        hoverColor: _ToolbarTheme.hoverBlueColor,
+        menuChildrenGetter: (_) => _menuChildren(c),
+      );
+    });
+  }
+
+  List<Widget> _menuChildren(NemoDisplayMode c) {
+    final multi = c.multiMonitor;
+    final need = translate('nemo_mode_needs_monitor');
+    Widget item(String m, bool needsMulti) {
+      final enabled = !needsMulti || multi;
+      final label = translate(_tipKey(m));
+      final Widget button = RdoMenuButton<String>(
+        value: m,
+        groupValue: c.mode.value,
+        onChanged: enabled
+            ? (v) {
+                if (v != null) c.setMode(v);
+              }
+            : null,
+        ffi: ffi,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(_icon(m), size: 16).marginOnly(right: 8),
+            Text(label),
+          ],
+        ),
+      );
+      // The multi-monitor modes stay visible on a one-monitor computer --
+      // greyed, with the tooltip saying why.
+      return enabled
+          ? button
+          : Tooltip(message: '$label – $need', child: button);
+    }
+
+    final children = <Widget>[
+      item(NemoDisplayMode.single, false),
+      item(NemoDisplayMode.all, false),
+      Divider(),
+      item(NemoDisplayMode.span, true),
+      item(NemoDisplayMode.windows, true),
+    ];
+    // Display picker: which displays the multi-display modes show at once.
+    final n = c.pi.displays.length;
+    if (n >= 3) {
+      final sel = c.selectedDisplays();
+      children.add(Divider());
+      children.add(Tooltip(
+        message: translate('nemo_pick_tip'),
+        child: Text(
+          '${translate('nemo_pick_tip')}  (${sel.length}/$n)',
+          style: const TextStyle(fontSize: 12, color: Colors.grey),
+        ).marginSymmetric(horizontal: 12, vertical: 4),
+      ));
+      for (var i = 0; i < n; i++) {
+        final d = c.pi.displays[i];
+        final ticked = sel.contains(i);
+        children.add(CkbMenuButton(
+          value: ticked,
+          // The last ticked display cannot be unticked.
+          onChanged:
+              (ticked && sel.length <= 1) ? null : (_) => c.toggleDisplay(i),
+          ffi: ffi,
+          child: Text(
+              '${translate('nemo_display')} ${i + 1}  ·  ${d.width}×${d.height}'),
+        ));
+      }
+      children.add(MenuButton(
+        onPressed: sel.length == n ? null : () => c.selectAll(),
+        ffi: ffi,
+        child: Text(translate('nemo_pick_all')),
+      ));
+    }
+    return children;
   }
 }

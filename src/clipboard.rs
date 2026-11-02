@@ -41,6 +41,66 @@ lazy_static::lazy_static! {
     static ref CLIPBOARD_INSTANCE_ID: [u8; 8] = hbb_common::rand::random::<u64>().to_le_bytes();
 }
 
+// TBFDesk (FLUTTER-PORT R7): the same option for the Flutter desktop UI. There every
+// session lives in ONE process, so the instance id above is the same for all of them
+// and the marker-based forwarding never fires. Instead, a clipboard a session receives
+// from its peer is handed straight to the other live controller sessions of this
+// process (`crate::flutter::send_clipboard_to_other_sessions`), never back to the
+// session it came from.
+//
+// Which session received it: each connection runs its `io_loop` on a thread of its own
+// with a current-thread runtime, and `Client::start` (client.rs) records the peer on that
+// thread; `update_clipboard` is called synchronously on it for the peer's clipboard
+// messages (client/io_loop.rs). A call from any other thread (e.g. "copy screenshot to
+// clipboard" from the UI) has no recorded peer and is never forwarded.
+#[cfg(all(
+    feature = "flutter",
+    not(any(target_os = "android", target_os = "ios"))
+))]
+thread_local! {
+    static SESSION_CLIPBOARD_ORIGIN: std::cell::RefCell<
+        Option<(String, hbb_common::rendezvous_proto::ConnType)>,
+    > = std::cell::RefCell::new(None);
+}
+
+// TBFDesk (R7): called by `Client::start` on the connection's io thread.
+#[cfg(all(
+    feature = "flutter",
+    not(any(target_os = "android", target_os = "ios"))
+))]
+pub fn set_session_clipboard_origin(
+    peer_id: &str,
+    conn_type: hbb_common::rendezvous_proto::ConnType,
+) {
+    SESSION_CLIPBOARD_ORIGIN.with(|o| *o.borrow_mut() = Some((peer_id.to_owned(), conn_type)));
+}
+
+#[cfg(all(
+    feature = "flutter",
+    not(any(target_os = "android", target_os = "ios"))
+))]
+fn session_clipboard_origin() -> Option<(String, hbb_common::rendezvous_proto::ConnType)> {
+    SESSION_CLIPBOARD_ORIGIN.with(|o| o.borrow().clone())
+}
+
+// TBFDesk (R7): what may be forwarded to sibling sessions -- everything the peer sent
+// except an owner marker (never trusted from a peer, see `from_multi_clipboards`).
+#[cfg(all(
+    feature = "flutter",
+    not(any(target_os = "android", target_os = "ios"))
+))]
+fn clipboards_to_sync(multi_clipboards: &[Clipboard]) -> Vec<Clipboard> {
+    multi_clipboards
+        .iter()
+        .filter(|c| {
+            !(c.format.enum_value() == Ok(hbb_common::message_proto::ClipboardFormat::Special)
+                && c.special_name
+                    .eq_ignore_ascii_case(RUSTDESK_CLIPBOARD_OWNER_FORMAT))
+        })
+        .cloned()
+        .collect()
+}
+
 // Add special format for Excel XML Spreadsheet
 const CLIPBOARD_FORMAT_EXCEL_XML_SPREADSHEET: &'static str = "XML Spreadsheet";
 
@@ -302,8 +362,28 @@ fn do_update_clipboard_(
 
 #[cfg(not(target_os = "android"))]
 pub fn update_clipboard(multi_clipboards: Vec<Clipboard>, side: ClipboardSide) {
+    // TBFDesk (R7): read on the calling thread, see SESSION_CLIPBOARD_ORIGIN.
+    #[cfg(all(feature = "flutter", not(target_os = "ios")))]
+    let sync_origin = if side == ClipboardSide::Client {
+        session_clipboard_origin()
+    } else {
+        None
+    };
     std::thread::spawn(move || {
+        #[cfg(all(feature = "flutter", not(target_os = "ios")))]
+        let to_sync = match sync_origin {
+            Some(origin) if is_sync_clipboard_between_sessions_enabled() => {
+                Some((origin, clipboards_to_sync(&multi_clipboards)))
+            }
+            _ => None,
+        };
         update_clipboard_(multi_clipboards, side);
+        #[cfg(all(feature = "flutter", not(target_os = "ios")))]
+        if let Some(((peer_id, conn_type), clipboards)) = to_sync {
+            if !clipboards.is_empty() {
+                crate::flutter::send_clipboard_to_other_sessions(&peer_id, conn_type, clipboards);
+            }
+        }
     });
 }
 

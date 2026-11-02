@@ -325,6 +325,13 @@ impl Client {
         (i32, String),
     )> {
         debug_assert!(peer == interface.get_id());
+        // TBFDesk (R7): remember on this connection's io thread which session it
+        // serves, for "sync clipboard between sessions" (clipboard.rs).
+        #[cfg(all(
+            feature = "flutter",
+            not(any(target_os = "android", target_os = "ios"))
+        ))]
+        crate::clipboard::set_session_clipboard_origin(peer, conn_type);
         interface.update_direct(None);
         interface.update_received(false);
         match Self::_start(peer, key, token, conn_type, interface.clone()).await {

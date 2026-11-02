@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:desktop_multi_window/desktop_multi_window.dart';
 import 'package:flutter/material.dart';
@@ -101,8 +102,17 @@ class _RemotePageState extends State<RemotePage>
   Function(bool)? _onEnterOrLeaveImage4Toolbar;
 
   late FFI _ffi;
+  // TBFDesk: restores the display mode saved for this peer (R4).
+  Worker? _nemoDisplayModeRestore;
 
   SessionID get sessionId => _ffi.sessionId;
+
+  // TBFDesk: this window was opened for one display of a session that lives
+  // in another window (upstream monitor windows, R4 "windows" mode).
+  bool get _isNemoDisplayWindow =>
+      widget.tabWindowId != null &&
+      widget.display != null &&
+      widget.display != kAllDisplayValue;
 
   _RemotePageState(String id) {
     _initStates(id);
@@ -178,6 +188,14 @@ class _RemotePageState extends State<RemotePage>
     // Register callback to cancel debounce timer when relative mouse mode is disabled
     _ffi.inputModel.onRelativeMouseModeDisabled =
         _cancelPointerLockCenterDebounceTimer;
+
+    // TBFDesk: the display mode last chosen for this peer, once the first
+    // peer info is in (new sessions only, not tab -> window moves).
+    if (widget.tabWindowId == null && !isWeb) {
+      _nemoDisplayModeRestore = ever<bool>(_ffi.ffiModel.pi.isSet, (isSet) {
+        if (isSet && mounted) NemoDisplayMode.of(_ffi).restoreSaved();
+      });
+    }
   }
 
   /// Cancel the pointer lock center debounce timer
@@ -318,6 +336,20 @@ class _RemotePageState extends State<RemotePage>
 
     _pointerLockCenterDebounceTimer?.cancel();
     _pointerLockCenterDebounceTimer = null;
+    // TBFDesk: display modes (R4).
+    _nemoDisplayModeRestore?.dispose();
+    NemoDisplayMode.remove(_ffi);
+    if (closeSession && _isNemoDisplayWindow) {
+      // Tell the window that opened this one for a display: in "windows"
+      // mode it goes back to "all" rather than stream into nothing.
+      DesktopMultiWindow.invokeMethod(
+              widget.tabWindowId!,
+              kWindowEventNemoDisplayWindowClosed,
+              jsonEncode({'id': widget.id, 'display': widget.display}))
+          .then((_) {}, onError: (e) {
+        debugPrint('Failed to report closed display window: $e');
+      });
+    }
     // Clear callback reference to prevent memory leaks and stale references
     _ffi.inputModel.onRelativeMouseModeDisabled = null;
     // Relative mouse mode cleanup is centralized in FFI.close(closeSession: ...).
@@ -370,6 +402,7 @@ class _RemotePageState extends State<RemotePage>
             }
           },
           setRemoteState: setState,
+          nemoDisplayWindow: _isNemoDisplayWindow,
         );
 
     bodyWidget() {
@@ -859,9 +892,13 @@ class _ImagePaintState extends State<ImagePaint> {
     }
     final isPeerLinux = ffiModel.isPeerLinux;
     final curDisplay = ffiModel.pi.currentDisplay;
+    // TBFDesk: real display index of displays[i] (display subset, R4).
+    final displayIndices = ffiModel.pi.getCurDisplayIndices();
     for (var i = 0; i < displays.length; i++) {
-      final textureId = widget.ffi.textureModel
-          .getTextureId(curDisplay == kAllDisplayValue ? i : curDisplay);
+      final textureId = widget.ffi.textureModel.getTextureId(
+          curDisplay == kAllDisplayValue
+              ? (i < displayIndices.length ? displayIndices[i] : i)
+              : curDisplay);
       if (true) {
         // both "textureId.value != -1" and "true" seems ok
         final sizeScale = isPeerLinux ? s / displays[i].scale : s;

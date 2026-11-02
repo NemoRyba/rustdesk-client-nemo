@@ -3338,3 +3338,14 @@ pub mod server_side {
         jboolean::from(crate::server::is_clipboard_service_ok())
     }
 }
+
+// TBFDesk: ask the peer to stream exactly these displays (the display subset of
+// the "all displays" view, FLUTTER-PORT §5.R R1/R4); the Sciter UI's
+// `set_view_all` does the same. This only changes what the peer captures: the
+// Flutter display-mode code uses `session_switch_display` with the subset,
+// which also updates the UI session's display routing and textures.
+pub fn session_capture_displays(session_id: SessionID, displays: Vec<i32>) {
+    if let Some(session) = sessions::get_session_by_session_id(&session_id) {
+        session.capture_displays(vec![], vec![], displays);
+    }
+}

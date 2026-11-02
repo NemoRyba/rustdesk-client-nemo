@@ -210,8 +210,9 @@ class TextureModel {
     }
 
     if (curDisplay == kAllDisplayValue) {
-      final displays = ffi.ffiModel.pi.getCurDisplays();
-      for (var i = 0; i < displays.length; i++) {
+      // TBFDesk: real display indices, so a display subset (R4) gets the
+      // textures of the picked displays.
+      for (final i in ffi.ffiModel.pi.getCurDisplayIndices()) {
         tryCreateTexture(i);
       }
     } else {

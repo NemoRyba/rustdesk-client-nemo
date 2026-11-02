@@ -383,6 +383,12 @@ Future<List<TRadioMenu<String>>> toolbarViewStyle(
         value: kRemoteViewStyleAdaptive,
         groupValue: groupValue,
         onChanged: onChanged),
+    // TBFDesk: the fork's default until a style is chosen for the peer (R14).
+    TRadioMenu<String>(
+        child: Text(translate('Shrink')),
+        value: kRemoteViewStyleShrink,
+        groupValue: groupValue,
+        onChanged: onChanged),
     TRadioMenu<String>(
         child: Text(translate('Scale custom')),
         value: kRemoteViewStyleCustom,
@@ -393,8 +399,12 @@ Future<List<TRadioMenu<String>>> toolbarViewStyle(
 
 Future<List<TRadioMenu<String>>> toolbarImageQuality(
     BuildContext context, String id, FFI ffi) async {
-  final groupValue =
+  var groupValue =
       await bind.sessionGetImageQuality(sessionId: ffi.sessionId) ?? '';
+  // TBFDesk: unset -> tick what an unset value actually means. The fork's
+  // hbb_common (UserDefaultConfig, OPTION_IMAGE_QUALITY) defaults to
+  // "balanced" (it was "low" once; Sciter header.tis still says "low", stale).
+  if (groupValue.isEmpty) groupValue = kRemoteImageQualityBalanced;
   onChanged(String? value) async {
     if (value == null) return;
     await bind.sessionSetImageQuality(sessionId: ffi.sessionId, value: value);
@@ -767,6 +777,14 @@ List<TToggleMenu> toolbarPrivacyMode(
   final pi = ffiModel.pi;
   final sessionId = ffi.sessionId;
   final hasPrivacyModePermission = ffiModel.permissions['privacy_mode'] != false;
+
+  // TBFDesk: privacy mode removed from the session UI -- on Windows it needs a
+  // driver plugin this build does not ship, so turning it on only ever led to
+  // an error (Sciter header.tis did the same). Only if the peer already reports
+  // it active (switched on elsewhere) is the item kept, so it can be turned off.
+  if (privacyModeState.isEmpty) {
+    return [];
+  }
 
   // Backend revocation already attempts to turn privacy mode off.
   // Still keep this menu when privacy mode is active, so users can turn it off
