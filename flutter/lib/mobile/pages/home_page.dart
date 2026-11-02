@@ -5,6 +5,7 @@ import 'package:flutter_hbb/web/settings_page.dart';
 import 'package:get/get.dart';
 import '../../common.dart';
 import '../../common/widgets/chat_page.dart';
+import '../../common/widgets/nemo_gate.dart';
 import '../../models/platform_model.dart';
 import '../../models/state_model.dart';
 import 'connection_page.dart';
@@ -102,7 +103,14 @@ class HomePageState extends State<HomePage> {
               }
             }),
           ),
-          body: _pages.elementAt(_selectedIndex),
+          // TBFDesk: claim / sign-in gates in front of the pages (fleet is optional on a
+          // phone: no device-key gate). Settings stay reachable so a gated phone can
+          // still import a setup string, fix the server or share its log.
+          body: _pages.elementAt(_selectedIndex) is SettingsPage
+              ? _pages.elementAt(_selectedIndex)
+              : NemoGate(
+                  requireDeviceKey: false,
+                  child: _pages.elementAt(_selectedIndex)),
         ));
   }
 

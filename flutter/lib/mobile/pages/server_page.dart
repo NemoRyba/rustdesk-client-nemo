@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_hbb/desktop/pages/desktop_home_page.dart';
 import 'package:flutter_hbb/mobile/widgets/dialog.dart';
+import 'package:flutter_hbb/mobile/widgets/nemo_mobile.dart';
 import 'package:flutter_hbb/models/chat_model.dart';
 import 'package:get/get.dart';
 import 'package:provider/provider.dart';
@@ -502,7 +503,15 @@ class ServerInfo extends StatelessWidget {
         return Row(children: [
           const Icon(Icons.check, color: colorPositive, size: iconSize)
               .marginOnly(right: iconMarginRight),
-          Expanded(child: Text(translate('Ready')))
+          // TBFDesk (A15): registration badge after "Ready".
+          Expanded(
+              child: Wrap(
+                  spacing: 10,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                Text(translate('Ready')),
+                const NemoRegistrationBadge(),
+              ]))
         ]);
       }
     }

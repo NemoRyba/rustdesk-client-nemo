@@ -8,16 +8,16 @@ import 'package:flutter_hbb/desktop/pages/desktop_setting_page.dart';
 import 'package:get/get.dart';
 import 'package:provider/provider.dart';
 import 'package:settings_ui/settings_ui.dart';
-import 'package:url_launcher/url_launcher.dart';
-import 'package:url_launcher/url_launcher_string.dart';
 
 import '../../common.dart';
 import '../../common/widgets/dialog.dart';
 import '../../common/widgets/login.dart';
+import '../../common/widgets/nemo_login.dart';
 import '../../consts.dart';
 import '../../models/model.dart';
 import '../../models/platform_model.dart';
 import '../widgets/dialog.dart';
+import '../widgets/nemo_mobile.dart';
 import 'home_page.dart';
 import 'scan_page.dart';
 
@@ -34,8 +34,6 @@ class SettingsPage extends StatefulWidget implements PageShape {
   @override
   State<SettingsPage> createState() => _SettingsState();
 }
-
-const url = 'https://rustdesk.com/';
 
 enum KeepScreenOn {
   never,
@@ -70,7 +68,6 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
       false; //androidVersion >= 26; // remove because not work on every device
   var _ignoreBatteryOpt = false;
   var _enableStartOnBoot = false;
-  var _checkUpdateOnStartup = false;
   var _showTerminalExtraKeys = false;
   var _floatingWindowDisabled = false;
   var _keepScreenOn = KeepScreenOn.duringControlled; // relay on floating window
@@ -178,13 +175,6 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
       if (enableStartOnBoot != _enableStartOnBoot) {
         update = true;
         _enableStartOnBoot = enableStartOnBoot;
-      }
-
-      var checkUpdateOnStartup =
-          mainGetLocalBoolOptionSync(kOptionEnableCheckUpdate);
-      if (checkUpdateOnStartup != _checkUpdateOnStartup) {
-        update = true;
-        _checkUpdateOnStartup = checkUpdateOnStartup;
       }
 
       var floatingWindowDisabled =
@@ -592,21 +582,8 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
           gFFI.invokeMethod(AndroidChannel.kSetStartOnBootOpt, toValue);
         }));
 
-    if (!bind.isCustomClient()) {
-      enhancementsTiles.add(
-        SettingsTile.switchTile(
-          initialValue: _checkUpdateOnStartup,
-          title:
-              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(translate('Check for software update on startup')),
-          ]),
-          onToggle: (bool toValue) async {
-            await mainSetLocalBoolOption(kOptionEnableCheckUpdate, toValue);
-            setState(() => _checkUpdateOnStartup = toValue);
-          },
-        ),
-      );
-    }
+    // TBFDesk: no "Check for software update on startup" toggle -- updates come only
+    // from the management server, and phones are updated by store / MDM / APK push.
 
     enhancementsTiles.add(
       SettingsTile.switchTile(
@@ -685,10 +662,18 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
           SettingsSection(
             title: Text(translate('Account')),
             tiles: [
+              // TBFDesk (A6): display name (or "Not signed in") and Login / Logout;
+              // sign-in goes through the sealed TBFDesk login.
               SettingsTile(
-                title: Obx(() => Text(gFFI.userModel.userName.value.isEmpty
-                    ? translate('Login')
-                    : '${translate('Logout')} (${gFFI.userModel.accountLabelWithHandle})')),
+                title: Obx(() => gFFI.userModel.userName.value.isEmpty
+                    ? Text(translate('Not signed in'),
+                        style: const TextStyle(color: Colors.grey))
+                    : Text(gFFI.userModel.displayNameOrUserName,
+                        style: const TextStyle(fontWeight: FontWeight.bold))),
+                value: Obx(() => Text(translate(
+                    gFFI.userModel.userName.value.isEmpty
+                        ? 'Login'
+                        : 'Logout'))),
                 leading: Obx(() {
                   final avatar = bind.mainResolveAvatarUrl(
                       avatar: gFFI.userModel.avatar.value);
@@ -702,7 +687,7 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
                 }),
                 onPressed: (context) {
                   if (gFFI.userModel.userName.value.isEmpty) {
-                    loginDialog();
+                    showNemoLoginDialog(context);
                   } else {
                     logOutConfirmDialog();
                   }
@@ -720,6 +705,33 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
                     _isUsingPublicServer = await bind.mainIsUsingPublicServer();
                     setState(callback);
                   });
+                }),
+          // TBFDesk (A11): management server, its public key, enable.
+          if (!disabledSettings && !_hideNetwork && !_hideServer)
+            SettingsTile(
+                title: Text(translate('Management')),
+                leading: Icon(Icons.admin_panel_settings_outlined),
+                onPressed: (context) {
+                  showNemoMobileManagementDialog(
+                      onChanged: () => setState(() {}));
+                }),
+          // TBFDesk (A3): setup string or device key -- paste, file or QR code.
+          if (!disabledSettings)
+            SettingsTile(
+                title: Text(translate('Import setup string or device key')),
+                leading: Icon(Icons.key),
+                onPressed: (context) async {
+                  await showNemoMobileImport(context);
+                  if (mounted) setState(() {});
+                }),
+          // TBFDesk (A12): friendly device name.
+          if (!disabledSettings)
+            SettingsTile(
+                title: Text(translate('Alias')),
+                leading: Icon(Icons.badge_outlined),
+                value: Text(bind.mainGetOptionSync(key: kNemoOptionAlias)),
+                onPressed: (context) {
+                  showNemoMobileAliasDialog(onChanged: () => setState(() {}));
                 }),
           if (!_hideNetwork && !_hideProxy)
             SettingsTile(
@@ -801,11 +813,14 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
                 });
               },
             ),
+          // TBFDesk (A9): only DE / DE-AT / EN, with flags.
           SettingsTile(
               title: Text(translate('Language')),
               leading: Icon(Icons.translate),
+              value: nemoMobileLangValue(),
               onPressed: (context) {
-                showLanguageSettings(gFFI.dialogManager);
+                showNemoMobileLanguageSettings(gFFI.dialogManager,
+                    onChanged: () => setState(() {}));
               }),
           SettingsTile(
             title: Text(translate(
@@ -825,7 +840,7 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
               initialValue: _allowAskForNoteAtEndOfConnection,
               onToggle: (v) async {
                 if (v && !gFFI.userModel.isLogin) {
-                  final res = await loginDialog();
+                  final res = await nemoLoginDialog(); // TBFDesk: sealed login
                   if (res != true) return;
                 }
                 await mainSetLocalBoolOption(
@@ -942,22 +957,32 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
             title: Text(translate("Enhancements")),
             tiles: enhancementsTiles,
           ),
+        // TBFDesk (A7 on the phone): redacted recent log through the share sheet.
         SettingsSection(
-          title: Text(translate("About")),
+          title: Text(translate('Support')),
           tiles: [
             SettingsTile(
-                onPressed: (context) async {
-                  await launchUrl(Uri.parse(url));
-                },
+                title: Text(translate('Share log')),
+                leading: Icon(Icons.share),
+                onPressed: (context) => nemoShareRecentLog(context)),
+          ],
+        ),
+        // TBFDesk (A18): About TBFDesk -- version, build id, fingerprint, TBF copyright
+        // + licence and the RustDesk attribution (AGPL); no rustdesk.com links.
+        SettingsSection(
+          title: Text('${translate("About")} TBFDesk'),
+          tiles: [
+            SettingsTile(
                 title: Text(translate("Version: ") + version),
-                value: Padding(
-                  padding: EdgeInsets.symmetric(vertical: 8),
-                  child: Text('rustdesk.com',
-                      style: TextStyle(
-                        decoration: TextDecoration.underline,
-                      )),
-                ),
                 leading: Icon(Icons.info)),
+            if (bind.mainGetBuildId().isNotEmpty)
+              SettingsTile(
+                  title: Text(translate('Build')),
+                  value: Padding(
+                    padding: EdgeInsets.symmetric(vertical: 8),
+                    child: Text(bind.mainGetBuildId()),
+                  ),
+                  leading: Icon(Icons.tag)),
             SettingsTile(
                 title: Text(translate("Build Date")),
                 value: Padding(
@@ -975,11 +1000,16 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
                   ),
                   leading: Icon(Icons.fingerprint)),
             SettingsTile(
-              title: Text(translate("Privacy Statement")),
-              onPressed: (context) =>
-                  launchUrlString('https://rustdesk.com/privacy.html'),
-              leading: Icon(Icons.privacy_tip),
-            )
+                title: FutureBuilder<String>(
+                    future: bind.mainGetLicense(),
+                    builder: (context, snapshot) {
+                      final license = snapshot.data ?? '';
+                      return Text('Copyright © 2026 TBF GmbH'
+                          '${license.isEmpty ? '' : '\n$license'}');
+                    }),
+                description: Text(
+                    translate('Based on the open-source RustDesk project.')),
+                leading: Icon(Icons.copyright)),
           ],
         ),
       ],
@@ -1082,24 +1112,17 @@ void showThemeSettings(OverlayDialogManager dialogManager) async {
   }, backDismiss: true, clickMaskDismiss: true);
 }
 
+// TBFDesk: About TBFDesk (no rustdesk.com link); kept for callers of the upstream API.
 void showAbout(OverlayDialogManager dialogManager) {
   dialogManager.show((setState, close, context) {
     return CustomAlertDialog(
-      title: Text(translate('About RustDesk')),
+      title: Text('${translate('About')} TBFDesk'),
       content: Wrap(direction: Axis.vertical, spacing: 12, children: [
-        Text('Version: $version'),
-        InkWell(
-            onTap: () async {
-              const url = 'https://rustdesk.com/';
-              await launchUrl(Uri.parse(url));
-            },
-            child: Padding(
-              padding: EdgeInsets.symmetric(vertical: 8),
-              child: Text('rustdesk.com',
-                  style: TextStyle(
-                    decoration: TextDecoration.underline,
-                  )),
-            )),
+        Text('${translate('Version')}: $version'),
+        if (bind.mainGetBuildId().isNotEmpty)
+          Text('${translate('Build')} ${bind.mainGetBuildId()}'),
+        Text('Copyright © 2026 TBF GmbH'),
+        Text(translate('Based on the open-source RustDesk project.')),
       ]),
       actions: [],
     );

@@ -10,6 +10,7 @@ import 'package:zxing2/qrcode.dart';
 import '../../common.dart';
 import '../../models/platform_model.dart';
 import '../widgets/dialog.dart';
+import '../widgets/nemo_mobile.dart';
 
 class ScanPage extends StatefulWidget {
   @override
@@ -20,6 +21,7 @@ class _ScanPageState extends State<ScanPage> {
   QRViewController? controller;
   final GlobalKey qrKey = GlobalKey(debugLabel: 'QR');
   StreamSubscription? scanSubscription;
+  bool _nemoApplying = false; // TBFDesk: the scanner repeats the same code
 
   @override
   void reassemble() {
@@ -147,6 +149,23 @@ class _ScanPageState extends State<ScanPage> {
   }
 
   void showServerSettingFromQr(String data) async {
+    // TBFDesk (A3): a QR code of a `tbfdesk-setup-v1:` setup string is applied like a
+    // pasted one (summary shown, gates refreshed), then the scanner closes.
+    if (bind.mainNemoIsSetupString(text: data.trim())) {
+      if (_nemoApplying) return;
+      _nemoApplying = true;
+      await controller?.pauseCamera();
+      final ok = await nemoApplyScannedSetup(data);
+      if (!mounted) return;
+      if (ok) {
+        Navigator.of(context).pop();
+      } else {
+        _nemoApplying = false;
+        await controller?.resumeCamera();
+      }
+      return;
+    }
+    if (_nemoApplying) return;
     closeConnection();
     await controller?.pauseCamera();
     if (!data.startsWith('config=')) {

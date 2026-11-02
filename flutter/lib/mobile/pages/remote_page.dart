@@ -24,6 +24,7 @@ import '../../models/platform_model.dart';
 import '../../utils/image.dart';
 import '../widgets/dialog.dart';
 import '../widgets/custom_scale_widget.dart';
+import '../widgets/nemo_mobile.dart';
 
 final initText = '1' * 1024;
 
@@ -466,7 +467,11 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
         mainAxisSize: MainAxisSize.max,
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: <Widget>[
-          Row(
+          // TBFDesk: scrollable, so the Direct / Relay badge fits on narrow phones.
+          Flexible(
+              child: SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
               children: <Widget>[
                     IconButton(
                       color: Colors.white,
@@ -542,15 +547,20 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
                       },
                     ),
                   ]),
-          Obx(() => IconButton(
-                color: Colors.white,
-                icon: Icon(Icons.expand_more),
-                onPressed: gFFI.ffiModel.waitForFirstImage.isTrue
-                    ? null
-                    : () {
-                        setState(() => _showBar = !_showBar);
-                      },
-              )),
+          )),
+          Row(mainAxisSize: MainAxisSize.min, children: [
+            // TBFDesk (R6): green "Direct" / orange "Relay".
+            NemoSessionConnTypeBadge(id: widget.id),
+            Obx(() => IconButton(
+                  color: Colors.white,
+                  icon: Icon(Icons.expand_more),
+                  onPressed: gFFI.ffiModel.waitForFirstImage.isTrue
+                      ? null
+                      : () {
+                          setState(() => _showBar = !_showBar);
+                        },
+                )),
+          ]),
         ],
       ),
     );
