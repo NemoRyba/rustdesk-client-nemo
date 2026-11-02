@@ -83,8 +83,10 @@ class _AddressBookState extends State<AddressBook> {
       });
 
   Widget _buildAddressBookLandscape() {
+    // TBFDesk (B2): peers on the left, the tags pane on the RIGHT, as in the Sciter UI.
     return Row(
       children: [
+        _buildPeersViews(),
         Offstage(
             offstage: hideAbTagsPanel.value,
             child: Container(
@@ -113,8 +115,7 @@ class _AddressBookState extends State<AddressBook> {
                   ],
                 ),
               ),
-            ).marginOnly(right: 12.0)),
-        _buildPeersViews()
+            ).marginOnly(left: 12.0)),
       ],
     );
   }
