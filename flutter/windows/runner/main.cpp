@@ -15,7 +15,9 @@ typedef char** (*FUNC_RUSTDESK_CORE_MAIN)(int*);
 typedef void (*FUNC_RUSTDESK_FREE_ARGS)( char**, int);
 typedef int (*FUNC_RUSTDESK_GET_APP_NAME)(wchar_t*, int);
 /// Note: `--server`, `--service` are already handled in [core_main.rs].
-const std::vector<std::string> parameters_white_list = {"--install", "--cm"};
+// TBFDesk: --nemo-update-prompt is spawned by the service while the main window may be
+// open; it must start its own window instead of being dispatched to the running one.
+const std::vector<std::string> parameters_white_list = {"--install", "--cm", "--nemo-update-prompt"};
 
 const wchar_t* getWindowClassName();
 

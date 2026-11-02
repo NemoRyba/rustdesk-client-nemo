@@ -2240,6 +2240,184 @@ pub fn main_get_build_date() -> String {
     crate::BUILD_DATE.to_string()
 }
 
+// ---------------------------------------------------------------------------------------
+// TBFDesk bindings. Thin wrappers over the same Rust the Sciter UI calls (src/ui.rs ->
+// ui_interface / common / nemo_setup / nemo_direct / nemo_logs / updater); no logic here.
+// See FLUTTER-PORT.md section 4 in the superproject.
+// ---------------------------------------------------------------------------------------
+
+/// Build id (NEMO_BUILD_ID) shown bottom-left and on the gates.
+pub fn main_get_build_id() -> SyncReturn<String> {
+    SyncReturn(get_build_id())
+}
+
+/// Layer 1: is a valid device key imported? The UI shows only the provisioning gate
+/// without one.
+pub fn main_nemo_device_key_present() -> SyncReturn<bool> {
+    SyncReturn(crate::common::nemo_device_key_present())
+}
+
+/// M1-CLAIM: "" / "pending" / "denied".
+pub fn main_nemo_claim_status() -> SyncReturn<String> {
+    SyncReturn(crate::common::nemo_claim_status())
+}
+
+/// Validate a pasted device key before it is written.
+pub fn main_nemo_device_key_candidate_valid(candidate: String) -> SyncReturn<bool> {
+    SyncReturn(crate::common::nemo_device_key_candidate_valid(&candidate))
+}
+
+/// Public-half fingerprint of the imported device key ("" when none). Never the secret.
+pub fn main_nemo_device_key_fingerprint() -> SyncReturn<String> {
+    SyncReturn(crate::common::nemo_device_key_fingerprint())
+}
+
+/// Does this paste look like a `tbfdesk-setup-v1:` setup string (vs. a bare device key)?
+pub fn main_nemo_is_setup_string(text: String) -> SyncReturn<bool> {
+    SyncReturn(crate::nemo_setup::looks_like_setup(&text))
+}
+
+/// Apply a setup string, all or nothing. "" on success, otherwise the reason.
+pub fn main_nemo_apply_setup_string(text: String) -> String {
+    nemo_apply_setup_string(text)
+}
+
+/// What the last successful import changed, newline separated.
+pub fn main_nemo_setup_summary() -> String {
+    nemo_setup_summary()
+}
+
+/// Start probing the server certificate of `url` (accept-invalid, diagnostic only);
+/// poll `main_nemo_cert_info_result`.
+pub fn main_nemo_cert_info_start(url: String) {
+    crate::common::nemo_cert_info_start(url)
+}
+
+/// JSON result of the certificate probe, "" while it is still running.
+pub fn main_nemo_cert_info_result() -> String {
+    crate::common::nemo_cert_info_result()
+}
+
+/// S-B: seal the login credential to the server's login-encryption key.
+pub fn main_nemo_seal_login(
+    key: String,
+    signed_key: String,
+    username: String,
+    password: String,
+) -> String {
+    crate::common::nemo_seal_login(&key, &signed_key, &username, &password)
+}
+
+/// S-B: open the `sealed_access_token` of a login reply. "" on failure (final).
+pub fn main_nemo_open_login_reply(sealed: String) -> String {
+    crate::common::nemo_open_login_reply(&sealed)
+}
+
+/// S-B: wrap a request body in a sealed envelope. "" when sealing is not possible.
+pub fn main_nemo_seal_envelope(body_json: String) -> String {
+    crate::common::nemo_seal_envelope(&body_json).unwrap_or_default()
+}
+
+/// S-B: is the sealed-envelope request path on (`nemo-sealed-request` == "v1")?
+pub fn main_nemo_sealed_request_enabled() -> SyncReturn<bool> {
+    SyncReturn(crate::common::nemo_sealed_request_enabled())
+}
+
+/// Device-key fields for a sealed address-book request, "{}" without a device key.
+pub fn main_nemo_ab_seal_fields(id: String) -> String {
+    nemo_ab_seal_fields(id)
+}
+
+/// Verified plaintext of a sign-then-sealed address book, "" on any failure (final).
+pub fn main_nemo_unseal_ab(sealed: String) -> String {
+    nemo_unseal_ab(sealed)
+}
+
+/// The api-server as the config has it (falls back to the ID server).
+pub fn main_nemo_configured_api_server() -> SyncReturn<String> {
+    SyncReturn(nemo_configured_api_server())
+}
+
+/// `host:port` where `id` is reachable without the relay, "" when nothing is published.
+pub fn main_nemo_direct_endpoint(id: String) -> SyncReturn<String> {
+    SyncReturn(crate::nemo_direct::endpoint_label(&id))
+}
+
+/// Translated knock status line for `id`, "" when this client would not knock.
+pub fn main_nemo_knock_hint(id: String) -> SyncReturn<String> {
+    SyncReturn(nemo_knock_hint(id))
+}
+
+/// Sorted, comma-joined ids with a published direct endpoint (change detector).
+pub fn main_nemo_direct_ids() -> SyncReturn<String> {
+    SyncReturn(nemo_direct_ids())
+}
+
+/// Is the one-shot "direct only" flag set for `id`?
+pub fn main_nemo_force_direct(id: String) -> SyncReturn<bool> {
+    SyncReturn(crate::nemo_direct::force_direct(&id))
+}
+
+/// Set / clear the one-shot "direct only, no relay fallback" flag for `id`.
+pub fn main_nemo_set_force_direct(id: String, on: bool) {
+    nemo_set_force_direct(id, on)
+}
+
+/// "Reset preferences" for a peer. false when nothing was stored for it.
+pub fn main_nemo_reset_peer_prefs(id: String) -> bool {
+    nemo_reset_peer_prefs(id)
+}
+
+/// "Open log folder". "" on success, otherwise the error.
+pub fn main_nemo_open_log_folder() -> String {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    return nemo_open_log_folder();
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    return "not supported on this platform".to_owned();
+}
+
+/// "Copy recent log": JSON `{"text": .., "files": [..]}` or `{"error": <log dir>}`.
+/// Dart puts `text` on the clipboard.
+pub fn main_nemo_recent_log() -> String {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    return match nemo_recent_log() {
+        Ok((text, files)) => serde_json::json!({ "text": text, "files": files }).to_string(),
+        Err(dir) => serde_json::json!({ "error": dir }).to_string(),
+    };
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    return serde_json::json!({ "error": "not supported on this platform" }).to_string();
+}
+
+/// Update banner state `{"version": .., "auto": bool}`.
+pub fn main_nemo_update_state() -> String {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    return nemo_update_state();
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    return serde_json::json!({ "version": "", "auto": false }).to_string();
+}
+
+/// "Install now": ask the service's updater (verified download + install).
+pub fn main_nemo_update_now() {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    nemo_update_now();
+}
+
+/// Answer of the `--nemo-update-prompt` window: `choice` = "now" / "postpone".
+pub fn main_nemo_update_answer(choice: String, version: String) {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    nemo_update_answer(&choice, &version);
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    let _ = (choice, version);
+}
+
+/// Open a folder in the system file manager (created if missing).
+pub fn main_open_folder(path: String) {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    open_folder(path);
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    let _ = path;
+}
+
 pub fn translate(name: String, locale: String) -> SyncReturn<String> {
     SyncReturn(crate::client::translate_locale(name, &locale))
 }

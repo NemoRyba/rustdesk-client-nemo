@@ -9,6 +9,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_hbb/common/widgets/overlay.dart';
 import 'package:flutter_hbb/desktop/pages/desktop_tab_page.dart';
 import 'package:flutter_hbb/desktop/pages/install_page.dart';
+import 'package:flutter_hbb/desktop/pages/nemo_update_prompt.dart';
 import 'package:flutter_hbb/desktop/pages/server_page.dart';
 import 'package:flutter_hbb/desktop/screen/desktop_file_transfer_screen.dart';
 import 'package:flutter_hbb/desktop/screen/desktop_view_camera_screen.dart';
@@ -106,6 +107,9 @@ Future<void> main(List<String> args) async {
     desktopType = DesktopType.cm;
     await windowManager.ensureInitialized();
     runConnectionManagerScreen();
+  } else if (args.isNotEmpty && args.first == '--nemo-update-prompt') {
+    // TBFDesk: started by the service before it installs an update.
+    runNemoUpdatePrompt(NemoUpdatePromptArgs.parse(args));
   } else if (args.contains('--install')) {
     runInstallPage();
   } else {
@@ -386,6 +390,23 @@ void _runApp(
       },
     ),
   ));
+}
+
+void runNemoUpdatePrompt(NemoUpdatePromptArgs promptArgs) async {
+  await windowManager.ensureInitialized();
+  await initEnv(kAppTypeMain);
+  _runApp(translate('nemo_update_prompt_title'),
+      NemoUpdatePrompt(args: promptArgs), MyTheme.currentThemeMode());
+  WindowOptions windowOptions = getHiddenTitleBarWindowOptions(
+      size: const Size(520, 250), center: true, alwaysOnTop: true);
+  windowManager.waitUntilReadyToShow(windowOptions, () async {
+    await windowManager.setTitle(translate('nemo_update_prompt_title'));
+    await windowManager.setResizable(false);
+    windowManager.show();
+    windowManager.focus();
+    windowManager.setOpacity(1);
+    windowManager.setAlignment(Alignment.center);
+  });
 }
 
 void runInstallPage() async {

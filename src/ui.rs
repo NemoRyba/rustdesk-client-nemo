@@ -27,10 +27,6 @@ type Status = (i32, bool, i64, String);
 lazy_static::lazy_static! {
     // stupid workaround for https://sciter.com/forums/topic/crash-on-latest-tis-mac-sdk-sometimes/
     static ref STUPID_VALUES: Mutex<Vec<Arc<Vec<Value>>>> = Default::default();
-    /// What the last imported setup string changed, for the dialog to show. Held here
-    /// rather than returned from the apply call so the TIS side can read it after the
-    /// dialog has closed and reopened the gate.
-    static ref NEMO_SETUP_SUMMARY: Mutex<String> = Default::default();
 }
 
 #[cfg(not(any(feature = "flutter", feature = "cli")))]
@@ -667,21 +663,13 @@ impl UI {
     // machine installs it by itself (automatic updates on, installed from a package /
     // installer this client can update) or the administrator has to.
     fn nemo_update_state(&self) -> String {
-        let auto = hbb_common::config::Config::get_option("nemo-auto-update") == "Y"
-            && crate::common::nemo_update_platform().is_some()
-            && crate::platform::is_installed();
-        serde_json::json!({ "version": get_new_version(), "auto": auto }).to_string()
+        crate::ui_interface::nemo_update_state()
     }
 
     // "Install now" in the main window: the service's updater takes it within a minute
     // (no prompt, but never during a session).
     fn nemo_update_now(&self) {
-        let v = get_new_version();
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        crate::ipc::set_option(crate::updater::OPTION_UPDATE_REQUEST, &format!("{v}:{now}"));
+        crate::ui_interface::nemo_update_now()
     }
 
     fn nemo_update_prompt_args(&self) -> String {
@@ -693,14 +681,7 @@ impl UI {
         let v: serde_json::Value =
             serde_json::from_str(&NEMO_UPDATE_PROMPT.lock().unwrap()).unwrap_or_default();
         let version = v["version"].as_str().unwrap_or_default().to_owned();
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        crate::ipc::set_option(
-            crate::updater::OPTION_UPDATE_DECISION,
-            &format!("{choice}:{version}:{now}"),
-        );
+        crate::ui_interface::nemo_update_answer(&choice, &version)
     }
 
     fn get_version(&self) -> String {
@@ -714,39 +695,17 @@ impl UI {
     // ⋮ menu → "Open log folder". The log root, which holds the main log and the
     // `connect/` directory with the session logs.
     fn nemo_open_log_folder(&self) -> String {
-        match crate::nemo_logs::open_folder(&hbb_common::config::Config::log_path()) {
-            Ok(()) => String::new(),
-            Err(err) => err.to_string(),
-        }
+        nemo_open_log_folder()
     }
 
     // ⋮ menu → "Copy recent log". Puts the redacted tail of the main log and of the
     // newest session log on the clipboard. Returns "OK:<files>" or "ERR:<reason>" so
     // the UI can say what was copied, or why nothing was.
     fn nemo_copy_recent_log(&self) -> String {
-        let header = vec![
-            format!(
-                "TBFDesk {} (build {})  id {}  {}",
-                crate::VERSION,
-                get_build_id(),
-                hbb_common::config::Config::get_id(),
-                hbb_common::chrono::Local::now().format("%Y-%m-%d %H:%M:%S %z")
-            ),
-            format!("platform {} {}", std::env::consts::OS, std::env::consts::ARCH),
-            // The background service writes its own log, under a profile this user
-            // usually cannot read. Say where it is rather than pretending it is here.
-            "service log: not included (it lives in the service's own profile and needs \
-             administrator rights to read)"
-                .to_owned(),
-        ];
-        let (text, files) =
-            crate::nemo_logs::collect(&hbb_common::config::Config::log_path(), &header);
-        if files.is_empty() {
-            return format!(
-                "ERR:{}",
-                hbb_common::config::Config::log_path().display()
-            );
-        }
+        let (text, files) = match nemo_recent_log() {
+            Ok(v) => v,
+            Err(dir) => return format!("ERR:{dir}"),
+        };
         // Keep the Clipboard alive for the life of the process. On Windows and macOS the
         // OS takes a copy and dropping it is harmless, but on X11/Wayland the clipboard
         // is SERVED by its owner: arboard's serving thread stops when the last Clipboard
@@ -771,11 +730,7 @@ impl UI {
         match result {
             Ok(()) => format!(
                 "OK:{}",
-                files
-                    .iter()
-                    .map(|f| f.display().to_string())
-                    .collect::<Vec<_>>()
-                    .join("\n")
+                files.join("\n")
             ),
             Err(err) => format!("ERR:{err}"),
         }
@@ -863,29 +818,7 @@ impl UI {
     /// (`\\dc\profiles$\<user>\Videos\TBFDesk`). Not `open_url`: on Linux that
     /// prefers firefox.
     fn open_folder(&self, path: String) {
-        let path = path.trim();
-        if path.is_empty() {
-            return;
-        }
-        let path = path.strip_prefix("file://").unwrap_or(path);
-        #[cfg(windows)]
-        let path = path.replace('/', "\\");
-        #[cfg(not(windows))]
-        let path = path.to_owned();
-        let dir = std::path::Path::new(&path);
-        if !dir.exists() {
-            if let Err(e) = std::fs::create_dir_all(dir) {
-                log::error!("Failed to create folder {}: {}", path, e);
-                return;
-            }
-        }
-        #[cfg(windows)]
-        let p = "explorer";
-        #[cfg(target_os = "macos")]
-        let p = "open";
-        #[cfg(not(any(windows, target_os = "macos")))]
-        let p = "xdg-open";
-        allow_err!(std::process::Command::new(p).arg(&path).spawn());
+        open_folder(path)
     }
 
     fn change_id(&self, id: String) {
@@ -986,17 +919,7 @@ impl UI {
     // {"sealed":"v1","id":..,"device_key_pub":..,"device_key_sig":..}, or "{}" when
     // no device key is imported (the server then returns the plaintext list).
     fn nemo_ab_seal_fields(&self, id: String) -> String {
-        let (pubk, sig) = crate::common::nemo_device_sign("nemo-ab", &id);
-        if pubk.is_empty() {
-            return "{}".to_owned();
-        }
-        serde_json::json!({
-            "sealed": "v1",
-            "id": id,
-            "device_key_pub": pubk,
-            "device_key_sig": sig,
-        })
-        .to_string()
+        nemo_ab_seal_fields(id)
     }
 
     // S-B (P0) / A6: unseal an address book the server SIGN-then-SEALED to our device
@@ -1004,10 +927,7 @@ impl UI {
     // unverified list would be forgeable). Returns the verified plaintext JSON, or "" on
     // any failure (caller keeps the error path).
     fn nemo_unseal_ab(&self, sealed_b64: String) -> String {
-        match crate::common::nemo_open_sealed_signed(&sealed_b64) {
-            Some(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
-            None => String::new(),
-        }
+        nemo_unseal_ab(sealed_b64)
     }
 
     // S-B (scope b): open the "sealed_access_token" the server returns when our login
@@ -1047,56 +967,14 @@ impl UI {
     /// "" on success, otherwise the reason. On success the summary of what changed goes
     /// to the log (and is read back by nemo_setup_summary for the dialog).
     fn nemo_apply_setup_string(&self, text: String) -> String {
-        match crate::nemo_setup::parse_setup(&text) {
-            Ok(bundle) => {
-                let outcome = crate::nemo_setup::apply_setup(&bundle);
-                // apply_setup writes through Config::set_option (this GUI process only).
-                // Re-send each applied value to the service over IPC so the running
-                // rendezvous/poll adopts the new server, key and device key immediately —
-                // without this, a GUI import changes nothing for the live client until a
-                // restart (the service keeps its own config). Read the freshly written
-                // value from Config, not ui_interface's OPTIONS cache, which apply_setup
-                // did not touch.
-                //
-                // NOT through set_option: that one returns silently for the four keys a
-                // `host=…,key=…,relay=…` exe name owns, and for anything the server
-                // pushes as a fixed default — so on a locked-exe client it dropped
-                // exactly `custom-rendezvous-server`, `relay-server`, `api-server` and
-                // `key`, i.e. the whole point of the bundle. An import is a deliberate
-                // re-provisioning by the operator and therefore writes through.
-                let mut provisioned = Vec::new();
-                for &k in crate::nemo_setup::APPLIED_OPTION_KEYS {
-                    let v = hbb_common::config::Config::get_option(k);
-                    if !v.trim().is_empty() {
-                        provisioned.push((k.to_string(), v));
-                    }
-                }
-                // The override marker travels with them, so the service's own
-                // set_options does not put the exe-name server back.
-                let marker = crate::nemo_setup::OPTION_SETUP_OVERRIDES_EXE;
-                let marker_value = hbb_common::config::Config::get_option(marker);
-                if !marker_value.is_empty() {
-                    provisioned.push((marker.to_string(), marker_value));
-                }
-                crate::ui_interface::nemo_set_provisioned_options(provisioned);
-                let mut summary = outcome.applied.clone();
-                if !outcome.refused.is_empty() {
-                    summary.push(String::new());
-                    summary.push(crate::nemo_setup::REFUSED_HEADING.to_owned());
-                    summary.extend(outcome.refused.clone());
-                }
-                *NEMO_SETUP_SUMMARY.lock().unwrap() = summary.join("\n");
-                String::new()
-            }
-            Err(err) => err.to_string(),
-        }
+        nemo_apply_setup_string(text)
     }
 
     /// What the last successful import changed, newline separated, for the dialog to
     /// show. Not derived from the config afterwards: "ID server: x (was y)" is only
     /// knowable at the moment of the write.
     fn nemo_setup_summary(&self) -> String {
-        NEMO_SETUP_SUMMARY.lock().unwrap().clone()
+        nemo_setup_summary()
     }
 
     /// The api-server as the CONFIG has it, not as the UI's option cache has it.
@@ -1106,13 +984,7 @@ impl UI {
     /// the user for a server address the setup string had just supplied. Reading the
     /// config is what the request path effectively does anyway.
     fn nemo_configured_api_server(&self) -> String {
-        let api = hbb_common::config::Config::get_option("api-server");
-        if !api.trim().is_empty() {
-            return api.trim().to_owned();
-        }
-        hbb_common::config::Config::get_option("custom-rendezvous-server")
-            .trim()
-            .to_owned()
+        nemo_configured_api_server()
     }
 
     /// Where this peer can be reached WITHOUT the relay, as `host:port`, or "" when the
@@ -1130,23 +1002,7 @@ impl UI {
     /// gated and whether THIS machine holds the peer's own SPA key or the fleet-wide one.
     /// Human-readable and self-contained so the script need not compose secrets or ports.
     fn nemo_knock_hint(&self, id: String) -> String {
-        match crate::nemo_direct::knock_port_for(&id) {
-            None => String::new(),
-            Some(port) => {
-                let which = if crate::nemo_direct::has_peer_knock_key(&id) {
-                    crate::lang::translate("own key".to_owned())
-                } else {
-                    crate::lang::translate("fleet key".to_owned())
-                };
-                // e.g. "Knock :62201 · own key"
-                format!(
-                    "{} :{} \u{00B7} {}",
-                    crate::lang::translate("Knock".to_owned()),
-                    port,
-                    which
-                )
-            }
-        }
+        nemo_knock_hint(id)
     }
 
     /// Every id with a published endpoint, sorted and joined: a cheap fingerprint the
@@ -1158,28 +1014,11 @@ impl UI {
     /// sizes. Kept: the remembered password, the alias, the RDP / OS credentials and
     /// the peer info the lists show. Takes effect from the next connection.
     fn nemo_reset_peer_prefs(&self, id: String) -> bool {
-        let id = id.trim().to_owned();
-        if id.is_empty() || !hbb_common::config::PeerConfig::exists(&id) {
-            return false;
-        }
-        let old = hbb_common::config::PeerConfig::load(&id);
-        let mut fresh = hbb_common::config::PeerConfig::default();
-        fresh.password = old.password.clone();
-        fresh.info = old.info.clone();
-        for key in ["alias", "rdp_port", "rdp_username", "rdp_password", "os-username", "os-password"] {
-            if let Some(v) = old.options.get(key) {
-                fresh.options.insert(key.to_owned(), v.clone());
-            }
-        }
-        fresh.store(&id);
-        log::info!("peer {}: preferences reset to defaults", id);
-        true
+        nemo_reset_peer_prefs(id)
     }
 
     fn nemo_direct_ids(&self) -> String {
-        let mut ids = crate::nemo_direct::direct_capable_ids();
-        ids.sort();
-        ids.join(",")
+        nemo_direct_ids()
     }
 
     /// The per-peer "direct only, do not fall back" flag the Connect-directly menu entry
@@ -1190,11 +1029,7 @@ impl UI {
     }
 
     fn nemo_set_force_direct(&self, id: String, on: bool) {
-        crate::ui_interface::set_peer_option(
-            id,
-            crate::nemo_direct::PEER_OPTION_FORCE_DIRECT.to_owned(),
-            if on { "Y".to_owned() } else { String::new() },
-        );
+        nemo_set_force_direct(id, on)
     }
 
     /// Read a setup file the operator downloaded from the dashboard. Text only, and
