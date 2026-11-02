@@ -1006,7 +1006,7 @@ handler.setCursorData = function(id, hotx, hoty, width, height, colors) {
         cursors[id] = [img, hotx, hoty, width, height];
         cur_id = id;
         img = scaleCursorImage(img);
-        if (!first_mouse_event_triggered || cursor_img.style#display == 'none') {
+        if (!is_mouse_event_triggered || cursor_img.style#display == 'none') {
             self.timer(1ms, updateCursor);
         }
         cur_img = img;
@@ -1021,7 +1021,7 @@ handler.setCursorId = function(id) {
         cur_hotx = img[1];
         cur_hoty = img[2];
         img = scaleCursorImage(img[0]);
-        if (!first_mouse_event_triggered || cursor_img.style#display == 'none') {
+        if (!is_mouse_event_triggered || cursor_img.style#display == 'none') {
             self.timer(1ms, updateCursor);
         }
         cur_img = img;
