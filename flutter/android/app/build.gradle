@@ -96,8 +96,9 @@ android {
     }
 
     defaultConfig {
-        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
-        applicationId "com.carriez.flutter_hbb"
+        // Set in ../gradle.properties (`tbfdesk.applicationId`) -- read the note there
+        // before changing it. The code package (manifest `package`) stays com.carriez.flutter_hbb.
+        applicationId project.property('tbfdesk.applicationId')
         minSdkVersion 22
         targetSdkVersion 33
         versionCode flutterVersionCode.toInteger()
@@ -115,8 +116,9 @@ android {
 
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
+            // Signed with the TBFDesk release key from android/key.properties (not in git).
+            // See ../SIGNING.md. Without key.properties a release build fails at
+            // validateSigningRelease instead of silently using another key.
             signingConfig signingConfigs.release
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules'
         }
