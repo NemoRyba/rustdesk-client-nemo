@@ -1055,18 +1055,60 @@ pub fn video_save_directory(root: bool) -> String {
         }
     }
 
-    // TBFDesk: on Windows the default is the machine-wide folder the installed service
-    // already records incoming sessions to, not the user's Videos folder (which on a
-    // domain is often redirected to the roaming profile share). The user folders below
-    // stay as the fallback when it cannot be created.
+    // TBFDesk, Windows: rank the default folders so a network share comes last.
+    //   1. the user's Videos\{appname}, if it is on a local disk
+    //   2. the machine-wide folder the installed service records incoming sessions to
+    //   3. the other user folders on a local disk (Videos, Desktop, home)
+    //   4. user folders on a network share (a Videos folder redirected to the roaming
+    //      profile, e.g. \\dc\profiles$\<user>\Videos) - only if nothing else works
     #[cfg(windows)]
     {
+        // (path, create it if missing)
+        let mut user_dirs: Vec<(std::path::PathBuf, bool)> = Vec::new();
+        if let Some(user) = directories_next::UserDirs::new() {
+            if let Some(video_dir) = user.video_dir() {
+                user_dirs.push((video_dir.join(&appname), true));
+                user_dirs.push((video_dir.to_path_buf(), false));
+            }
+            if let Some(desktop_dir) = user.desktop_dir() {
+                user_dirs.push((desktop_dir.to_path_buf(), false));
+            }
+            user_dirs.push((user.home_dir().to_path_buf(), false));
+        }
+        let pick = |path: &std::path::Path, create: bool| -> String {
+            if create {
+                try_create(path)
+            } else if path.exists() {
+                path.to_string_lossy().to_string()
+            } else {
+                "".to_string()
+            }
+        };
+        let (network, local): (Vec<_>, Vec<_>) = user_dirs
+            .into_iter()
+            .partition(|(p, _)| crate::platform::windows::is_network_path(p));
+        // 1. local Videos\{appname}
+        if let Some((path, true)) = local.first() {
+            let dir = try_create(path);
+            if !dir.is_empty() {
+                return dir;
+            }
+        }
+        // 2. ProgramData
         let dir = try_create(&program_data_dir);
         if !dir.is_empty() {
             return dir;
         }
+        // 3. other local user folders, then 4. user folders on a network share
+        for (path, create) in local.iter().chain(network.iter()) {
+            let dir = pick(path, *create);
+            if !dir.is_empty() {
+                return dir;
+            }
+        }
     }
 
+    #[cfg(not(windows))]
     if let Some(user) = directories_next::UserDirs::new() {
         if let Some(video_dir) = user.video_dir() {
             let dir = try_create(&video_dir.join(&appname));
