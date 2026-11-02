@@ -1025,14 +1025,16 @@ pub fn video_save_directory(root: bool) -> String {
         }
     };
 
+    #[cfg(windows)]
+    let program_data_dir = {
+        let drive = std::env::var("SystemDrive").unwrap_or("C:".to_owned());
+        std::path::PathBuf::from(format!("{drive}\\ProgramData\\{appname}\\recording",))
+    };
     if root {
         // Currently, only installed windows run as root
         #[cfg(windows)]
         {
-            let drive = std::env::var("SystemDrive").unwrap_or("C:".to_owned());
-            let dir =
-                std::path::PathBuf::from(format!("{drive}\\ProgramData\\{appname}\\recording",));
-            return dir.to_string_lossy().to_string();
+            return program_data_dir.to_string_lossy().to_string();
         }
     }
     // Get directory from config file otherwise --server will use the old value from global var.
@@ -1048,6 +1050,18 @@ pub fn video_save_directory(root: bool) -> String {
         let mut path = home.to_owned();
         path.push_str(format!("/{appname}/ScreenRecord").as_str());
         let dir = try_create(&std::path::Path::new(&path));
+        if !dir.is_empty() {
+            return dir;
+        }
+    }
+
+    // TBFDesk: on Windows the default is the machine-wide folder the installed service
+    // already records incoming sessions to, not the user's Videos folder (which on a
+    // domain is often redirected to the roaming profile share). The user folders below
+    // stay as the fallback when it cannot be created.
+    #[cfg(windows)]
+    {
+        let dir = try_create(&program_data_dir);
         if !dir.is_empty() {
             return dir;
         }
