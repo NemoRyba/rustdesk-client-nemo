@@ -50,6 +50,13 @@ fn initialize(app_dir: &str, custom_client_config: &str) {
     } else {
         crate::read_custom_client(custom_client_config);
     }
+    // TBFDesk: policy poll on mobile, while the app runs (FLUTTER-PORT §10 mobile 9).
+    // Desktop starts it from start_server; it only polls when management is enabled.
+    #[cfg(all(
+        feature = "nemo-management-client",
+        any(target_os = "android", target_os = "ios")
+    ))]
+    crate::nemo_management_client::start();
     #[cfg(target_os = "android")]
     {
         // flexi_logger can't work when android_logger initialized.
@@ -2379,13 +2386,10 @@ pub fn main_nemo_open_log_folder() -> String {
 /// "Copy recent log": JSON `{"text": .., "files": [..]}` or `{"error": <log dir>}`.
 /// Dart puts `text` on the clipboard.
 pub fn main_nemo_recent_log() -> String {
-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    return match nemo_recent_log() {
+    match nemo_recent_log() {
         Ok((text, files)) => serde_json::json!({ "text": text, "files": files }).to_string(),
         Err(dir) => serde_json::json!({ "error": dir }).to_string(),
-    };
-    #[cfg(any(target_os = "android", target_os = "ios"))]
-    return serde_json::json!({ "error": "not supported on this platform" }).to_string();
+    }
 }
 
 /// Update banner state `{"version": .., "auto": bool}`.

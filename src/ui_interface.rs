@@ -2142,7 +2142,6 @@ pub fn nemo_set_force_direct(id: String, on: bool) {
 /// "Copy recent log": the redacted tail of the main log and of the newest session log,
 /// with a header naming this build and machine. Ok((text, files)) or Err(log dir) when
 /// there was nothing to read. The caller puts `text` on the clipboard.
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub fn nemo_recent_log() -> Result<(String, Vec<String>), String> {
     let header = vec![
         format!(

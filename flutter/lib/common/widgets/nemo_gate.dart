@@ -21,8 +21,12 @@ const Color kNemoAccent = Color(0xFF0B7285);
 
 enum _NemoGateState { none, noKey, claimPending, claimDenied, login }
 
-_NemoGateState _currentGate() {
-  if (!bind.mainNemoDeviceKeyPresent()) return _NemoGateState.noKey;
+_NemoGateState _currentGate({bool requireDeviceKey = true}) {
+  // Mobile (FLUTTER-PORT §10 mobile 1): fleet is optional, a phone without a device key
+  // is a normal standalone client; the claim and sign-in gates still apply.
+  if (!bind.mainNemoDeviceKeyPresent()) {
+    return requireDeviceKey ? _NemoGateState.noKey : _NemoGateState.none;
+  }
   final claim = bind.mainNemoClaimStatus().trim();
   if (claim == 'pending') return _NemoGateState.claimPending;
   if (claim == 'denied') return _NemoGateState.claimDenied;
@@ -35,7 +39,11 @@ _NemoGateState _currentGate() {
 class NemoGate extends StatefulWidget {
   final Widget child;
 
-  const NemoGate({Key? key, required this.child}) : super(key: key);
+  /// false on mobile: without a device key the app runs as a standalone client.
+  final bool requireDeviceKey;
+
+  const NemoGate({Key? key, required this.child, this.requireDeviceKey = true})
+      : super(key: key);
 
   @override
   State<NemoGate> createState() => _NemoGateState2();
@@ -48,7 +56,7 @@ class _NemoGateState2 extends State<NemoGate> {
   @override
   void initState() {
     super.initState();
-    _gate = _currentGate();
+    _gate = _currentGate(requireDeviceKey: widget.requireDeviceKey);
     _timer = Timer.periodic(const Duration(seconds: 3), (_) => _recheck());
   }
 
@@ -61,7 +69,7 @@ class _NemoGateState2 extends State<NemoGate> {
   // Re-render on a transition only.
   void _recheck() {
     if (!mounted) return;
-    final g = _currentGate();
+    final g = _currentGate(requireDeviceKey: widget.requireDeviceKey);
     if (g != _gate) setState(() => _gate = g);
   }
 
@@ -71,7 +79,7 @@ class _NemoGateState2 extends State<NemoGate> {
       // Subscribe: an import or a sign-in/-out re-evaluates immediately.
       nemoGateRefresh.value;
       gFFI.userModel.userName.value;
-      _gate = _currentGate();
+      _gate = _currentGate(requireDeviceKey: widget.requireDeviceKey);
       switch (_gate) {
         case _NemoGateState.none:
           return widget.child;

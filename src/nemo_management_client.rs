@@ -252,7 +252,9 @@ fn apply_session_revocation(terminate_sessions_before: u64) {
         OPTION_NEMO_TERMINATE_ACKED.to_owned(),
         terminate_sessions_before.to_string(),
     );
-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    // Also on Android: a phone that is being controlled must drop its sessions when the
+    // server revokes them, same as a desktop host. iOS has no host side (no server module).
+    #[cfg(not(target_os = "ios"))]
     {
         let n = crate::server::terminate_all_authed_sessions(&format!(
             "server revoked sessions (terminate_sessions_before={terminate_sessions_before})"

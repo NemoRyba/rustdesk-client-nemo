@@ -38,10 +38,9 @@ pub mod flutter;
 pub mod flutter_ffi;
 use common::*;
 mod auth_2fa;
-#[cfg(all(
-    feature = "nemo-management-client",
-    not(any(target_os = "android", target_os = "ios"))
-))]
+// Also on Android / iOS (FLUTTER-PORT §10 mobile 9): there it is started from the
+// Flutter init and polls while the app runs.
+#[cfg(feature = "nemo-management-client")]
 mod nemo_management_client;
 // First-run provisioning in one importable string (device key + the server settings a
 // fresh client cannot reach the server without). Unconditional: the CLI import path and
@@ -54,7 +53,7 @@ pub mod nemo_direct;
 pub mod nemo_control;
 // "Open log folder" / "Copy recent log" in the ⋮ menu: the main log and the session log
 // together, redacted, so a support exchange is one paste.
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+// Also on mobile: "Share log" collects through it (open_folder is desktop-only in use).
 pub mod nemo_logs;
 #[cfg(feature = "cli")]
 pub mod cli;
