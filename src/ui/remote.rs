@@ -300,6 +300,30 @@ function holdGrab() {{
         if (entered) handler.enter(handler.get_keyboard_mode());
     }});
 }}
+// The remote cursor, handed over by the session window (remote.tis
+// applyDisplayWindowsCursor): PNG + hotspot in remote pixels, scaled here to this
+// window's picture. No PNG = the local system cursor.
+function setRemoteCursor(png = null, hx = 0, hy = 0, rs = 1.0) {{
+    if (!png) {{ handler.style#cursor = undefined; return; }}
+    var img = Image.fromBytes(png);
+    if (!img) return;
+    var w = handler.box(#width, #inner);
+    var h = handler.box(#height, #inner);
+    var f = w.toFloat() / R.w;
+    if (h.toFloat() / R.h < f) f = h.toFloat() / R.h;
+    f *= rs;
+    if (f > 0.0001 && (f < 0.999 || f > 1.001)) {{
+        var sw = (img.width * f).toInteger();
+        var sh = (img.height * f).toInteger();
+        if (sw > 0 && sh > 0) {{
+            var src = img;
+            img = new Image(sw, sh, function(gfx) {{ gfx.drawImage(src, 0, 0, sw, sh); }});
+            hx = (hx * f).toInteger();
+            hy = (hy * f).toInteger();
+        }}
+    }}
+    handler.style.cursor(img, hx, hy);
+}}
 handler.onMouse = function(evt) {{
     var mask = 0, dx = 0, dy = 0;
     switch (evt.type) {{
@@ -931,6 +955,7 @@ impl sciter::EventHandler for SciterSession {
         fn set_view_all(String);
         fn open_display_window(i32, String, String, String);
         fn close_display_windows();
+        fn set_display_windows_cursor(Value, i32, i32, f64);
         fn remove_dir_all(i32, String, bool, bool);
         fn confirm_delete_files(i32, i32);
         fn set_no_confirm(i32);
@@ -1194,6 +1219,27 @@ impl SciterSession {
 
     fn close_display_windows(&mut self) {
         close_all_display_windows();
+    }
+
+    /// Show the remote cursor over every display window: `png` (bytes; anything else =
+    /// the local system cursor) with its hotspot in remote pixels; `scale` is the extra
+    /// remote-pixel factor (a Linux peer's display scale). Called by remote.tis on the UI
+    /// thread, where the display windows live. Without it the pointer over a display
+    /// window was always the local arrow: resize, text and drag cursors never showed.
+    fn set_display_windows_cursor(&mut self, png: Value, hotx: i32, hoty: i32, scale: f64) {
+        let hwnds: Vec<sciter::types::HWINDOW> =
+            DISPLAY_WINDOWS.with(|w| w.borrow().values().map(|(_, win)| win.get_hwnd()).collect());
+        for hwnd in hwnds {
+            let Ok(root) = Element::from_window(hwnd) else {
+                continue;
+            };
+            let r = if png.as_bytes().is_some() {
+                root.call_function("setRemoteCursor", &make_args!(png.clone(), hotx, hoty, scale))
+            } else {
+                root.call_function("setRemoteCursor", &make_args!())
+            };
+            allow_err!(r);
+        }
     }
 
     fn has_file_clipboard(&self) -> bool {
