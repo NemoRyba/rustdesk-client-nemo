@@ -2064,19 +2064,22 @@ pub fn nemo_configured_api_server() -> String {
 
 /// A short, translated knock status line for `id` ("Knock :62201 · own key"), or "" when
 /// this client would not knock before dialling it.
+// translate_locale, not translate: translate is compiled out on Android/iOS. Same result on
+// desktop -- the fork's "lang" option is never empty (default "de"), so the system locale
+// argument is never consulted.
 pub fn nemo_knock_hint(id: String) -> String {
     match crate::nemo_direct::knock_port_for(&id) {
         None => String::new(),
         Some(port) => {
             let which = if crate::nemo_direct::has_peer_knock_key(&id) {
-                crate::lang::translate("own key".to_owned())
+                crate::lang::translate_locale("own key".to_owned(), "")
             } else {
-                crate::lang::translate("fleet key".to_owned())
+                crate::lang::translate_locale("fleet key".to_owned(), "")
             };
             // e.g. "Knock :62201 · own key"
             format!(
                 "{} :{} \u{00B7} {}",
-                crate::lang::translate("Knock".to_owned()),
+                crate::lang::translate_locale("Knock".to_owned(), ""),
                 port,
                 which
             )
@@ -2203,4 +2206,176 @@ pub fn open_folder(path: String) {
     #[cfg(not(any(windows, target_os = "macos")))]
     let p = "xdg-open";
     allow_err!(std::process::Command::new(p).arg(&path).spawn());
+}
+
+// ---------------------------------------------------------------------------------------
+// H25, shared by both UIs: the peer password for a command-line launch, never from argv.
+// Sciter calls peer_password_from_args (ui.rs). Flutter resolves --password-file /
+// --password-stdin in core_main (peer_password_from_secret_flags) BEFORE Flutter starts:
+// handed to a running instance inside the URL (D-Bus / window message, not argv), or kept
+// here for this process's Dart side to take once (main_nemo_take_boot_password).
+// ---------------------------------------------------------------------------------------
+/// H25: resolve the peer password without requiring it on the command line.
+///
+/// A positional password is visible in `/proc/<pid>/cmdline` -- which is world-readable --
+/// for the WHOLE session, because the Sciter GUI runs in this same process. It also lands
+/// in shell history. Two safe alternatives are accepted instead:
+///
+///   --password-stdin        read one line from stdin
+///   --password-file <path>  read it from a file, refused if group/other-readable
+///
+/// The positional form still works so existing runbooks do not break, but it warns. It is
+/// now also guarded against swallowing the next FLAG: `--connect <id> --relay` used to set
+/// the password to the literal "--relay".
+///
+/// Returns (password, remaining args) -- the password-bearing arguments are removed so
+/// they are not re-parsed downstream.
+pub fn peer_password_from_args(rest: &[String]) -> (String, Vec<String>) {
+    let mut out = Vec::with_capacity(rest.len());
+    let mut pass: Option<String> = None;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--password-stdin" => {
+                let mut line = String::new();
+                match std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut line) {
+                    Ok(_) => pass = Some(line.trim_end_matches(['\n', '\r']).to_owned()),
+                    Err(err) => log::error!("failed to read the password from stdin: {err}"),
+                }
+                i += 1;
+            }
+            "--password-file" => {
+                match rest.get(i + 1) {
+                    Some(path) => match read_peer_password_file(path) {
+                        Ok(v) => pass = Some(v),
+                        Err(err) => log::error!("failed to read {path}: {err}"),
+                    },
+                    None => log::error!("--password-file needs a path"),
+                }
+                i += 2;
+            }
+            // The positional password, but only if it is not a flag.
+            other if pass.is_none() && out.is_empty() && !other.starts_with("--") => {
+                eprintln!(
+                    "warning: passing the peer password as an argument exposes it in `ps` \
+                     for the whole session; prefer --password-stdin or --password-file"
+                );
+                pass = Some(other.to_owned());
+                i += 1;
+            }
+            _ => {
+                out.push(rest[i].clone());
+                i += 1;
+            }
+        }
+    }
+    (pass.unwrap_or_default(), out)
+}
+
+pub fn read_peer_password_file(path: &str) -> std::io::Result<String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(path)?.permissions().mode();
+        if mode & 0o077 != 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!("{path} is readable by group or other (mode {:o})", mode & 0o777),
+            ));
+        }
+    }
+    Ok(std::fs::read_to_string(path)?
+        .trim_end_matches(['\n', '\r'])
+        .to_owned())
+}
+
+/// Only the two safe forms (--password-stdin, --password-file <path>), for a launch path
+/// whose positional arguments are not a password (Flutter: `rustdesk --connect <id> ...`).
+/// Returns (password if one was given, the arguments with those flags removed).
+pub fn peer_password_from_secret_flags(args: &[String]) -> (Option<String>, Vec<String>) {
+    let mut out = Vec::with_capacity(args.len());
+    let mut pass = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--password-stdin" | "--password-file" => {
+                let n = if args[i] == "--password-file" { 2 } else { 1 };
+                let (p, _) = peer_password_from_args(&args[i..(i + n).min(args.len())]);
+                if !p.is_empty() {
+                    pass = Some(p);
+                }
+                i += n;
+            }
+            _ => {
+                out.push(args[i].clone());
+                i += 1;
+            }
+        }
+    }
+    (pass, out)
+}
+
+static NEMO_BOOT_PEER_PASSWORD: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Keep the launch password for this process's own Flutter UI (no running instance).
+pub fn nemo_set_boot_peer_password(password: String) {
+    if let Ok(mut p) = NEMO_BOOT_PEER_PASSWORD.lock() {
+        *p = Some(password);
+    }
+}
+
+/// The launch password, once: a second call (or no password given) returns "".
+pub fn nemo_take_boot_peer_password() -> String {
+    NEMO_BOOT_PEER_PASSWORD
+        .lock()
+        .ok()
+        .and_then(|mut p| p.take())
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod nemo_h25_tests {
+    use super::{peer_password_from_args, peer_password_from_secret_flags};
+
+    /// H25. The positional form must keep working (runbooks), but it must not swallow a
+    /// flag -- `--connect <id> --relay` used to set the password to "--relay", which both
+    /// leaked nothing and broke the flag.
+    #[test]
+    fn a_flag_is_never_taken_as_the_peer_password() {
+        let (pass, rest) = peer_password_from_args(&["--relay".to_owned()]);
+        assert_eq!(pass, "");
+        assert_eq!(rest, vec!["--relay".to_owned()]);
+
+        let (pass, rest) = peer_password_from_args(&["hunter2".to_owned(), "--relay".to_owned()]);
+        assert_eq!(pass, "hunter2");
+        assert_eq!(rest, vec!["--relay".to_owned()]);
+
+        let (pass, rest) = peer_password_from_args(&[]);
+        assert_eq!(pass, "");
+        assert!(rest.is_empty());
+    }
+
+    /// The password-bearing arguments are consumed, so they are not re-parsed downstream
+    /// and cannot reach a session as an option.
+    #[test]
+    fn password_file_argument_is_consumed() {
+        let (_pass, rest) = peer_password_from_args(&[
+            "--password-file".to_owned(),
+            "/nonexistent".to_owned(),
+            "--relay".to_owned(),
+        ]);
+        assert_eq!(rest, vec!["--relay".to_owned()]);
+    }
+
+    /// Flutter launch path: only the safe forms are taken; the id and other flags stay.
+    #[test]
+    fn secret_flags_only_take_the_safe_forms() {
+        let args: Vec<String> = ["--connect", "123", "--password-file", "/nonexistent", "--relay"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let (pass, rest) = peer_password_from_secret_flags(&args);
+        assert_eq!(pass, None); // unreadable file: no password, but the flag is consumed
+        assert_eq!(rest, vec!["--connect", "123", "--relay"]);
+    }
 }

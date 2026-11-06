@@ -2269,6 +2269,12 @@ pub fn main_get_build_id() -> SyncReturn<String> {
     SyncReturn(get_build_id())
 }
 
+/// H25: the peer password a `--connect <id> --password-file|--password-stdin` launch
+/// resolved in core_main (mode-checked file / stdin), taken once ("" afterwards).
+pub fn main_nemo_take_boot_password() -> SyncReturn<String> {
+    SyncReturn(crate::ui_interface::nemo_take_boot_peer_password())
+}
+
 /// Layer 1: is a valid device key imported? The UI shows only the provisioning gate
 /// without one.
 pub fn main_nemo_device_key_present() -> SyncReturn<bool> {

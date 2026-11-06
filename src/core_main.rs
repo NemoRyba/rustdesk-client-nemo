@@ -1190,10 +1190,24 @@ fn import_config(path: &str) {
 /// If it returns [`None`], then the process will terminate, and flutter gui will not be started.
 /// If it returns [`Some`], then the process will continue, and flutter gui will be started.
 #[cfg(feature = "flutter")]
-fn core_main_invoke_new_connection(mut args: std::env::Args) -> Option<Vec<String>> {
+fn core_main_invoke_new_connection(args: std::env::Args) -> Option<Vec<String>> {
     let mut authority = None;
     let mut id = None;
     let mut param_array = vec![];
+    // H25 parity with Sciter: --password-file / --password-stdin, never the password on
+    // argv. Resolved here once: a running instance gets it inside the URL below (D-Bus /
+    // window message), this process's own Flutter UI takes it via
+    // main_nemo_take_boot_password when it parses the same flags.
+    let (secret, argv) =
+        crate::ui_interface::peer_password_from_secret_flags(&args.collect::<Vec<String>>());
+    if let Some(p) = secret.as_ref() {
+        crate::ui_interface::nemo_set_boot_peer_password(p.clone());
+        param_array.push(format!(
+            "password={}",
+            url::form_urlencoded::byte_serialize(p.as_bytes()).collect::<String>()
+        ));
+    }
+    let mut args = argv.into_iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--connect" | "--play" | "--file-transfer" | "--view-camera" | "--port-forward"

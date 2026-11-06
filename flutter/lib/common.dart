@@ -2300,6 +2300,14 @@ bool handleUriLink({List<String>? cmdArgs, Uri? uri, String? uriString}) {
         password = args[i + 1];
         i++;
         break;
+      // TBFDesk H25 (as Sciter): the password from a file or stdin, never on argv. The
+      // Rust core read it before Flutter started (file mode-checked).
+      case '--password-file':
+      case '--password-stdin':
+        final p = bind.mainNemoTakeBootPassword();
+        if (p.isNotEmpty) password = p;
+        if (args[i] == '--password-file') i++;
+        break;
       case '--switch_uuid':
         switchUuid = args[i + 1];
         i++;
