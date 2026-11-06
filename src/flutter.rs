@@ -272,6 +272,8 @@ struct DisplaySessionInfo {
     #[cfg(feature = "vram")]
     gpu_output_ptr: usize,
     notify_render_type: Option<RenderType>,
+    // TBFDesk: size of the last frame drawn into the pixel-buffer texture. See set_size.
+    rendered_size: Option<(usize, usize)>,
 }
 
 // Video Texture Renderer in Flutter
@@ -340,11 +342,25 @@ impl Default for VideoRenderer {
 }
 
 impl VideoRenderer {
+    /// Returns true when a frame of exactly this size is already on screen: the caller
+    /// then announces it to Flutter right away.
+    ///
+    /// TBFDesk: the first frame can arrive before Flutter has handled the peer info (fast
+    /// direct connections). Flutter then sets `waitForFirstImage` again in handlePeerInfo,
+    /// which lays a transparent blocker over the image (remote_page `emptyOverlay`) until
+    /// the NEXT frame is announced. On a static remote screen no next frame comes, and the
+    /// remote mouse stayed dead until something on the remote screen changed.
     #[inline]
-    fn set_size(&mut self, display: usize, width: usize, height: usize) {
+    fn set_size(&mut self, display: usize, width: usize, height: usize) -> bool {
         let mut sessions_lock = self.map_display_sessions.write().unwrap();
         if let Some(info) = sessions_lock.get_mut(&display) {
             info.size = (width, height);
+            if info.texture_rgba_ptr != usize::default()
+                && info.rendered_size == Some((width, height))
+            {
+                info.notify_render_type = Some(RenderType::PixelBuffer);
+                return true;
+            }
             info.notify_render_type = None;
         } else {
             sessions_lock.insert(
@@ -355,9 +371,11 @@ impl VideoRenderer {
                     #[cfg(feature = "vram")]
                     gpu_output_ptr: usize::default(),
                     notify_render_type: None,
+                    rendered_size: None,
                 },
             );
         }
+        false
     }
 
     fn register_pixelbuffer_texture(&self, display: usize, ptr: usize) {
@@ -367,6 +385,7 @@ impl VideoRenderer {
                 if info.texture_rgba_ptr != usize::default() {
                     info.texture_rgba_ptr = usize::default();
                 }
+                info.rendered_size = None;
                 #[cfg(feature = "vram")]
                 if info.gpu_output_ptr != usize::default() {
                     return;
@@ -384,6 +403,9 @@ impl VideoRenderer {
                         ptr
                     );
                 }
+                if info.texture_rgba_ptr != ptr as TextureRgbaPtr {
+                    info.rendered_size = None; // a new texture shows nothing yet
+                }
                 info.texture_rgba_ptr = ptr as _;
                 info.notify_render_type = None;
             } else {
@@ -396,6 +418,7 @@ impl VideoRenderer {
                             #[cfg(feature = "vram")]
                             gpu_output_ptr: usize::default(),
                             notify_render_type: None,
+                            rendered_size: None,
                         },
                     );
                 }
@@ -436,6 +459,7 @@ impl VideoRenderer {
                             size: (0, 0),
                             gpu_output_ptr: ptr,
                             notify_render_type: None,
+                            rendered_size: None,
                         },
                     );
                 }
@@ -483,6 +507,7 @@ impl VideoRenderer {
                     rgba.align() as _,
                 )
             };
+            info.rendered_size = Some((rgba.w, rgba.h));
         }
         if info.notify_render_type != Some(RenderType::PixelBuffer) {
             info.notify_render_type = Some(RenderType::PixelBuffer);
@@ -1780,7 +1805,12 @@ pub fn session_set_size(session_id: SessionID, display: usize, width: usize, hei
             if !h.displays.contains(&display) {
                 h.displays.push(display);
             }
-            h.renderer.set_size(display, width, height);
+            if h.renderer.set_size(display, width, height) {
+                // A frame of this size is already shown (see VideoRenderer::set_size).
+                if let Some(stream) = &h.event_stream {
+                    stream.add(EventToUI::Texture(display, false));
+                }
+            }
             break;
         }
     }

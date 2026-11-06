@@ -3099,7 +3099,10 @@ class NemoDisplayMode {
       return;
     }
     final mons = await refreshMonitors();
-    if ((m == span || m == windows) && mons.length < 2) return;
+    if ((m == span || m == windows) && mons.length < 2) {
+      debugPrint('display mode $m: only ${mons.length} monitor(s) -- not applied');
+      return;
+    }
     final prev = mode.value;
     // Set first: the display windows closed by _leave() report back, and that
     // must not be taken as the user closing one (Sciter does the same).
@@ -3115,6 +3118,9 @@ class NemoDisplayMode {
     } else if (m == windows) {
       ok = await _enterWindows(mons);
     }
+    // Same log line as the Sciter UI (remote.tis), read by the lab's display-mode tests.
+    debugPrint('display mode $m: ${mons.length} monitors, displays '
+        '${selectedDisplays()}${ok ? '' : ' -- NOT applied, back to single'}');
     if (!ok) {
       mode.value = single;
       await _restorePlacement();
@@ -3350,20 +3356,31 @@ class NemoDisplayMode {
     if (_restoreStarted) return;
     _restoreStarted = true;
     await Future.delayed(const Duration(milliseconds: 1200));
-    if (ffi.closed || find(ffi) == null) return;
+    if (ffi.closed || find(ffi) == null) {
+      debugPrint('display mode: restore skipped (session closed or not registered)');
+      return;
+    }
     // Upstream's "use all my displays for the remote session" has already
     // opened its own windows; don't fight it.
     if (bind.sessionGetUseAllMyDisplaysForTheRemoteSession(
             sessionId: sessionId) ==
         'Y') {
+      debugPrint('display mode: restore skipped (use all my displays is on)');
       return;
     }
     final saved = await bind.sessionGetOption(
             sessionId: sessionId, arg: kNemoOptionDisplayMode) ??
         '';
-    if (saved != all && saved != span && saved != windows) return;
+    if (saved != all && saved != span && saved != windows) {
+      debugPrint('display mode: saved "$saved" -> single');
+      return;
+    }
     await _loadShown();
-    if (mode.value != single || pi.currentDisplay == kAllDisplayValue) return;
+    if (mode.value != single || pi.currentDisplay == kAllDisplayValue) {
+      debugPrint('display mode $saved: saved mode not restored (mode ${mode.value}, '
+          'display ${pi.currentDisplay})');
+      return;
+    }
     await setMode(saved, persist: false);
   }
 }

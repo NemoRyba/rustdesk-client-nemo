@@ -80,9 +80,33 @@ class _NemoGateState2 extends State<NemoGate> {
       nemoGateRefresh.value;
       gFFI.userModel.userName.value;
       _gate = _currentGate(requireDeviceKey: widget.requireDeviceKey);
+      final gated = _gate != _NemoGateState.none;
+      // The real home page stays MOUNTED behind a gate -- not painted, no pointer, no
+      // keyboard focus (nothing behind the gate is usable), but its initState runs. On
+      // desktop it registers the main window's multi-window handler, which session
+      // windows call (open a display in its own window, window info, ...). Without it a
+      // session started by link / command line while the gate shows lost those features
+      // ("windows" display mode opened no second window).
+      return Stack(fit: StackFit.expand, children: [
+        ExcludeFocus(
+          excluding: gated,
+          child: IgnorePointer(
+            ignoring: gated,
+            child: Offstage(
+              offstage: gated,
+              child: TickerMode(enabled: !gated, child: widget.child),
+            ),
+          ),
+        ),
+        if (gated) _gateWidget(),
+      ]);
+    });
+  }
+
+  Widget _gateWidget() {
       switch (_gate) {
         case _NemoGateState.none:
-          return widget.child;
+          return const SizedBox.shrink();
         case _NemoGateState.login:
           return NemoLoginPage(required: true, onLoggedIn: _recheck);
         case _NemoGateState.noKey:
@@ -108,7 +132,6 @@ class _NemoGateState2 extends State<NemoGate> {
             primary: false,
           );
       }
-    });
   }
 }
 
