@@ -1074,6 +1074,11 @@ pub fn core_main() -> Option<Vec<String>> {
                 }
             }
             return None;
+        } else if args[0] == "--terminal" || args[0] == "--terminal-admin" {
+            // TBFDesk: console session of the Sciter UI (src/nemo_console.rs, never
+            // returns). The Flutter build opens its in-app terminal for these instead.
+            #[cfg(all(not(feature = "flutter"), any(windows, target_os = "linux")))]
+            crate::nemo_console::run(&args[1..], args[0] == "--terminal-admin");
         } else if args[0] == "--cm" {
             // call connection manager to establish connections
             // meanwhile, return true to call flutter window to show control panel

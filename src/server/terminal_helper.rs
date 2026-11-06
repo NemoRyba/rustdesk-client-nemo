@@ -292,6 +292,39 @@ pub fn encode_resize_message(rows: u16, cols: u16) -> Vec<u8> {
     encode_helper_message(MSG_TYPE_RESIZE, &payload)
 }
 
+/// TBFDesk: which shell a console (terminal) session gets on this Windows computer, set on
+/// the CONTROLLED side (settings row "Terminal shell", or pushed by policy):
+/// `""`/`powershell` = PowerShell (upstream order: PowerShell 7, Windows PowerShell, cmd),
+/// `cmd` = Command Prompt. The option is a choice, never a path: anything else falls back
+/// to PowerShell, and only the fixed programs below are ever started.
+pub const OPTION_NEMO_TERMINAL_SHELL: &str = "nemo-terminal-shell";
+
+/// The configured shell kind, normalised to "powershell" or "cmd".
+pub fn nemo_terminal_shell_kind() -> &'static str {
+    nemo_shell_kind_of(&hbb_common::config::Config::get_option(OPTION_NEMO_TERMINAL_SHELL))
+}
+
+fn nemo_shell_kind_of(v: &str) -> &'static str {
+    if v.trim().eq_ignore_ascii_case("cmd") {
+        "cmd"
+    } else {
+        "powershell"
+    }
+}
+
+/// The shell program for a kind from [`nemo_terminal_shell_kind`].
+pub fn shell_for_kind(kind: &str) -> String {
+    if nemo_shell_kind_of(kind) == "cmd" {
+        let root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_string());
+        let cmd = std::path::Path::new(&root).join("System32").join("cmd.exe");
+        if cmd.exists() {
+            return cmd.to_string_lossy().to_string();
+        }
+        return std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string());
+    }
+    get_default_shell()
+}
+
 /// Get the default shell for Windows.
 pub fn get_default_shell() -> String {
     // Try PowerShell Core first (absolute paths only)
@@ -707,6 +740,7 @@ pub fn launch_terminal_helper_with_token(
     terminal_id: i32,
     rows: u16,
     cols: u16,
+    shell_kind: &str,
 ) -> Result<HelperProcessInfo> {
     let exe_path =
         std::env::current_exe().map_err(|e| anyhow!("Failed to get current exe path: {}", e))?;
@@ -714,8 +748,13 @@ pub fn launch_terminal_helper_with_token(
     // Build command line arguments (without exe path to avoid escaping issues)
     // lpApplicationName will contain the exe path separately
     let cmd_args = format!(
-        "--terminal-helper {} {} {} {} {}",
-        input_pipe_name, output_pipe_name, rows, cols, terminal_id
+        "--terminal-helper {} {} {} {} {} {}",
+        input_pipe_name,
+        output_pipe_name,
+        rows,
+        cols,
+        terminal_id,
+        nemo_shell_kind_of(shell_kind)
     );
 
     log::debug!("Launching terminal helper for terminal {}", terminal_id);
@@ -815,7 +854,9 @@ pub fn is_helper_process_running(handle: HANDLE) -> bool {
 }
 
 /// Run terminal helper process
-/// Args: --terminal-helper <input_pipe_name> <output_pipe_name> <rows> <cols> <terminal_id>
+/// Args: --terminal-helper <input_pipe_name> <output_pipe_name> <rows> <cols> <terminal_id> [<shell kind>]
+/// The shell kind (TBFDesk) is decided by the service from its config; the helper runs as
+/// the user and does not read the service's config itself.
 pub fn run_terminal_helper(args: &[String]) -> Result<()> {
     if args.len() < 5 {
         return Err(anyhow!(
@@ -857,7 +898,7 @@ pub fn run_terminal_helper(args: &[String]) -> Result<()> {
     let pty_system = portable_pty::native_pty_system();
     let pty_pair = pty_system.openpty(pty_size).context("Failed to open PTY")?;
 
-    let shell = get_default_shell();
+    let shell = shell_for_kind(args.get(5).map(|s| s.as_str()).unwrap_or(""));
     log::debug!("Using shell: {}", shell);
 
     let mut cmd = CommandBuilder::new(&shell);

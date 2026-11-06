@@ -109,8 +109,8 @@ pub fn generate_service_id() -> String {
 fn get_default_shell() -> String {
     #[cfg(target_os = "windows")]
     {
-        // Use shared implementation from terminal_helper
-        super::terminal_helper::get_default_shell()
+        // Shared implementation from terminal_helper; TBFDesk: honours nemo-terminal-shell
+        super::terminal_helper::shell_for_kind(super::terminal_helper::nemo_terminal_shell_kind())
     }
     #[cfg(not(target_os = "windows"))]
     {
@@ -1421,6 +1421,7 @@ impl TerminalServiceProxy {
             open.terminal_id,
             open.rows as u16,
             open.cols as u16,
+            super::terminal_helper::nemo_terminal_shell_kind(),
         )?;
 
         // Use HelperProcessGuard for RAII cleanup - terminates process on error

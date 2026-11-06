@@ -556,6 +556,18 @@ impl UI {
         new_remote(id, remote_type, force_relay)
     }
 
+    // TBFDesk: console (terminal) session in the computer's own terminal window; "" or the
+    // error text for a message box.
+    fn nemo_open_console(&mut self, id: String, admin: bool, force_relay: bool) -> String {
+        #[cfg(any(windows, target_os = "linux"))]
+        return crate::nemo_console::open_window(&id, admin, force_relay);
+        #[cfg(not(any(windows, target_os = "linux")))]
+        {
+            let _ = (id, admin, force_relay);
+            return "Not supported".to_owned();
+        }
+    }
+
     fn is_process_trusted(&mut self, _prompt: bool) -> bool {
         is_process_trusted(_prompt)
     }
@@ -1082,6 +1094,7 @@ impl sciter::EventHandler for UI {
         fn closing(i32, i32, i32, i32);
         fn get_size();
         fn new_remote(String, String, bool);
+        fn nemo_open_console(String, bool, bool);
         fn send_wol(String);
         fn remove_peer(String);
         fn remove_discovered(String);

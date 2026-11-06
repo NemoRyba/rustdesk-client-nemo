@@ -1176,6 +1176,10 @@ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
                 enabled: enabled,
                 fakeValue: fakeValue,
                 tip: _nemoTip(kOptionEnableTerminal)),
+            // TBFDesk: which shell a console session opens on this Windows computer
+            // (same two rows as the Sciter settings, index.tis kind "tshell").
+            if (isWindows)
+              ..._nemoTerminalShellRadios(context, enabled, () => setState(() {})),
             _OptionCheckBox(
                 context, 'Enable TCP tunneling', kOptionEnableTunnel,
                 enabled: enabled,
@@ -3332,6 +3336,9 @@ const Map<String, String> _kNemoSettingTips = {
   'enable-camera': "Let the connecting person view this computer's camera.",
   'enable-terminal':
       'Allow opening a command line (terminal) on this computer.',
+  'tshell-powershell': 'Console sessions on this computer open PowerShell.',
+  'tshell-cmd':
+      'Console sessions on this computer open the Command Prompt (cmd).',
   'enable-remote-restart':
       'Allow the connecting person to restart this computer.',
   'enable-tunnel':
@@ -3400,6 +3407,42 @@ const Map<String, String> _kNemoSettingTips = {
 
 /// TBFDesk: the untranslated tooltip key for a settings row id, or null.
 String? _nemoTip(String id) => _kNemoSettingTips[id];
+
+/// TBFDesk: the "Terminal shell" choice (PowerShell / cmd) for console sessions on this
+/// Windows computer. Stored as kNemoOptionTerminalShell ('' or 'cmd'); greyed when the
+/// option is fixed by policy.
+List<Widget> _nemoTerminalShellRadios(
+    BuildContext context, bool enabled, VoidCallback refresh) {
+  final fixed = isOptionFixed(kNemoOptionTerminalShell);
+  final current =
+      bind.mainGetOptionSync(key: kNemoOptionTerminalShell) == 'cmd'
+          ? 'cmd'
+          : 'powershell';
+  final Function(String)? onChanged = (enabled && !fixed)
+      ? (String v) async {
+          await bind.mainSetOption(
+              key: kNemoOptionTerminalShell, value: v == 'cmd' ? 'cmd' : '');
+          refresh();
+        }
+      : null;
+  return [
+    _nemoTipped(
+        _nemoTip('tshell-powershell'),
+        _Radio<String>(context,
+            value: 'powershell',
+            groupValue: current,
+            label: '${translate('Terminal shell')}: PowerShell',
+            onChanged: onChanged)),
+    _nemoTipped(
+        _nemoTip('tshell-cmd'),
+        _Radio<String>(context,
+            value: 'cmd',
+            groupValue: current,
+            label:
+                '${translate('Terminal shell')}: ${translate('Command Prompt')} (cmd)',
+            onChanged: onChanged)),
+  ];
+}
 
 /// TBFDesk: wraps [child] in a tooltip showing translate([tip]) (no-op for null).
 Widget _nemoTipped(String? tip, Widget child) {

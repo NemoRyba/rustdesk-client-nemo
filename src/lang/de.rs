@@ -972,5 +972,14 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("Support", "Support"),
         ("Build", "Build"),
         ("Use the ⋮ menu for a direct-only connection.", "Über das ⋮-Menü ausschließlich direkt verbinden."),
+        ("Terminal (command line only)", "Terminal (nur Befehlszeile)"),
+        ("Terminal shell", "Terminal-Shell"),
+        ("No permission of terminal", "Keine Berechtigung für das Terminal (auf dem Zielcomputer ist „Terminal zulassen“ aus)"),
+        ("Press Enter to close this window.", "Eingabetaste drücken, um dieses Fenster zu schließen."),
+        ("Closed", "Beendet"),
+        ("Command Prompt", "Eingabeaufforderung"),
+        ("Console sessions on this computer open PowerShell.", "Konsolensitzungen auf diesem Computer öffnen PowerShell."),
+        ("Console sessions on this computer open the Command Prompt (cmd).", "Konsolensitzungen auf diesem Computer öffnen die Eingabeaufforderung (cmd)."),
+        ("No terminal program found. Install one of: konsole, gnome-terminal, xfce4-terminal, xterm.", "Kein Terminalprogramm gefunden. Bitte eines installieren: konsole, gnome-terminal, xfce4-terminal, xterm."),
     ].iter().cloned().collect();
 }

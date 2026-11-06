@@ -210,6 +210,12 @@ function createNewConnect(id, type) {
         return;
     }
     handler.set_remote_id(id);
+    if (type == "terminal" || type == "terminal-admin") {
+        // Console session: opens in the computer's own terminal window (nemo_console.rs).
+        var err = handler.nemo_open_console(id, type == "terminal-admin", force_relay);
+        if (err) msgbox("custom-error", "Error", err);
+        return;
+    }
     if (!handler.new_remote(id, type, force_relay)) {
         // Already open (the window was brought forward where possible). Sessions to
         // other computers are not affected.
@@ -1573,6 +1579,8 @@ var NEMO_SETTING_TIPS = {
     "enable-file-transfer": "Allow copying files to and from this computer during a session.",
     "enable-camera": "Let the connecting person view this computer's camera.",
     "enable-terminal": "Allow opening a command line (terminal) on this computer.",
+    "tshell-powershell": "Console sessions on this computer open PowerShell.",
+    "tshell-cmd": "Console sessions on this computer open the Command Prompt (cmd).",
     "enable-remote-restart": "Allow the connecting person to restart this computer.",
     "enable-tunnel": "Allow forwarding a network port through the connection (advanced).",
     "enable-block-input": "Let the controller block this computer's own keyboard and mouse during a session.",
@@ -1699,6 +1707,14 @@ class NemoSettingsDialog: Reactor.Component {
             this.pEnable(perm, "enable-file-transfer", translate('Enable file transfer'));
             this.pEnable(perm, "enable-camera", translate('Enable camera'));
             this.pEnable(perm, "enable-terminal", translate('Enable terminal'));
+            if (is_win) {
+                // TBFDesk: which shell a console session opens on this computer
+                // (nemo-terminal-shell: "" = PowerShell, "cmd" = Command Prompt).
+                var tshell = handler.get_option("nemo-terminal-shell") == "cmd" ? "cmd" : "powershell";
+                var tshell_fixed = handler.is_option_fixed("nemo-terminal-shell");
+                perm.push(this.tRow("tshell-powershell", translate('Terminal shell') + ": PowerShell", tshell == "powershell", tshell_fixed, "tshell"));
+                perm.push(this.tRow("tshell-cmd", translate('Terminal shell') + ": " + translate('Command Prompt') + " (cmd)", tshell == "cmd", tshell_fixed, "tshell"));
+            }
             this.pEnable(perm, "enable-remote-restart", translate('Enable remote restart'));
             this.pEnable(perm, "enable-tunnel", translate('Enable TCP tunneling'));
             if (is_win) this.pEnable(perm, "enable-block-input", translate('Enable blocking user input'));
@@ -1857,6 +1873,8 @@ class NemoSettingsDialog: Reactor.Component {
             var am = id == "approve-mode-password" ? "password" : (id == "approve-mode-click" ? "click" : default_option_approve_mode);
             handler.set_option('approve-mode', am);
             if (passwordArea) passwordArea.update();
+        } else if (kind == "tshell") {
+            handler.set_option("nemo-terminal-shell", id == "tshell-cmd" ? "cmd" : "");
         } else if (kind == "tpl") {
             handler.set_option('temporary-password-length', id.substring(4));
             if (passwordArea) passwordArea.update();

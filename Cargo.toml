@@ -130,6 +130,8 @@ winapi = { version = "0.3", features = [
     "winspool",
     # attach_parent_console (debug runs print the log to the launching shell)
     "wincon",
+    # nemo_console: the Sciter console session allocates its own console window
+    "consoleapi",
     "processenv",
     "fileapi",
     "handleapi",

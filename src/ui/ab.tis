@@ -370,6 +370,8 @@ class SessionList: Reactor.Component {
                     <li #connect-direct>{translate('Connect directly (no relay)')}</li>
                     <li #connect-relay>{translate('Connect via relay')}</li>
                     <li #transfer>{translate('Transfer file')}</li>
+                    <li #terminal>{translate('Terminal (command line only)')}</li>
+                    <li #terminal-admin>{translate('Terminal (Run as administrator)')}</li>
                     <li #tunnel>{translate('TCP tunneling')}</li>
                     <li #force-always-relay><span>{svg_checkmark}</span>{translate('Always connect via relay')}</li>
                     <li #reset-prefs>{translate('Reset preferences')}</li>
@@ -453,6 +455,10 @@ class SessionList: Reactor.Component {
         this.$(#rdp).style.set{
             display: (platform == "Windows" && is_win) ? "block" : "none",
         };
+        // elevated shell: Windows peers only (as the Flutter peer card)
+        this.$(#terminal-admin).style.set{
+            display: platform == "Windows" ? "block" : "none",
+        };
         this.$(#forget-password).style.set{
             display: handler.peer_has_password(id) ? "block" : "none",
         };
@@ -518,6 +524,8 @@ class SessionList: Reactor.Component {
             createNewConnect(id + "/r", "connect");
         } else if (action == "transfer") {
             createNewConnect(id, "file-transfer");
+        } else if (action == "terminal" || action == "terminal-admin") {
+            createNewConnect(id, action);
         } else if (action == "wol") {
             handler.send_wol(id);
         } else if (action == "remove") {

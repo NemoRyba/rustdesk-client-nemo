@@ -55,6 +55,10 @@ pub mod nemo_control;
 // together, redacted, so a support exchange is one paste.
 // Also on mobile: "Share log" collects through it (open_folder is desktop-only in use).
 pub mod nemo_logs;
+// Console (terminal) session of the Sciter UI in the computer's own terminal window; the
+// Flutter UI has its in-app terminal page instead.
+#[cfg(all(not(feature = "flutter"), any(windows, target_os = "linux")))]
+pub mod nemo_console;
 #[cfg(feature = "cli")]
 pub mod cli;
 #[cfg(not(target_os = "ios"))]

@@ -87,6 +87,9 @@ const String kWindowEventNemoDisplayWindowClosed = "tbf_display_window_closed";
 // the displays picked for the multi-display modes ('' = all, else "0,2").
 const String kNemoOptionDisplayMode = "nemo-display-mode";
 const String kNemoOptionDisplaysShown = "nemo-displays-shown";
+// TBFDesk: shell of console (terminal) sessions on this Windows computer: '' = PowerShell,
+// 'cmd' = Command Prompt (src/server/terminal_helper.rs OPTION_NEMO_TERMINAL_SHELL).
+const String kNemoOptionTerminalShell = "nemo-terminal-shell";
 
 const String kOptionViewStyle = "view_style";
 const String kOptionScrollStyle = "scroll_style";
