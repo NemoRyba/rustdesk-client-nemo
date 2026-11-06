@@ -620,9 +620,16 @@ class _NemoBuildId extends StatelessWidget {
 
 /// Optional sign-in in a dialog (Login buttons). true = signed in.
 Future<bool?> nemoLoginDialog() {
+  // DialogManager.show builds a CustomAlertDialog; the card brings its own frame, so
+  // the dialog only hosts it (no padding, card's own width).
   return gFFI.dialogManager.show<bool>((setState, close, context) {
-    return _nemoDialogBody(
-        onCancel: () => close(false), onLoggedIn: () => close(true));
+    return CustomAlertDialog(
+      contentPadding: 0,
+      contentBoxConstraints: const BoxConstraints(maxWidth: 340 + 84),
+      onCancel: () => close(false),
+      content: _nemoDialogBody(
+          onCancel: () => close(false), onLoggedIn: () => close(true)),
+    );
   });
 }
 
