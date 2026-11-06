@@ -372,6 +372,7 @@ function enterDisplayWindows() {
         var ok = handler.open_display_window(i, rrect, mrect, title);
         stdout.println("display mode windows: display " + (i + 1) + " -> monitor " + m.x + "," + m.y + (ok ? "" : " FAILED"));
     }
+    applyDisplayWindowsCursor();   // the new display windows start with the current remote cursor
     return true;
 }
 
@@ -474,6 +475,7 @@ function layoutViewAll() {
                 placeTile(t, i, fitInto(d, s.mon.x, s.mon.y, s.mon.w, s.mon.h));
             }
         }
+        applyTileCursors();
         return;
     }
     // "windows": this window shows exactly one display; give it the whole window.
@@ -483,6 +485,7 @@ function layoutViewAll() {
             var d = pi.displays[i];
             if (d) placeTile(t, i, fitInto(d, 0, 0, availW, availH));
         }
+        applyTileCursors();
         return;
     }
     // toFloat(): in TIScript int / int is INTEGER division, so 1280 / 2560 was 0 and
@@ -513,6 +516,7 @@ function layoutViewAll() {
         };
         view_all_layout[i] = { x: d.x, y: d.y, fit: fit };
     }
+    applyTileCursors();
 }
 
 function handleTileMouse(evt, dispIndex) {
@@ -977,6 +981,11 @@ function scaleCursorImage(img) {
 }
 
 var useSystemCursor = true;
+// The remote cursor goes on every surface the pointer can be over. With one display that
+// is the session's <video>. In "all" / "span" / "windows" the tiles lie on top of it and
+// take the pointer, and "windows" puts the other displays in windows of their own; each
+// needs the cursor itself, scaled like ITS picture, or the pointer there is always the
+// local arrow (no resize, drag or text cursor in the multi-display modes).
 function updateCursor(system=false) {
     stdout.println("Update cursor, system: " + system);
     useSystemCursor = system;
@@ -985,6 +994,48 @@ function updateCursor(system=false) {
     } else if (cur_img) {
         handler.style.cursor(cur_img, (cur_hotx * cursor_scale).toInteger(), (cur_hoty * cursor_scale).toInteger());
     }
+    applyTileCursors();
+    applyDisplayWindowsCursor();
+}
+
+// `img` resized by `factor` (1 = remote pixels).
+function scaledCursorImage(img, factor) {
+    if (factor <= 0.0001 || (factor > 0.999 && factor < 1.001)) return img;
+    var w = (img.width * factor).toInteger();
+    var h = (img.height * factor).toInteger();
+    if (w < 1 || h < 1) return img;
+    function paint(gfx) {
+        gfx.drawImage(img, 0, 0, w, h);
+    }
+    return new Image(w, h, paint);
+}
+
+// Remote pixels -> cursor pixels besides the picture's own fit: a Linux peer reports its
+// cursor in logical pixels (same factor as cursor_scale in adaptDisplay).
+function remoteCursorFactor() {
+    return isRemoteLinux() ? display_remote_scale : 1.;
+}
+
+function applyTileCursors() {
+    if (!view_all_mode || !view_all_wrapper) return;
+    var c = cursors[cur_id];
+    for (var t in view_all_wrapper.$$(video.remote-tile)) {
+        if (useSystemCursor || !c) {
+            t.style#cursor = undefined;
+            continue;
+        }
+        var L = view_all_layout[t.attributes["dispidx"].toInteger()];
+        var f = (L ? L.fit : cursor_scale) * remoteCursorFactor();
+        t.style.cursor(scaledCursorImage(c[0], f), (c[1] * f).toInteger(), (c[2] * f).toInteger());
+    }
+}
+
+// The display windows scale it to their own picture (remote.rs display_window_html).
+function applyDisplayWindowsCursor() {
+    if (display_mode != "windows") return;
+    var c = cursors[cur_id];
+    if (useSystemCursor || !c) handler.set_display_windows_cursor(null, 0, 0, 1.);
+    else handler.set_display_windows_cursor(c[5], c[1], c[2], remoteCursorFactor());
 }
 
 function refreshCursor() {
@@ -1003,7 +1054,7 @@ handler.setCursorData = function(id, hotx, hoty, width, height, colors) {
     var img = Image.fromBytes(colors);
     if (img) {
         image_binded = true;
-        cursors[id] = [img, hotx, hoty, width, height];
+        cursors[id] = [img, hotx, hoty, width, height, colors];   // colors: PNG, for display windows
         cur_id = id;
         img = scaleCursorImage(img);
         if (!is_mouse_event_triggered || cursor_img.style#display == 'none') {
