@@ -152,6 +152,21 @@ pub mod client {
         }
         super::start_grab_loop();
         *lock = true;
+        drop(lock);
+        // TBFDesk: a session window that opens under the mouse pointer asks for the grab
+        // (pointer enter / focus) BEFORE the session is connected, i.e. before this loop
+        // exists. rdev then has no command channel ("Failed to send grab command, no
+        // sender"), but the session is already recorded as owner, so every later request
+        // is "already owner" and nothing is ever sent again: no keyboard for the whole
+        // session unless the pointer leaves and re-enters. Re-apply it now.
+        #[cfg(target_os = "linux")]
+        {
+            let owner = GRAB_STATE.lock().unwrap().owner;
+            if let Some(session_id) = owner {
+                log::debug!("[grab] loop started: re-applying grab for 0x{:x}", session_id);
+                apply_run_grab_if_owner(session_id, false);
+            }
+        }
     }
 
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
