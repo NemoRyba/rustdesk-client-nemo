@@ -1026,7 +1026,7 @@ fn secure_attention_request(peer: &str, event: &Event) -> Option<Vec<KeyEvent>> 
         return None;
     }
     if is_press {
-        log::info!("Ctrl+Alt+{:?}: sending the Secure Attention Sequence to the peer", key);
+        hbb_common::log::info!("Ctrl+Alt+{:?}: sending the Secure Attention Sequence to the peer", key);
         Some(vec![client::event_ctrl_alt_del()])
     } else {
         // The press was replaced by the SAS; its release must not reach the peer alone.
