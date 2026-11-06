@@ -248,7 +248,8 @@ impl<T: InvokeUiSession> Session<T> {
             .map_or(false, |v| v == "Y");
         if chosen {
             lc.view_style.clone()
-        } else if hbb_common::config::UserDefaultConfig::load().get(keys::OPTION_VIEW_STYLE)
+        } else if hbb_common::config::UserDefaultConfig::load()
+            .get(hbb_common::config::keys::OPTION_VIEW_STYLE)
             == "adaptive"
         {
             // The user changed the per-user default (Flutter settings) to "adaptive";
