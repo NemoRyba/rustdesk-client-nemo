@@ -60,3 +60,22 @@
 * Do not refactor unrelated code.
 * Do not make formatting-only changes.
 * Keep naming/style consistent with nearby code.
+
+## TBFDesk: both UIs ship (parity rule)
+
+This fork ships the **Sciter** UI (`src/ui/`, `src/ui.rs`, `src/ui/remote.rs`) and the
+**Flutter** UI (`flutter/`, `src/flutter_ffi.rs`, `src/flutter.rs`) in parallel; machines
+switch from one to the other one by one. Until Sciter is retired:
+
+* Every user-visible change, feature or fix goes into **both** UIs in the same branch —
+  Flutter desktop and, where it applies, Flutter mobile (Android). A Sciter-only or
+  Flutter-only change is incomplete.
+* Every menu entry, input field and setting must exist in both and do the same thing
+  (same option key and value, same locked/managed greying, same validation). The element
+  checklist is `FLUTTER-PARITY-ELEMENTS.md` in the superproject; the `parity` test stage
+  fails when a Sciter element has no Flutter line.
+* Record the change as a row in the superproject's `FLUTTER-PORT.md` §5 and test it in
+  both UIs — including the multi-display modes (single / all / span / windows) on two
+  monitors: multi-monitor is the normal case for TBFDesk users.
+* FFI: `src/flutter_ffi.rs` functions are thin wrappers over the same Rust function the
+  Sciter binding calls — no logic in the FFI layer, no Rust logic re-implemented in Dart.
