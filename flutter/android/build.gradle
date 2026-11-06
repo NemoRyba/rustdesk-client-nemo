@@ -10,6 +10,30 @@ rootProject.buildDir = '../build'
 subprojects {
     project.buildDir = "${rootProject.buildDir}/${project.name}"
 }
+// AGP 8+ needs a namespace in every Android module. Older Flutter plugins (e.g.
+// external_path 1.0.3) still declare it only as package= in their manifest: take it from
+// there (same value, so nothing changes for the plugin).
+subprojects {
+    plugins.withId("com.android.library") {
+        project.android {
+            if (namespace == null) {
+                def mf = project.file("src/main/AndroidManifest.xml")
+                def m = mf.exists() ? (mf.text =~ /package="([^"]+)"/) : null
+                namespace = (m != null && m.find()) ? m.group(1) : project.group.toString()
+            }
+        }
+    }
+    // Plugins that pin an old compileSdk fail current AndroidX's AAR check (needs >= 34):
+    // compile every plugin against API 34. Not higher: from API 35 the SDK's android.jar
+    // marks many getters strictly @Nullable (34 and below: "recently nullable", a warning),
+    // which breaks third-party plugin Kotlin (package_info_plus 4.2.0). Only the
+    // compile-time API surface changes; the app itself compiles against 37.
+    project.afterEvaluate {
+        if (project.plugins.hasPlugin("com.android.library")) {
+            project.android.compileSdkVersion 34
+        }
+    }
+}
 subprojects {
     project.evaluationDependsOn(':app')
 }

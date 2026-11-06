@@ -82,9 +82,19 @@ protobuf {
 }
 
 android {
+    // AGP 8+: the namespace lives here (the manifest's package= attribute is refused). It
+    // stays the code package com.carriez.flutter_hbb; the store id is applicationId below.
+    namespace "com.carriez.flutter_hbb"
     // TBFDesk: SDK levels in ../gradle.properties (operator decision: Android 17 = API 37
     // is the minimum and the test device, Pixel 7a).
-    compileSdkVersion project.property('tbfdesk.compileSdk').toInteger()
+    // A number, or an SDK hash: from API 37 on the SDK names platforms with a minor
+    // version ("android-37.0"), which AGP 7.3.1 only finds by the hash form.
+    def tbfCompileSdk = project.property('tbfdesk.compileSdk').toString()
+    if (tbfCompileSdk.isInteger()) {
+        compileSdkVersion tbfCompileSdk.toInteger()
+    } else {
+        compileSdkVersion tbfCompileSdk
+    }
     sourceSets {
         main.java.srcDirs += 'src/main/kotlin'
 
@@ -95,6 +105,8 @@ android {
     compileOptions {
         targetCompatibility JavaVersion.VERSION_1_8
         sourceCompatibility JavaVersion.VERSION_1_8
+        // qr_code_scanner (QR import of the setup string) requires it under AGP 8.
+        coreLibraryDesugaringEnabled true
     }
 
     defaultConfig {
@@ -138,4 +150,5 @@ dependencies {
     implementation("org.jetbrains.kotlin:kotlin-stdlib") { version { strictly("1.9.10") } }
     implementation 'com.caverock:androidsvg-aar:1.4'
     implementation "rustls:rustls-platform-verifier:0.1.1"
+    coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.1.5'
 }

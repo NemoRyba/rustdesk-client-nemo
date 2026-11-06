@@ -321,16 +321,18 @@ class MainActivity : FlutterActivity() {
             if (mime_type.isNotEmpty()) {
                 codecObject.put("mime_type", mime_type)
                 val caps = codec.getCapabilitiesForType(mime_type)
+                // Nullable since the API 37 SDK: no video capabilities = not usable here.
+                val video = caps.videoCapabilities ?: return@forEach
                 if (codec.isEncoder) {
                     // Encoder's max_height and max_width are interchangeable
-                    if (!caps.videoCapabilities.isSizeSupported(w,h) && !caps.videoCapabilities.isSizeSupported(h,w)) {
+                    if (!video.isSizeSupported(w,h) && !video.isSizeSupported(h,w)) {
                         return@forEach
                     }
                 }
-                codecObject.put("min_width", caps.videoCapabilities.supportedWidths.lower)
-                codecObject.put("max_width", caps.videoCapabilities.supportedWidths.upper)
-                codecObject.put("min_height", caps.videoCapabilities.supportedHeights.lower)
-                codecObject.put("max_height", caps.videoCapabilities.supportedHeights.upper)
+                codecObject.put("min_width", video.supportedWidths.lower)
+                codecObject.put("max_width", video.supportedWidths.upper)
+                codecObject.put("min_height", video.supportedHeights.lower)
+                codecObject.put("max_height", video.supportedHeights.upper)
                 val surface = caps.colorFormats.contains(COLOR_FormatSurface);
                 codecObject.put("surface", surface)
                 val nv12 = caps.colorFormats.contains(COLOR_FormatYUV420SemiPlanar)
@@ -338,8 +340,8 @@ class MainActivity : FlutterActivity() {
                 if (!(nv12 || surface)) {
                     return@forEach
                 }
-                codecObject.put("min_bitrate", caps.videoCapabilities.bitrateRange.lower / 1000)
-                codecObject.put("max_bitrate", caps.videoCapabilities.bitrateRange.upper / 1000)
+                codecObject.put("min_bitrate", video.bitrateRange.lower / 1000)
+                codecObject.put("max_bitrate", video.bitrateRange.upper / 1000)
                 if (!codec.isEncoder) {
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                         codecObject.put("low_latency", caps.isFeatureSupported(MediaCodecInfo.CodecCapabilities.FEATURE_LowLatency))
