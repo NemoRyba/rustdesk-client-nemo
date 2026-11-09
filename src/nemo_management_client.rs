@@ -411,12 +411,14 @@ fn build_policy_report() -> String {
 /// it connected anyway. The next successful poll replaces everything exactly as before.
 /// Once per process; also called by the client's outbound check, because a session
 /// process (Sciter --connect / --terminal) never starts the poll.
+/// Deliberately NOT conditional on `management_enabled()`: the management dialog (both
+/// UIs) lets the user untick "enabled" or blank the server, and the policy does not lock
+/// those keys. Gating on them made "untick, restart" lift every restriction. A policy,
+/// once accepted, holds until a SERVER replaces it; switching the poll off only stops
+/// the updates.
 pub(crate) fn restore_cached_policy() {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
-        if !management_enabled() {
-            return;
-        }
         let p = previous_policy();
         let mut n = 0;
         for (key, value) in &p.options {
