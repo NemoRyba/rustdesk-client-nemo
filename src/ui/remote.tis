@@ -405,7 +405,11 @@ function setDisplayMode(mode, persist = true) {
     display_mode = mode;
     leaveDisplayMode(prev);
     var ok = true;
-    if (mode == "all") enterViewAll();
+    if (mode == "all") {
+        enterViewAll();
+        // same line as the Flutter UI and the other modes here; the lab reads it
+        stdout.println("display mode all: " + localMonitors().length + " monitors");
+    }
     else if (mode == "span") ok = enterSpan();
     else if (mode == "windows") ok = enterDisplayWindows();
     if (!ok) { display_mode = "single"; restoreWindowPlacement(); }
