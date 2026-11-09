@@ -1819,31 +1819,48 @@ pub fn session_set_size(session_id: SessionID, display: usize, width: usize, hei
 #[inline]
 pub fn session_register_pixelbuffer_texture(session_id: SessionID, display: usize, ptr: usize) {
     for s in sessions::get_sessions() {
-        if let Some(h) = s
-            .ui_handler
-            .session_handlers
-            .read()
-            .unwrap()
-            .get(&session_id)
-        {
-            h.renderer.register_pixelbuffer_texture(display, ptr);
+        let found = match s.ui_handler.session_handlers.read().unwrap().get(&session_id) {
+            Some(h) => {
+                h.renderer.register_pixelbuffer_texture(display, ptr);
+                true
+            }
+            None => false,
+        };
+        if found {
+            if ptr != 0 {
+                nemo_refresh_new_texture(&s, display);
+            }
             break;
         }
     }
+}
+
+/// TBFDesk: a display's first frame can arrive before Flutter has created its texture
+/// (a new display window, "all" mode adding a display, a session start), and frames for a
+/// display without a texture are dropped. On a STATIC remote screen no further frame ever
+/// comes: the display stayed black / "waiting for image" for good (lab: display 2 in "all"
+/// mode, Windows single mode on the GPU-texture path). A new texture therefore asks the
+/// peer for a fresh full frame of that display -- one keyframe per texture.
+fn nemo_refresh_new_texture(s: &FlutterSession, display: usize) {
+    log::info!("texture for display {display} registered: requesting a fresh frame");
+    s.refresh_video(display as i32);
 }
 
 #[inline]
 pub fn session_register_gpu_texture(_session_id: SessionID, _display: usize, _output_ptr: usize) {
     #[cfg(feature = "vram")]
     for s in sessions::get_sessions() {
-        if let Some(h) = s
-            .ui_handler
-            .session_handlers
-            .read()
-            .unwrap()
-            .get(&_session_id)
-        {
-            h.renderer.register_gpu_output(_display, _output_ptr);
+        let found = match s.ui_handler.session_handlers.read().unwrap().get(&_session_id) {
+            Some(h) => {
+                h.renderer.register_gpu_output(_display, _output_ptr);
+                true
+            }
+            None => false,
+        };
+        if found {
+            if _output_ptr != 0 {
+                nemo_refresh_new_texture(&s, _display);
+            }
             break;
         }
     }

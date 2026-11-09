@@ -2959,6 +2959,7 @@ class NemoDisplayMode {
     final cur = _byPeer[ffi.id];
     if (cur == null || !identical(cur.ffi, ffi)) return;
     _byPeer.remove(ffi.id);
+    cur._topoTimer?.cancel();
     // TBFDesk: the session went away while spanning: give the window its tab
     // bar (only the UI was "full screen", see _enterSpan) and its placement
     // back, before the closing window saves its position.
@@ -2982,6 +2983,9 @@ class NemoDisplayMode {
   bool _savedMaximized = false;
   // "span" hid the tab bar and window border (UI-only full screen).
   bool _spanChromeHidden = false;
+  // Monitor / display hot-plug watch (see _checkTopology).
+  Timer? _topoTimer;
+  String _topoSig = '';
 
   NemoDisplayMode._(this.ffi) {
     mode =
@@ -3339,6 +3343,51 @@ class NemoDisplayMode {
     }
   }
 
+  // Monitors plugged in / out on EITHER side during a session (same as the Sciter UI,
+  // remote.tis startTopologyWatch). On a change of the local monitor layout or the
+  // remote display list, the mode the user chose for this peer (kNemoOptionDisplayMode,
+  // not overwritten here) is applied again for what exists now: span/windows without a
+  // second local monitor -> "all" for the time being, a remote with fewer than 2
+  // displays -> single; when the monitor / display comes back, the chosen mode returns.
+  // Re-entering also rebuilds every window and pointer mapping a monitor change leaves
+  // stale (lab: after unplugging monitor 2, every click landed on the remote's bottom
+  // edge).
+  Future<void> _checkTopology() async {
+    if (ffi.closed || find(ffi) == null) {
+      _topoTimer?.cancel();
+      return;
+    }
+    if (_busy) return;
+    final mons = await refreshMonitors();
+    final sig = '${mons.map((r) => '${r.left},${r.top},${r.width},${r.height}').join(';')}'
+        '|${pi.displays.map((d) => '${d.x},${d.y},${d.width},${d.height}').join(';')}';
+    if (_topoSig.isEmpty) {
+      _topoSig = sig;
+      return;
+    }
+    if (sig == _topoSig) return;
+    _topoSig = sig;
+    final want = await bind.sessionGetOption(
+            sessionId: sessionId, arg: kNemoOptionDisplayMode) ??
+        '';
+    final chosen = (want == all || want == span || want == windows) ? want : single;
+    var now = chosen;
+    if (chosen != single && !supported) {
+      now = single;
+    } else if ((chosen == span || chosen == windows) && mons.length < 2) {
+      now = all;
+    }
+    debugPrint('display topology changed: ${mons.length} local monitors, '
+        '${pi.displays.length} remote displays; chosen $chosen, now $now');
+    _busy = true;
+    try {
+      if (mode.value != single) await _setMode(single, false, null);
+      if (now != single) await _setMode(now, false, null);
+    } finally {
+      _busy = false;
+    }
+  }
+
   // A window this one opened for a display was closed. On purpose (we left
   // "windows"): nothing to do. By hand: that display would be streamed into
   // nothing, so the session returns to "all" in this window.
@@ -3357,6 +3406,10 @@ class NemoDisplayMode {
   Future<void> restoreSaved() async {
     if (_restoreStarted) return;
     _restoreStarted = true;
+    // Only the session's own window gets here (not display windows): watch for
+    // monitors plugged in / out on either side for the rest of the session.
+    _topoTimer ??= Timer.periodic(
+        const Duration(seconds: 2), (_) => _checkTopology());
     await Future.delayed(const Duration(milliseconds: 1200));
     if (ffi.closed || find(ffi) == null) {
       debugPrint('display mode: restore skipped (session closed or not registered)');

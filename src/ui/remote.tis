@@ -417,6 +417,52 @@ function setDisplayMode(mode, persist = true) {
     if (header) header.update();
 }
 
+// Monitors plugged in / out on EITHER side during a session. Every 2 s the local monitor
+// layout and the remote display list are compared with the last seen; on a change the mode
+// the user chose for this peer (OPTION_DISPLAY_MODE, not overwritten here) is applied again
+// for what exists now: span/windows without a second local monitor -> "all" for the time
+// being, a remote with fewer than 2 displays -> single; when the monitor or display comes
+// back, the chosen mode returns. Re-entering also rebuilds every window, tile and pointer
+// mapping, which a monitor change leaves stale.
+var topology_sig = "";
+var topology_watch = false;
+function topologySignature() {
+    var s = "";
+    for (var m in localMonitors()) s += m.x + "," + m.y + "," + m.w + "," + m.h + ";";
+    s += "|";
+    for (var d in (pi.displays || [])) s += d.x + "," + d.y + "," + d.width + "," + d.height + ";";
+    return s;
+}
+function reapplyDisplayMode() {
+    var want = handler.get_option(OPTION_DISPLAY_MODE) || "single";
+    var now = want;
+    if (want != "single" && !viewAllSupported()) now = "single";
+    else if ((want == "span" || want == "windows") && !multiMonitorAvailable()) now = "all";
+    stdout.println("display topology changed: " + localMonitors().length + " local monitors, " +
+                   (pi.displays || []).length + " remote displays; chosen " + want + ", now " + now);
+    var cur = display_mode;
+    if (cur != "single") {
+        display_mode = "single";      // closing display windows is not the user's doing
+        leaveDisplayMode(cur);
+    }
+    if (now != "single") setDisplayMode(now, false);
+    else handler.switch_display(pi.current_display || 0);
+    if (header) header.update();
+}
+function startTopologyWatch() {
+    if (topology_watch) return;
+    topology_watch = true;
+    topology_sig = topologySignature();
+    self.timer(2000ms, function() {
+        var sig = topologySignature();
+        if (sig != topology_sig) {
+            topology_sig = sig;
+            reapplyDisplayMode();
+        }
+        return true;   // keep watching for the whole session
+    });
+}
+
 // A display window was closed. On purpose (we left "windows"), nothing to do. By hand,
 // that remote display would otherwise be streamed into nothing -- so the whole session
 // returns to a single window showing all displays, which is what the user can still see.
