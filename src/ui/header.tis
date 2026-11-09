@@ -637,6 +637,8 @@ handler.updatePi = function(v) {
     // window has settled. Single is the starting state, so only the others need it.
     if (!display_mode_restored && !is_file_transfer && !is_port_forward) {
         display_mode_restored = true;
+        // monitor / display hot-plug during the session (remote.tis)
+        self.timer(1500ms, startTopologyWatch);
         var saved = handler.get_option(OPTION_DISPLAY_MODE) || "";
         if (saved && saved != "single") self.timer(1200ms, function() {
             if (display_mode == "single") setDisplayMode(saved, false);

@@ -146,12 +146,15 @@ function localMonitors() {
     for (var i = 0; i < n; ++i) {
         try {
             var (x, y, w, h) = view.screenBox(i, #frame, #rectw);
-            if (w > 0 && h > 0) list.push({ x: x, y: y, w: w, h: h });
+            // The work area (monitor minus the local taskbar / docks), for "windows".
+            var (ax, ay, aw, ah) = view.screenBox(i, #workarea, #rectw);
+            if (!(aw > 0 && ah > 0)) { ax = x; ay = y; aw = w; ah = h; }
+            if (w > 0 && h > 0) list.push({ x: x, y: y, w: w, h: h, ax: ax, ay: ay, aw: aw, ah: ah });
         } catch (e) {}
     }
     if (list.length == 0) {
         var (x, y, w, h) = view.screenBox(#frame, #rectw);
-        list.push({ x: x, y: y, w: w, h: h });
+        list.push({ x: x, y: y, w: w, h: h, ax: x, ay: y, aw: w, ah: h });
     }
     list.sort(function(a, b) { return a.x != b.x ? a.x - b.x : a.y - b.y; });
     if (!monitors_logged) {
@@ -351,13 +354,16 @@ function enterDisplayWindows() {
     enterViewAll([first]);
     var m0 = mons[0];
     if (view.windowState != View.WINDOW_SHOWN) view.windowState = View.WINDOW_SHOWN;
-    // Onto the first monitor FIRST, full screen only once it is there: full screen
-    // fills whichever monitor the window is on.
-    placeWindowAt(m0.x, m0.y, m0.w, m0.h);
+    // Onto the first monitor's WORK AREA first, then maximized (not full screen): a
+    // maximized window fills the monitor it is on minus the local taskbar, wherever the
+    // taskbar sits (bottom, side, top), and keeps its title bar, so it can be restored,
+    // resized and moved like any window. Full screen hid the taskbar and, for the display
+    // windows, left no way to get out of it.
+    placeWindowAt(m0.ax, m0.ay, m0.aw, m0.ah);
     self.timer(700ms, function() {
         if (display_mode != "windows") return;
-        view.windowState = View.WINDOW_FULL_SCREEN;
-        if (is_linux) self.timer(150ms, function() { view.windowState = View.WINDOW_FULL_SCREEN; });
+        view.windowState = View.WINDOW_MAXIMIZED;
+        if (is_linux) self.timer(150ms, function() { view.windowState = View.WINDOW_MAXIMIZED; });
     });
     for (var k = 1; k < order.length; ++k) {
         var i = order[k];
@@ -368,7 +374,7 @@ function enterDisplayWindows() {
         // literal ([..].join(...)), and a single parse error disables ALL of remote.tis
         // -- found in the lab as a session that never got past "waiting for screen".
         var rrect = d.x + "," + d.y + "," + d.width + "," + d.height;
-        var mrect = m.x + "," + m.y + "," + m.w + "," + m.h;
+        var mrect = m.ax + "," + m.ay + "," + m.aw + "," + m.ah;   // work area: taskbar stays visible
         var ok = handler.open_display_window(i, rrect, mrect, title);
         stdout.println("display mode windows: display " + (i + 1) + " -> monitor " + m.x + "," + m.y + (ok ? "" : " FAILED"));
     }
@@ -399,12 +405,62 @@ function setDisplayMode(mode, persist = true) {
     display_mode = mode;
     leaveDisplayMode(prev);
     var ok = true;
-    if (mode == "all") enterViewAll();
+    if (mode == "all") {
+        enterViewAll();
+        // same line as the Flutter UI and the other modes here; the lab reads it
+        stdout.println("display mode all: " + localMonitors().length + " monitors");
+    }
     else if (mode == "span") ok = enterSpan();
     else if (mode == "windows") ok = enterDisplayWindows();
     if (!ok) { display_mode = "single"; restoreWindowPlacement(); }
     if (persist && ok) handler.set_option(OPTION_DISPLAY_MODE, display_mode == "single" ? "" : display_mode);
     if (header) header.update();
+}
+
+// Monitors plugged in / out on EITHER side during a session. Every 2 s the local monitor
+// layout and the remote display list are compared with the last seen; on a change the mode
+// the user chose for this peer (OPTION_DISPLAY_MODE, not overwritten here) is applied again
+// for what exists now: span/windows without a second local monitor -> "all" for the time
+// being, a remote with fewer than 2 displays -> single; when the monitor or display comes
+// back, the chosen mode returns. Re-entering also rebuilds every window, tile and pointer
+// mapping, which a monitor change leaves stale.
+var topology_sig = "";
+var topology_watch = false;
+function topologySignature() {
+    var s = "";
+    for (var m in localMonitors()) s += m.x + "," + m.y + "," + m.w + "," + m.h + ";";
+    s += "|";
+    for (var d in (pi.displays || [])) s += d.x + "," + d.y + "," + d.width + "," + d.height + ";";
+    return s;
+}
+function reapplyDisplayMode() {
+    var want = handler.get_option(OPTION_DISPLAY_MODE) || "single";
+    var now = want;
+    if (want != "single" && !viewAllSupported()) now = "single";
+    else if ((want == "span" || want == "windows") && !multiMonitorAvailable()) now = "all";
+    stdout.println("display topology changed: " + localMonitors().length + " local monitors, " +
+                   (pi.displays || []).length + " remote displays; chosen " + want + ", now " + now);
+    var cur = display_mode;
+    if (cur != "single") {
+        display_mode = "single";      // closing display windows is not the user's doing
+        leaveDisplayMode(cur);
+    }
+    if (now != "single") setDisplayMode(now, false);
+    else handler.switch_display(pi.current_display || 0);
+    if (header) header.update();
+}
+function startTopologyWatch() {
+    if (topology_watch) return;
+    topology_watch = true;
+    topology_sig = topologySignature();
+    self.timer(2000ms, function() {
+        var sig = topologySignature();
+        if (sig != topology_sig) {
+            topology_sig = sig;
+            reapplyDisplayMode();
+        }
+        return true;   // keep watching for the whole session
+    });
 }
 
 // A display window was closed. On purpose (we left "windows"), nothing to do. By hand,

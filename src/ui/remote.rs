@@ -354,11 +354,13 @@ handler.onMouse = function(evt) {{
         evt.altKey, evt.ctrlKey, evt.shiftKey, evt.commandKey);
     return true;
 }};
-// Fill the monitor this window was placed on. The hint says which remote display this
-// is, and fades once the first frame has had time to arrive.
+// Maximized on the monitor this window was placed on (its work area): the local taskbar
+// stays visible wherever it is, and the title bar stays, so the window can be restored,
+// resized, moved and closed. (Full screen hid the taskbar and gave no way out.) The hint
+// says which remote display this is, and fades once the first frame has had time to arrive.
 function self.ready() {{
-    view.windowState = View.WINDOW_FULL_SCREEN;
-    self.timer(150ms, function() {{ view.windowState = View.WINDOW_FULL_SCREEN; }});
+    view.windowState = View.WINDOW_MAXIMIZED;
+    self.timer(150ms, function() {{ view.windowState = View.WINDOW_MAXIMIZED; }});
     self.timer(4s, function() {{ var h = $(#hint); if (h) h.style.set {{ display: "none" }}; }});
 }}
 </script>
