@@ -98,7 +98,8 @@ class RustDeskMultiWindowManager {
   // This function must be called in the main window thread.
   // Because the _remoteDesktopWindows is managed in that thread.
   openMonitorSession(int windowId, String peerId, int display, int displayCount,
-      Rect? screenRect, int windowType) async {
+      Rect? screenRect, int windowType,
+      {bool maximize = false}) async {
     final isCamera = windowType == WindowType.ViewCamera.index;
     final windowIDs = isCamera ? _viewCameraWindows : _remoteDesktopWindows;
     if (windowIDs.length > 1) {
@@ -131,6 +132,8 @@ class RustDeskMultiWindowManager {
         't': screenRect.top,
         'r': screenRect.right,
         'b': screenRect.bottom,
+        // TBFDesk: maximized instead of full screen ("windows" display mode).
+        if (maximize) 'maximize': true,
       };
     }
     await _newSession(

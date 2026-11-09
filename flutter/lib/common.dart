@@ -3400,7 +3400,7 @@ openMonitorInTheSameTab(int i, FFI ffi, PeerInfo pi,
 //
 // screenRect is used to move the new window to the specified screen and set fullscreen.
 openMonitorInNewTabOrWindow(int i, String peerId, PeerInfo pi,
-    {Rect? screenRect}) {
+    {Rect? screenRect, bool maximize = false}) {
   final args = {
     'window_id': stateGlobal.windowId,
     'peer_id': peerId,
@@ -3414,6 +3414,8 @@ openMonitorInNewTabOrWindow(int i, String peerId, PeerInfo pi,
       't': screenRect.top,
       'r': screenRect.right,
       'b': screenRect.bottom,
+      // TBFDesk: maximize on that monitor instead of full screen ("windows" mode).
+      if (maximize) 'maximize': true,
     };
   }
   DesktopMultiWindow.invokeMethod(
@@ -3421,7 +3423,8 @@ openMonitorInNewTabOrWindow(int i, String peerId, PeerInfo pi,
 }
 
 setNewConnectWindowFrame(int windowId, String peerId, int preSessionCount,
-    WindowType windowType, int? display, Rect? screenRect) async {
+    WindowType windowType, int? display, Rect? screenRect,
+    {bool maximize = false}) async {
   if (screenRect == null) {
     // Do not restore window position to new connection if there's a pre-session.
     // https://github.com/rustdesk/rustdesk/discussions/8825
@@ -3429,9 +3432,40 @@ setNewConnectWindowFrame(int windowId, String peerId, int preSessionCount,
       await restoreWindowPosition(windowType,
           windowId: windowId, display: display, peerId: peerId);
     }
+  } else if (maximize) {
+    await tryMoveToScreenAndMaximize(screenRect);
   } else {
     await tryMoveToScreenAndSetFullscreen(screenRect);
   }
+}
+
+/// TBFDesk ("windows" display mode): move the window onto the monitor of [screenRect],
+/// then MAXIMIZE it there instead of going full screen. A maximized window fills the
+/// monitor's work area, so the local taskbar stays visible wherever it is (bottom,
+/// side, top), and the title bar stays, so the window can be restored, resized and
+/// moved. Full screen hid the taskbar and left the extra display windows no way out.
+tryMoveToScreenAndMaximize(Rect? screenRect) async {
+  if (screenRect == null) {
+    return;
+  }
+  final wc = WindowController.fromWindowId(stateGlobal.windowId);
+  if (stateGlobal.fullscreen.isTrue) {
+    stateGlobal.setFullscreen(false);
+    await Future.delayed(const Duration(milliseconds: 300));
+  }
+  if (await wc.isMaximized()) await wc.unmaximize();
+  await wc.setFrame(
+      Rect.fromLTWH(screenRect.left + 30, screenRect.top + 30, 800, 600));
+  // As for full screen: a short delay, or the move can be undone by the maximize.
+  Future.delayed(const Duration(milliseconds: 300), () async {
+    await wc.maximize();
+  });
+}
+
+/// TBFDesk: the "maximize" flag next to a screen_rect (see openMonitorInNewTabOrWindow).
+bool parseParamScreenMaximize(Map<String, dynamic> params) {
+  final r = params['screen_rect'];
+  return r is Map && r['maximize'] == true;
 }
 
 tryMoveToScreenAndSetFullscreen(Rect? screenRect) async {
