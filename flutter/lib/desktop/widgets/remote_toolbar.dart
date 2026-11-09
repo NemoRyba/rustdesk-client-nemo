@@ -3291,10 +3291,11 @@ class NemoDisplayMode {
         '${monitors.isNotEmpty ? '1:1 mapping $monitors' : 'proportional'}');
   }
 
-  // "windows": this window shows the leftmost picked display, full screen on
-  // the leftmost monitor; every other picked display gets a window of its own
-  // on the next monitor (more displays than monitors: the extras share the
-  // last one). Same connection, upstream's monitor windows.
+  // "windows": this window shows the leftmost picked display, MAXIMIZED on the
+  // leftmost monitor; every other picked display gets a window of its own,
+  // maximized on the next monitor (more displays than monitors: the extras share
+  // the last one). Maximized, not full screen: the local taskbar stays visible
+  // and every window keeps its title bar. Same connection, upstream's monitor windows.
   Future<bool> _enterWindows(List<Rect> mons) async {
     if (mons.length < 2) return false;
     final order = _leftToRight(selectedDisplays());
@@ -3305,11 +3306,12 @@ class NemoDisplayMode {
       stateGlobal.setFullscreen(false);
       await Future.delayed(const Duration(milliseconds: 300));
     }
-    await tryMoveToScreenAndSetFullscreen(mons[0]);
+    await tryMoveToScreenAndMaximize(mons[0]);
     _openedDisplayWindows = order.sublist(1);
     for (var k = 1; k < order.length; k++) {
       final m = mons[k < mons.length ? k : mons.length - 1];
-      openMonitorInNewTabOrWindow(order[k], ffi.id, pi, screenRect: m);
+      openMonitorInNewTabOrWindow(order[k], ffi.id, pi,
+          screenRect: m, maximize: true);
     }
     return true;
   }

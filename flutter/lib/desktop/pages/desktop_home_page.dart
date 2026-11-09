@@ -973,7 +973,8 @@ class _DesktopHomePageState extends State<DesktopHomePage>
         final windowType = args['window_type'] as int;
         final screenRect = parseParamScreenRect(args);
         await rustDeskWinManager.openMonitorSession(
-            windowId, peerId, display, displayCount, screenRect, windowType);
+            windowId, peerId, display, displayCount, screenRect, windowType,
+            maximize: parseParamScreenMaximize(args));
       } else if (call.method == kWindowEventRemoteWindowCoords) {
         final windowId = int.tryParse(call.arguments);
         if (windowId != null) {
