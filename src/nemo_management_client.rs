@@ -403,7 +403,47 @@ fn build_policy_report() -> String {
     policy_report_json(role, &overridden_policy_keys(&previous_policy()))
 }
 
+/// TBFDesk: re-apply the last policy this client ACCEPTED (cached in
+/// `nemo-management-last-policy`, written only after verification, secrets replaced by a
+/// placeholder) to the in-memory managed maps, before any poll. Without it every managed
+/// restriction that lives only in those maps (outbound disabled / allowed targets,
+/// company-network-only, the cert pin, ...) was gone after a restart until the first
+/// SUCCESSFUL poll -- offline, or with the management API unreachable, indefinitely.
+/// Lab 2026-11-09: policy "outbound disabled", client restarted with the server down ->
+/// it connected anyway. The next successful poll replaces everything exactly as before.
+/// Once per process; also called by the client's outbound check, because a session
+/// process (Sciter --connect / --terminal) never starts the poll.
+pub(crate) fn restore_cached_policy() {
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        if !management_enabled() {
+            return;
+        }
+        let p = previous_policy();
+        let mut n = 0;
+        for (key, value) in &p.options {
+            if value == MANAGED_SECRET_PLACEHOLDER
+                || key == OPTION_NEMO_PERMANENT_PASSWORD
+                || policy_key_denied(key)
+            {
+                continue;
+            }
+            if let Some(scope) = option_scope(key) {
+                apply_policy_option(scope, key, value, p.allow_user_override);
+                n += 1;
+            }
+        }
+        if n > 0 {
+            log::info!(
+                "Nemo management: re-applied {} option(s) of the cached policy until the next poll",
+                n
+            );
+        }
+    });
+}
+
 pub(crate) fn start() {
+    restore_cached_policy();
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
         std::thread::spawn(|| {
