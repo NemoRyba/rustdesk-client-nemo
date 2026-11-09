@@ -388,6 +388,25 @@ const kRemoteViewStyleCustom = 'custom';
 /// (Session::get_view_style, the Sciter "Shrink" style).
 const kRemoteViewStyleShrink = 'shrink';
 
+/// TBFDesk: [kRemoteViewStyleStretch] Scale the remote image up to fill the
+/// window (aspect ratio kept), never down: a remote screen larger than the
+/// window stays at its original size and scrolls (the Sciter "Stretch" style).
+const kRemoteViewStyleStretch = 'stretch';
+
+/// TBFDesk: the styles that scale the image to the window (in one or both
+/// directions), as opposed to original / custom.
+bool isFitViewStyle(String? style) =>
+    style == kRemoteViewStyleAdaptive ||
+    style == kRemoteViewStyleShrink ||
+    style == kRemoteViewStyleStretch;
+
+/// TBFDesk: the styles whose image can be larger than the window, so the
+/// scroll style applies (stretch: a remote screen larger than the window).
+bool isScrollableViewStyle(String? style) =>
+    style == kRemoteViewStyleOriginal ||
+    style == kRemoteViewStyleCustom ||
+    style == kRemoteViewStyleStretch;
+
 /// [kRemoteScrollStyleAuto] Scroll image auto by position.
 const kRemoteScrollStyleAuto = 'scrollauto';
 

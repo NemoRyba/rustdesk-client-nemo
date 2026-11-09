@@ -235,11 +235,13 @@ impl<T: InvokeUiSession> Session<T> {
         self.ui_handler.is_multi_ui_session()
     }
 
-    /// Until the user picks a style for this peer, "shrink": a remote screen larger
-    /// than the window is scaled down so the whole desktop is visible without
-    /// scrolling, and a smaller one stays at its original size -- "shrink" never
-    /// enlarges. Once the user picks one from the menu, that choice is used for this
-    /// peer from then on (save_view_style marks it).
+    /// Until the user picks a style for this peer, the per-user default (Settings ->
+    /// Display -> Default view style; "shrink" when unset on desktop, see hbb_common
+    /// UserDefaultConfig): "shrink" scales a remote screen larger than the window down so
+    /// the whole desktop is visible, and never enlarges. Once the user picks one from the
+    /// menu, that choice is used for this peer from then on (save_view_style marks it).
+    /// Peer files written before the marker existed carry the old built-in "original",
+    /// which is why the stored value alone does not count as a choice.
     pub fn get_view_style(&self) -> String {
         let lc = self.lc.read().unwrap();
         let chosen = lc
@@ -248,16 +250,9 @@ impl<T: InvokeUiSession> Session<T> {
             .map_or(false, |v| v == "Y");
         if chosen {
             lc.view_style.clone()
-        } else if hbb_common::config::UserDefaultConfig::load()
-            .get(hbb_common::config::keys::OPTION_VIEW_STYLE)
-            == "adaptive"
-        {
-            // The user changed the per-user default (Flutter settings) to "adaptive";
-            // honour it for peers with no choice of their own. Only "adaptive" is
-            // distinguishable from unset ("original" is the built-in default).
-            "adaptive".to_owned()
         } else {
-            "shrink".to_owned()
+            hbb_common::config::UserDefaultConfig::load()
+                .get(hbb_common::config::keys::OPTION_VIEW_STYLE)
         }
     }
 

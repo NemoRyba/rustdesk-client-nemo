@@ -765,7 +765,8 @@ class _ImagePaintState extends State<ImagePaint> {
     var c = Provider.of<CanvasModel>(context);
     final s = c.scale;
 
-    bool isViewAdaptive() => c.viewStyle.style == kRemoteViewStyleAdaptive;
+    // TBFDesk: every style that scales to the window (adaptive, shrink, stretch).
+    bool isViewAdaptive() => isFitViewStyle(c.viewStyle.style);
     bool isViewOriginal() => c.viewStyle.style == kRemoteViewStyleOriginal;
 
     mouseRegion({child}) => Obx(() {
@@ -1113,7 +1114,9 @@ class CursorPaint extends StatelessWidget {
 
     double cx = c.x;
     double cy = c.y;
-    if (c.viewStyle.style == kRemoteViewStyleOriginal &&
+    // TBFDesk: "stretch" overflows (at scale 1) exactly like "original".
+    if ((c.viewStyle.style == kRemoteViewStyleOriginal ||
+            c.viewStyle.style == kRemoteViewStyleStretch) &&
         c.scrollStyle == ScrollStyle.scrollbar) {
       final rect = c.parent.target!.ffiModel.rect;
       if (rect == null) {

@@ -1995,6 +1995,17 @@ class _DisplayState extends State<_Display> {
           groupValue: groupValue,
           label: 'Scale adaptive',
           onChanged: isOptFixed ? null : onChanged),
+      // TBFDesk: the fork's default (unset) and the Sciter "Stretch" style.
+      _Radio(context,
+          value: kRemoteViewStyleShrink,
+          groupValue: groupValue,
+          label: 'Shrink',
+          onChanged: isOptFixed ? null : onChanged),
+      _Radio(context,
+          value: kRemoteViewStyleStretch,
+          groupValue: groupValue,
+          label: 'Stretch',
+          onChanged: isOptFixed ? null : onChanged),
     ]);
   }
 

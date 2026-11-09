@@ -1170,8 +1170,7 @@ class _DisplayMenuState extends State<_DisplayMenu> {
     return futureBuilder(future: () async {
       final viewStyle =
           await bind.sessionGetViewStyle(sessionId: ffi.sessionId) ?? '';
-      final visible = viewStyle == kRemoteViewStyleOriginal ||
-          viewStyle == kRemoteViewStyleCustom;
+      final visible = isScrollableViewStyle(viewStyle);
       final scrollStyle =
           await bind.sessionGetScrollStyle(sessionId: ffi.sessionId) ?? '';
       final edgeScrollEdgeThickness = await bind

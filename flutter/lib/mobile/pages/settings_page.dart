@@ -1183,7 +1183,9 @@ class __DisplayPageState extends State<_DisplayPage> {
               title: 'Default View Style',
               list: [
                 _RadioEntry('Scale original', kRemoteViewStyleOriginal),
-                _RadioEntry('Scale adaptive', kRemoteViewStyleAdaptive)
+                _RadioEntry('Scale adaptive', kRemoteViewStyleAdaptive),
+                _RadioEntry('Shrink', kRemoteViewStyleShrink),
+                _RadioEntry('Stretch', kRemoteViewStyleStretch),
               ],
               getter: () =>
                   bind.mainGetUserDefaultOption(key: kOptionViewStyle),

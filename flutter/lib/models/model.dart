@@ -2127,8 +2127,9 @@ class ViewStyle {
 
   double get scale {
     double s = 1.0;
-    // TBFDesk: "shrink" is "adaptive" that never enlarges (R14).
-    if (style == kRemoteViewStyleAdaptive || style == kRemoteViewStyleShrink) {
+    // TBFDesk: "shrink" is "adaptive" that never enlarges (R14), "stretch" is
+    // "adaptive" that never reduces (the Sciter "Stretch" style).
+    if (isFitViewStyle(style)) {
       if (width != 0 &&
           height != 0 &&
           displayWidth != 0 &&
@@ -2137,6 +2138,7 @@ class ViewStyle {
         final s2 = height / displayHeight;
         s = s1 < s2 ? s1 : s2;
         if (style == kRemoteViewStyleShrink && s > 1.0) s = 1.0;
+        if (style == kRemoteViewStyleStretch && s < 1.0) s = 1.0;
       }
     } else if (style == kRemoteViewStyleCustom) {
       // Custom scale is session-scoped and applied in CanvasModel.updateViewStyle()
@@ -2412,7 +2414,7 @@ class CanvasModel with ChangeNotifier {
   tryUpdateScrollStyle(Duration duration, String? style) async {
     if (_scrollStyle == ScrollStyle.scrollauto) return;
     style ??= await bind.sessionGetViewStyle(sessionId: sessionId);
-    if (style != kRemoteViewStyleOriginal && style != kRemoteViewStyleCustom) {
+    if (!isScrollableViewStyle(style)) {
       return;
     }
 

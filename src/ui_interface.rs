@@ -109,6 +109,38 @@ fn nemo_restore_fixed_options(options: &mut HashMap<String, String>) {
     for (key, value) in config::OVERWRITE_SETTINGS.read().unwrap().iter() {
         options.insert(key.clone(), value.clone());
     }
+    if nemo_management_locked() {
+        for key in NEMO_MANAGEMENT_LOCKED_KEYS {
+            let v = get_option(key);
+            if v.is_empty() {
+                options.remove(*key);
+            } else {
+                options.insert((*key).to_owned(), v);
+            }
+        }
+    }
+}
+
+/// The management connection a policy was accepted over: the switch, the server and
+/// the pinned management key.
+const NEMO_MANAGEMENT_LOCKED_KEYS: &[&str] = &[
+    "nemo-management-enabled",
+    "nemo-management-server",
+    "nemo-management-public-key",
+];
+
+/// Once this client has accepted a managed policy, the management dialog (both UIs) is
+/// locked: unticking "enabled", blanking the server or swapping the key would stop the
+/// server from ever changing the policy again (it holds regardless, see
+/// nemo_management_client::restore_cached_policy). Importing a setup string stays
+/// possible -- that is the operator re-pointing the machine, and it goes through
+/// nemo_set_provisioned_options, which does not consult this.
+fn nemo_management_locked() -> bool {
+    !get_option("nemo-management-last-policy").trim().is_empty()
+}
+
+fn nemo_management_key_locked(key: &str) -> bool {
+    NEMO_MANAGEMENT_LOCKED_KEYS.contains(&key) && nemo_management_locked()
 }
 
 #[cfg(target_os = "windows")]
@@ -242,7 +274,8 @@ pub fn use_texture_render() -> bool {
 
 #[inline]
 pub fn is_option_fixed(key: &str) -> bool {
-    config::OVERWRITE_DISPLAY_SETTINGS
+    nemo_management_key_locked(key)
+        || config::OVERWRITE_DISPLAY_SETTINGS
         .read()
         .unwrap()
         .contains_key(key)

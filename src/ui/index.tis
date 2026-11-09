@@ -600,15 +600,21 @@ function open_nemo_management_dialog() {
     var old_enabled = configOptions[nemo_management_enabled_option] == "Y";
     var old_server = configOptions[nemo_management_server_option] || "";
     var old_public_key = configOptions[nemo_management_public_key_option] || "";
+    // Locked once a policy has been accepted (ui_interface nemo_management_locked):
+    // only a setup string import may re-point a managed machine.
+    var locked = handler.is_option_fixed(nemo_management_enabled_option);
     var enabled_attrs = old_enabled ? { checked: true } : {};
+    var lock_attrs = locked ? { disabled: true } : {};
+    if (locked) enabled_attrs.disabled = true;
     msgbox("custom-server", "Management",
             <div .form .set-password>
-                <div><span>{translate('Management Server')}: </span><input|text .outline-focus name='server' value={old_server} /></div>
-                <div><span>{translate('Public Key')}: </span><input|text name='public_key' value={old_public_key} /></div>
+                <div><span>{translate('Management Server')}: </span><input|text .outline-focus name='server' value={old_server} {lock_attrs} /></div>
+                <div><span>{translate('Public Key')}: </span><input|text name='public_key' value={old_public_key} {lock_attrs} /></div>
                 <div><button|checkbox(enabled) {enabled_attrs}>{translate('Enable management control')}</button></div>
+                {locked ? <div>{translate('This value is managed by your administrator.')}</div> : ""}
             </div>,
             "", function(res=null, show_progress) {
-                if (!res) return;
+                if (!res || locked) return;
                 if (typeof show_progress === 'function') show_progress();
                 var enabled = res.enabled ? true : false;
                 var server = (res.server || "").trim();

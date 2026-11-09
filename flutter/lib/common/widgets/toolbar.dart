@@ -389,6 +389,12 @@ Future<List<TRadioMenu<String>>> toolbarViewStyle(
         value: kRemoteViewStyleShrink,
         groupValue: groupValue,
         onChanged: onChanged),
+    // TBFDesk: the Sciter "Stretch" style -- fill the window, never reduce.
+    TRadioMenu<String>(
+        child: Text(translate('Stretch')),
+        value: kRemoteViewStyleStretch,
+        groupValue: groupValue,
+        onChanged: onChanged),
     TRadioMenu<String>(
         child: Text(translate('Scale custom')),
         value: kRemoteViewStyleCustom,
