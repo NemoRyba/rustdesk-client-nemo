@@ -3383,6 +3383,20 @@ class NemoDisplayMode {
     try {
       if (mode.value != single) await _setMode(single, false, null);
       if (now != single) await _setMode(now, false, null);
+      // Windows minimizes a window whose monitor layout changed under it (lab: the RDP
+      // session reconnecting with one monitor left the session window parked at -32000):
+      // bring it back, maximized on the monitor it is on now.
+      try {
+        final wc = WindowController.fromWindowId(windowId);
+        if (await wc.isMinimized()) {
+          debugPrint('display topology: session window was minimized -> maximized');
+          await wc.maximize();
+        }
+        await wc.show();
+        await wc.focus();
+      } catch (e) {
+        debugPrint('display topology: could not restore the window: $e');
+      }
     } finally {
       _busy = false;
     }
