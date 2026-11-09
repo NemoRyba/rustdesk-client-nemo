@@ -203,6 +203,10 @@ fn relay_only_reason(interface: &impl Interface) -> &'static str {
 }
 
 fn check_nemo_outbound_policy(peer: &str) -> ResultType<()> {
+    // The policy's restrictions live in memory; this process may never have polled
+    // (session processes, a restart while the server is unreachable).
+    #[cfg(feature = "nemo-management-client")]
+    crate::nemo_management_client::restore_cached_policy();
     if Config::get_option(OPTION_NEMO_OUTBOUND_ENABLED) == "N" {
         bail!("Outgoing connections are disabled by TBF policy");
     }
