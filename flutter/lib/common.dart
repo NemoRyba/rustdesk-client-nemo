@@ -3458,7 +3458,22 @@ tryMoveToScreenAndMaximize(Rect? screenRect) async {
       Rect.fromLTWH(screenRect.left + 30, screenRect.top + 30, 800, 600));
   // As for full screen: a short delay, or the move can be undone by the maximize.
   Future.delayed(const Duration(milliseconds: 300), () async {
+    // A REUSED display window can still be hidden here: Windows then records
+    // "maximized" without resizing it, and it reappears at the 800x600 frame while
+    // claiming to be maximized (lab: monitor re-plugged in "windows" mode). Show it
+    // first, and re-maximize if it does not fill its monitor half a second later.
+    await wc.show();
     await wc.maximize();
+    await Future.delayed(const Duration(milliseconds: 500));
+    final f = await wc.getFrame();
+    if (f.width < screenRect.width * 0.9 || f.height < screenRect.height * 0.75) {
+      debugPrint('maximize did not take ($f on $screenRect): again');
+      await wc.unmaximize();
+      await wc.setFrame(
+          Rect.fromLTWH(screenRect.left + 30, screenRect.top + 30, 800, 600));
+      await Future.delayed(const Duration(milliseconds: 200));
+      await wc.maximize();
+    }
   });
 }
 
