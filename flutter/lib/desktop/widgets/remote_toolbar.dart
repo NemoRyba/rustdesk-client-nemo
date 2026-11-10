@@ -3354,6 +3354,21 @@ class NemoDisplayMode {
     final displays = _openedDisplayWindows;
     _openedDisplayWindows = [];
     if (displays.isEmpty) return;
+    await _sendCloseDisplaySessions(displays);
+    // Opening a display window is asynchronous (the main window creates or re-uses one),
+    // and a re-used, hidden window can take seconds to come up. A close sent before its
+    // tab exists finds nothing, and the window then appears after all -- lab, monitor
+    // re-plugged and the remote display unplugged right after: a display window left
+    // open in "single". Repeat the close while the session is still out of "windows"
+    // (a quick switch back must not lose its new windows).
+    for (final ms in [1500, 4000]) {
+      Future.delayed(Duration(milliseconds: ms), () async {
+        if (mode.value != windows) await _sendCloseDisplaySessions(displays);
+      });
+    }
+  }
+
+  Future<void> _sendCloseDisplaySessions(List<int> displays) async {
     var ids = <int>[];
     try {
       ids = await DesktopMultiWindow.getAllSubWindowIds();
