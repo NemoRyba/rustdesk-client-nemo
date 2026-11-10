@@ -3497,10 +3497,6 @@ pub fn update_me(debug: bool) -> ResultType<()> {
         version_build = versions[2];
     }
     let version = crate::VERSION.replace("-", ".");
-    // Apps & Features shows "<version> Flutter" / "<version> Sciter"; TBFDeskUI is the
-    // machine-readable form. `Version` stays a bare version number.
-    let ui_label = crate::common::nemo_ui_label();
-    let ui_kind = crate::common::NEMO_UI_KIND;
     let size = get_directory_size_kb(&path);
     let build_date = crate::BUILD_DATE;
     // Use the icon in the previous installation directory if possible.
@@ -3519,6 +3515,10 @@ pub fn update_me(debug: bool) -> ResultType<()> {
         version_build: &str,
         size: u64,
     ) -> String {
+        // Apps & Features shows "<version> Flutter" / "<version> Sciter"; TBFDeskUI is
+        // the machine-readable form. `Version` stays a bare version number.
+        let ui_label = crate::common::nemo_ui_label();
+        let ui_kind = crate::common::NEMO_UI_KIND;
         let reg_display_icon = if is_msi.unwrap_or(false) {
             "".to_string()
         } else {
