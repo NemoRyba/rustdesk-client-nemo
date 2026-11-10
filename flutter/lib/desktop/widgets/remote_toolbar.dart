@@ -271,6 +271,37 @@ class _RemoteToolbarState extends State<RemoteToolbar> {
     stateGlobal.setFullscreen(v);
     // stateGlobal.fullscreen is RxBool now, no need to call setState.
     // setState(() {});
+    if (!v) _fitAfterLeavingFullscreen();
+  }
+
+  // TBFDesk: leaving full screen restores the frame the window had before -- in "all"
+  // mode the window opens full screen, and the frame it falls back to was sized for all
+  // remote displays: larger than the monitor, partly off-screen (lab, Win11 VM: 1486x813
+  // on an 800 px high monitor). A frame that does not fit its monitor is maximized there.
+  void _fitAfterLeavingFullscreen() {
+    Future.delayed(const Duration(milliseconds: 600), () async {
+      if (stateGlobal.fullscreen.isTrue) return;
+      final wc = WindowController.fromWindowId(windowId);
+      if (await wc.isMaximized()) return;
+      final f = await wc.getFrame();
+      final screens = await getScreenRectList();
+      if (screens.isEmpty) return;
+      Rect? home;
+      double best = -1;
+      for (final s in screens) {
+        final i = s.intersect(f);
+        final area = (i.width > 0 && i.height > 0) ? i.width * i.height : 0.0;
+        if (area > best) { best = area; home = s; }
+      }
+      if (home == null) return;
+      final fits = f.width <= home.width + 16 && f.height <= home.height + 16 &&
+          f.left >= home.left - 16 && f.top >= home.top - 16 &&
+          f.right <= home.right + 16 && f.bottom <= home.bottom + 16;
+      if (!fits) {
+        debugPrint('left full screen with $f, larger than its monitor $home: maximize there');
+        await tryMoveToScreenAndMaximize(home);
+      }
+    });
   }
 
   RxBool get collapse => widget.state.collapse;
