@@ -137,6 +137,9 @@ class _InstallPageBodyState extends State<_InstallPageBody>
             children: [
               Text(translate('Installation'),
                   style: Theme.of(context).textTheme.headlineMedium),
+              // TBFDesk: which build -- and which UI (Flutter / Sciter) -- this installs.
+              Text('TBFDesk $version \u00b7 Build ${bind.mainGetBuildId()}',
+                  style: TextStyle(color: Theme.of(context).hintColor)),
               Row(
                 children: [
                   Text('${translate('Installation Path')}:')

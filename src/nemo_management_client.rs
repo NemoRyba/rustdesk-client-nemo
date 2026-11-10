@@ -134,6 +134,8 @@ struct ClientPolicyRequest {
     sealed: String,
     /// This build, for the dashboard's "who runs what" during an update rollout.
     client_version: String,
+    /// "flutter" or "sciter" (NEMO_UI_KIND): which UI, and so which update channel.
+    client_ui: String,
     /// #43: what this process did with the last policy it was handed (JSON text, see
     /// build_policy_report), so the dashboard shows the policy actually applied. Rides
     /// inside the poll body, which is sealed to the management key whenever one is
@@ -580,6 +582,7 @@ fn sync_policy() -> ResultType<()> {
         device_key_sig: String::new(),
         sealed: String::new(),
         client_version: crate::VERSION.to_owned(),
+        client_ui: crate::common::NEMO_UI_KIND.to_owned(),
         applied_policy: String::new(),
         applied_policy_sig: String::new(),
     };

@@ -1081,15 +1081,32 @@ fn nemo_set_update_offer(version: &str, url: &str, sha256: &str) {
     *NEMO_UPDATE_VERSION.lock().unwrap() = version.to_owned();
 }
 
-/// Which published package this client installs: "windows-x64" (the manifest's top
-/// level), or "linux-deb" / "linux-rpm" / "linux-arch" by the package manager that owns
-/// the installed program. None = nothing can update this client in place (portable,
-/// not installed from a package, another OS). Asked once per process.
+/// Which user interface this build carries: "flutter" or "sciter". Both ship in parallel
+/// from the same source; the installer file name, the update channel, the build line in
+/// the main window, the install page, Apps & Features and the dashboard tell them apart.
+pub const NEMO_UI_KIND: &str = if cfg!(feature = "flutter") { "flutter" } else { "sciter" };
+
+/// NEMO_UI_KIND as people read it.
+pub fn nemo_ui_label() -> &'static str {
+    if cfg!(feature = "flutter") {
+        "Flutter"
+    } else {
+        "Sciter"
+    }
+}
+
+/// Which published package this client installs: on Windows "windows-x64" (the Sciter
+/// installer, the manifest's top level -- where every client before the Flutter port
+/// looks) or "windows-x64-flutter" (the Flutter installer, under `platforms`); on Linux
+/// "linux-deb" / "linux-rpm" / "linux-arch" by the package manager that owns the
+/// installed program. One channel per UI, so an update never switches a machine from one
+/// UI to the other (reinstalling does). None = nothing can update this client in place
+/// (portable, not installed from a package, another OS). Asked once per process.
 pub fn nemo_update_platform() -> Option<&'static str> {
     static PLATFORM: std::sync::OnceLock<Option<&'static str>> = std::sync::OnceLock::new();
     *PLATFORM.get_or_init(|| {
         #[cfg(windows)]
-        return Some("windows-x64");
+        return Some(if cfg!(feature = "flutter") { "windows-x64-flutter" } else { "windows-x64" });
         #[cfg(target_os = "linux")]
         {
             if !crate::platform::is_installed() {
@@ -4479,6 +4496,23 @@ mod tests {
         let linux_only = json!({"version": "9.9.9", "url": "", "sha256": "", "sig": "",
             "platforms": {"linux-deb": {"url": "u", "sha256": sha, "sig": "S2"}}}).to_string();
         assert!(nemo_platform_manifest(&linux_only, "windows-x64").is_none(), "no Windows installer");
+        // One channel per UI on Windows: Sciter = top level, Flutter = its own entry. A
+        // Flutter client never takes the Sciter installer, nor the other way round.
+        let both = json!({
+            "version": "9.9.9", "url": "https://h/nemo/api/update/file/tbfdesk-9.9.9-x64-install.exe",
+            "sha256": sha, "sig": "S1",
+            "platforms": {"windows-x64-flutter": {"url": "https://h/nemo/api/update/file/tbfdesk-flutter-9.9.9-x64-install.exe", "sha256": sha, "sig": "S3"}}
+        })
+        .to_string();
+        let fl: Value = serde_json::from_str(&nemo_platform_manifest(&both, "windows-x64-flutter").unwrap()).unwrap();
+        assert_eq!(fl["url"], "https://h/nemo/api/update/file/tbfdesk-flutter-9.9.9-x64-install.exe");
+        assert_eq!(fl["sig"], "S3");
+        let sc: Value = serde_json::from_str(&nemo_platform_manifest(&both, "windows-x64").unwrap()).unwrap();
+        assert_eq!(sc["url"], "https://h/nemo/api/update/file/tbfdesk-9.9.9-x64-install.exe");
+        let sciter_only = json!({"version": "9.9.9", "url": "https://h/nemo/api/update/file/w.exe",
+            "sha256": sha, "sig": "S1"}).to_string();
+        assert!(nemo_platform_manifest(&sciter_only, "windows-x64-flutter").is_none(),
+            "no Flutter installer published: a Flutter client gets no offer, never the Sciter one");
 
         // The server's own hosted installer is accepted whatever host the url names: a
         // server between two NATs has a different address on each side, and the client

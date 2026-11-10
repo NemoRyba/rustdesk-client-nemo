@@ -11,6 +11,7 @@ class Install: Reactor.Component {
         const startmenu_shortcuts = { checked: install_options?.STARTMENUSHORTCUTS == '0' ? false : true };
         return <div .content>
             <div style="font-size: 2em;">{translate('Installation')}</div>
+            <div .lighter-text>{"TBFDesk " + handler.get_version() + " \u00b7 Build " + handler.get_build_id()}</div>
             <div style="margin: 2em 0;">{translate('Installation Path')} {": "}<input|text disabled value={view.install_path()} #path_input />
             <button .button .outline #path style="margin-left: 1em">{translate('Change Path')}</button>
             </div>

@@ -888,10 +888,11 @@ pub fn get_version() -> String {
 }
 
 /// TBFDesk: build id baked by build.rs (git short hash + commit date, "+" when
-/// the tree was dirty) so a user can tell WHICH build is running.
+/// the tree was dirty) and the UI ("Flutter" / "Sciter"), so a user can tell WHICH
+/// build is running -- both UIs are built from the same commit.
 #[inline]
 pub fn get_build_id() -> String {
-    env!("NEMO_BUILD_ID").to_owned()
+    format!("{} {}", env!("NEMO_BUILD_ID"), crate::common::nemo_ui_label())
 }
 
 #[cfg(any(target_os = "android", target_os = "ios", feature = "flutter"))]
