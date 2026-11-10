@@ -13,6 +13,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
+import android.content.pm.PackageManager
 import android.content.ClipboardManager
 import android.os.Bundle
 import android.os.Build
@@ -41,6 +42,8 @@ class MainActivity : FlutterActivity() {
         private var _rdClipboardManager: RdClipboardManager? = null
         val rdClipboardManager: RdClipboardManager?
             get() = _rdClipboardManager;
+        const val PERMISSION_LOCAL_NETWORK = "android.permission.ACCESS_LOCAL_NETWORK"
+        private const val REQUEST_LOCAL_NETWORK = 4711
     }
 
     private val channelTag = "mChannel"
@@ -98,9 +101,31 @@ class MainActivity : FlutterActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        requestLocalNetworkAccess()
         if (_rdClipboardManager == null) {
             _rdClipboardManager = RdClipboardManager(getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager)
             FFI.setClipboardManager(_rdClipboardManager!!)
+        }
+    }
+
+    // Android 17 (API 37): reaching a private / LAN address (the company server, relay and
+    // direct endpoints are all on it) needs the runtime permission ACCESS_LOCAL_NETWORK.
+    // Without it the system silently drops the connection and every connect times out.
+    // XXPermissions 18.5 predates it, so ask with the platform API, once, at start.
+    private fun requestLocalNetworkAccess() {
+        if (Build.VERSION.SDK_INT < 37) return
+        if (checkSelfPermission(PERMISSION_LOCAL_NETWORK) == PackageManager.PERMISSION_GRANTED) return
+        Log.i(logTag, "requesting $PERMISSION_LOCAL_NETWORK")
+        requestPermissions(arrayOf(PERMISSION_LOCAL_NETWORK), REQUEST_LOCAL_NETWORK)
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int, permissions: Array<out String>, grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQUEST_LOCAL_NETWORK) {
+            val ok = grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED
+            Log.i(logTag, "$PERMISSION_LOCAL_NETWORK granted=$ok")
         }
     }
 
