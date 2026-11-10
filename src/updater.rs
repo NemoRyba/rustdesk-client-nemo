@@ -445,7 +445,7 @@ fn update_new_version_linux(file_path: &PathBuf) -> ResultType<()> {
             .map(|d| format!("{d}{name}"))
             .find(|p| std::path::Path::new(p).exists())
     };
-    let cmd: Vec<String> = match platform {
+    let cmd: Vec<String> = match platform.trim_end_matches("-flutter") {
         "linux-deb" => vec![find("dpkg"), Some("-i".into()), Some("--force-confold".into()), Some(file)],
         "linux-rpm" => vec![find("rpm"), Some("-U".into()), Some("--replacepkgs".into()), Some(file)],
         "linux-arch" => vec![find("pacman"), Some("-U".into()), Some("--noconfirm".into()), Some(file)],

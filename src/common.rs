@@ -1121,14 +1121,17 @@ pub fn nemo_update_platform() -> Option<&'static str> {
                     .map(|o| o.status.success())
                     .unwrap_or(false)
             };
+            // One channel per UI here too: a Flutter package must never be updated with
+            // the Sciter one (or the other way round).
+            let fl = cfg!(feature = "flutter");
             if owned_by("dpkg", "-S") {
-                return Some("linux-deb");
+                return Some(if fl { "linux-deb-flutter" } else { "linux-deb" });
             }
             if owned_by("rpm", "-qf") {
-                return Some("linux-rpm");
+                return Some(if fl { "linux-rpm-flutter" } else { "linux-rpm" });
             }
             if owned_by("pacman", "-Qo") {
-                return Some("linux-arch");
+                return Some(if fl { "linux-arch-flutter" } else { "linux-arch" });
             }
             return None;
         }
