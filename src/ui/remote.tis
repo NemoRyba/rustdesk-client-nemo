@@ -718,7 +718,12 @@ function revealHeaderAt(y) {
     if (!h) return;
     // A few pixels, not exactly the top row: outside full screen the window has a 1px
     // border, so the topmost row the tiles ever see is y=1..3 (lab, spanning window).
-    if (y <= 4) {
+    // A MAXIMIZED window ("windows" mode) is placed with its invisible resize frame above
+    // the monitor (8 px at 100 % on Windows, more at higher scaling), so the topmost row
+    // the user can reach is already y=8..12: with the 4 px edge the header, once hidden,
+    // never came back -- no toolbar, no full screen, no way out (lab 2026-11-10, Win11).
+    var edge = view.windowState == View.WINDOW_MAXIMIZED ? 16 : 4;
+    if (y <= edge) {
         if (reveal_pending || h.style#display == "block") return;
         reveal_pending = true;
         self.timer(300ms, function() {
@@ -731,7 +736,7 @@ function revealHeaderAt(y) {
         });
     } else {
         reveal_pending = false;
-        if (y > 40 && h.style#display != "none") h.style.set { display: "none" };
+        if (y > 36 + edge && h.style#display != "none") h.style.set { display: "none" };
     }
 }
 
