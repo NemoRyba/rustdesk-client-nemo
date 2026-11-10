@@ -131,6 +131,10 @@ var display_mode = "single";
 var window_restore = null;   // { rect: [x,y,w,h], state } to return to after span/windows
 var span_map = [];           // [{ disp, mon: {x,y,w,h} relative to the window }]
 var span_first_width = 0;    // where the toolbar is centred while spanning (not on the seam)
+// While spanning: the monitor the header was last revealed from ({x, w} relative to the
+// window, screen pixels). The toolbar comes up on THAT monitor, so every monitor of the
+// span has its controls (operator 2026-11-10: "only on the main monitor").
+var span_toolbar_mon = null;
 
 function viewAllSupported() {
     // Gate on >1 display AND peer version >= 1.2.4 (multi-UI-session support).
@@ -617,7 +621,7 @@ function handleTileMouse(evt, dispIndex) {
     // main surface reveals it when the pointer rests on the top edge (handler.onMouse),
     // but tiles sit on top of that surface and swallow the pointer -- without this the
     // toolbar, and with it the way back out of these modes, was unreachable.
-    if (mask == 0 && headerAutoHide()) revealHeaderAt(evt.yView);
+    if (mask == 0 && headerAutoHide()) revealHeaderAt(evt.yView, evt.xView);
     if (mask == 0 && entered) holdKeyboardGrab();
     if (!keyboard_enabled) return false;
     var rx = 0;
@@ -663,7 +667,7 @@ function enterViewAll(shown = null) {
     // own (handleTileMouse); this covers the background, or span / window-per-display
     // would leave no way back to the toolbar (found on Windows, 3 screens on 2 monitors).
     view_all_wrapper.onMouse = function(evt) {
-        if (evt.type == Event.MOUSE_MOVE && headerAutoHide()) revealHeaderAt(evt.yView);
+        if (evt.type == Event.MOUSE_MOVE && headerAutoHide()) revealHeaderAt(evt.yView, evt.xView);
         return false;
     };
     var tiles = view_all_wrapper.$$(video.remote-tile);
@@ -713,7 +717,7 @@ function holdKeyboardGrab() {
 var reveal_pending = false;
 // Show the header while the pointer rests on the window's top edge, hide it once the
 // pointer moves away -- the same gesture full screen has always used.
-function revealHeaderAt(y) {
+function revealHeaderAt(y, x = -1) {
     var h = $(header);
     if (!h) return;
     // A few pixels, not exactly the top row: outside full screen the window has a 1px
@@ -730,6 +734,7 @@ function revealHeaderAt(y) {
             if (!reveal_pending) return;
             reveal_pending = false;
             if (headerAutoHide()) {
+                if (display_mode == "span" && x >= 0) span_toolbar_mon = spanMonitorAt(x);
                 h.style.set { display: "block", padding: (2 * workarea_offset) + "px 0 0 0" };
                 updateWindowToolbarPosition();
             }
@@ -738,6 +743,31 @@ function revealHeaderAt(y) {
         reveal_pending = false;
         if (y > 36 + edge && h.style#display != "none") h.style.set { display: "none" };
     }
+}
+
+// R24: an action from a display window's own bar (remote.rs display_window_html):
+// "all" = every display back in this one window; "toolbar" = this window forward with
+// its header shown, for the menus the small bar does not carry.
+function nemoDisplayWindowAction(action) {
+    if (action == "all") {
+        setDisplayMode("all");
+    } else if (action == "toolbar") {
+        if (view.windowState == View.WINDOW_MINIMIZED) view.windowState = View.WINDOW_MAXIMIZED;
+        try { view.activate(true); } catch (e) {}
+        var h = $(header);
+        if (h) { h.style.set { display: "block", padding: (2 * workarea_offset) + "px 0 0 0" }; updateWindowToolbarPosition(); }
+    }
+}
+
+// The local monitor (relative to this window, screen pixels) under view x `xv` while
+// spanning, or null.
+function spanMonitorAt(xv) {
+    var (wx, wy) = view.box(#position, #border, #screen);
+    var px = wx + xv * scaleFactor;
+    for (var m in localMonitors()) {
+        if (px >= m.x && px < m.x + m.w) return { x: m.x - wx, w: m.w };
+    }
+    return null;
 }
 
 // https://sciter.com/event-handling/
