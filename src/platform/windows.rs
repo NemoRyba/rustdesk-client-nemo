@@ -1045,12 +1045,18 @@ pub fn is_share_rdp() -> bool {
 
 pub fn set_share_rdp(enable: bool) {
     let (subkey, _, _, _) = get_install_info();
-    let cmd = format!(
-        "reg add {} /f /v share_rdp /t REG_SZ /d \"{}\"",
-        subkey,
-        if enable { "true" } else { "false" }
-    );
+    let value = if enable { "true" } else { "false" };
+    let cmd = format!("reg add {} /f /v share_rdp /t REG_SZ /d \"{}\"", subkey, value);
     run_cmds(cmd, false, "share_rdp").ok();
+    // The value lives under HKLM: from the (non-elevated) settings window the write above
+    // fails without a word and the checkbox did nothing (lab 2026-11-10, Win11, both UIs).
+    // Then ask for elevation, as any machine-wide setting does.
+    if is_share_rdp() != enable {
+        let args = format!("add {} /f /v share_rdp /t REG_SZ /d {}", subkey, value);
+        if let Err(e) = run_uac("reg.exe", &args) {
+            log::error!("share_rdp: elevated write failed: {}", e);
+        }
+    }
 }
 
 pub fn get_current_process_session_id() -> Option<u32> {
