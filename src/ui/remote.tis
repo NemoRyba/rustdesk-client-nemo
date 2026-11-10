@@ -81,8 +81,10 @@ function adaptDisplay() {
             var scale_x = bw.toFloat() / w;
             var scale_y = bh.toFloat() / h;
             var scale = scale_x < scale_y ? scale_x : scale_y;
-            if ((scale > 1 && style == "stretch") ||
-                (scale < 1 && style == "shrink")) {
+            // TBFDesk: "adaptive" (the Flutter style, also a possible per-user default)
+            // fits both ways; stretch only enlarges, shrink only reduces.
+            if ((scale > 1 && (style == "stretch" || style == "adaptive")) ||
+                (scale < 1 && (style == "shrink" || style == "adaptive"))) {
                 display_scale = scale;
                 w = w * scale;
                 h = h * scale;
