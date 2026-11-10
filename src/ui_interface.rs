@@ -1860,6 +1860,44 @@ pub fn nemo_restore_managed_state(m: &mut HashMap<String, String>, live: impl Fn
     }
 }
 
+#[cfg(all(test, not(any(target_os = "android", target_os = "ios"))))]
+mod nemo_management_lock_tests {
+    use super::*;
+
+    #[test]
+    fn management_dialog_is_locked_once_a_policy_was_accepted() {
+        let saved = OPTIONS.lock().unwrap().clone();
+        let set = |k: &str, v: &str| {
+            OPTIONS.lock().unwrap().insert(k.to_owned(), v.to_owned());
+        };
+        set("nemo-management-enabled", "Y");
+        set("nemo-management-server", "https://mgmt.example:21121");
+        set("nemo-management-public-key", "pk");
+        OPTIONS.lock().unwrap().remove("nemo-management-last-policy");
+        assert!(!is_option_fixed("nemo-management-enabled"), "unmanaged: editable");
+
+        set("nemo-management-last-policy", r#"{"allow_user_override":false,"options":{}}"#);
+        for k in NEMO_MANAGEMENT_LOCKED_KEYS {
+            assert!(is_option_fixed(k), "{k} must be fixed once a policy was accepted");
+        }
+        assert!(!is_option_fixed("enable-audio"), "other keys are unaffected");
+        // A bulk save from a dialog that unticked management and swapped the server
+        let mut m: HashMap<String, String> = HashMap::new();
+        m.insert("nemo-management-enabled".into(), "".into());
+        m.insert("nemo-management-server".into(), "https://elsewhere".into());
+        m.remove("nemo-management-public-key");
+        nemo_restore_fixed_options(&mut m);
+        assert_eq!(m.get("nemo-management-enabled").map(String::as_str), Some("Y"));
+        assert_eq!(
+            m.get("nemo-management-server").map(String::as_str),
+            Some("https://mgmt.example:21121")
+        );
+        assert_eq!(m.get("nemo-management-public-key").map(String::as_str), Some("pk"));
+
+        *OPTIONS.lock().unwrap() = saved;
+    }
+}
+
 #[cfg(test)]
 mod nemo_script_secret_tests {
     use super::*;

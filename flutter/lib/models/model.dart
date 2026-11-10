@@ -2513,6 +2513,12 @@ class CanvasModel with ChangeNotifier {
     // On mobile platforms, move the canvas with the cursor.
     final dw = getDisplayWidth() * _scale;
     final dh = getDisplayHeight() * _scale;
+    // TBFDesk: the pointer can be OUTSIDE the canvas (a drag past the window edge keeps
+    // delivering motion; a window shrunk under a pointer that stayed put). Unclamped, the
+    // position maps to more than 100 % scroll and the image slides out of the window,
+    // leaving it black (lab 2026-11-10: Original style, window shrunk 3840 -> 1000 px).
+    x = x.clamp(0.0, size.width);
+    y = y.clamp(0.0, size.height);
     var dxOffset = 0;
     var dyOffset = 0;
     try {
