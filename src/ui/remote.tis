@@ -819,7 +819,11 @@ function handler.onMouse(evt)
     if (is_file_transfer || is_port_forward) return false;
     if (view.windowState == View.WINDOW_FULL_SCREEN && !dragging) {
         var dy = evt.y - scroll_body.scroll(#top);
-        if (dy <= 1) {
+        // 4 px, not 1: on Windows the topmost row of a full-screen window is the frame's
+        // border -- the picture gets a mouse LEAVE there (y=-32), never a move at y <= 1,
+        // so the header (and with it the way out of full screen) never came back. Moves
+        // arrive from y=3 (lab 2026-11-10, Win11, probed through the window title).
+        if (dy <= 4) {
             if (!wait_window_toolbar) {
                 wait_window_toolbar = true;
                 self.timer(300ms, function() {
