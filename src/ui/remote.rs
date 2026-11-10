@@ -122,6 +122,59 @@ impl DisplayWindowBehavior {
     fn get_keyboard_mode(&mut self) -> String {
         self.session.get_keyboard_mode()
     }
+
+    // R24: the display window's own bar -- so every monitor has controls, not only the
+    // one the session's main window is on.
+    fn ctrl_alt_del(&mut self) {
+        self.session.ctrl_alt_del();
+    }
+
+    fn lock_screen(&mut self) {
+        self.session.lock_screen();
+    }
+
+    /// A fresh frame of this window's display. A resized / full-screen window re-creates
+    /// its video surface, and a static remote screen sends nothing new: the window stayed
+    /// black (lab, full screen from the bar).
+    fn refresh(&mut self) {
+        self.session.refresh_video(self.display as i32);
+    }
+
+    /// Out of full screen, maximized again. On Linux Sciter's windowState = SHOWN does not
+    /// take a window out of full screen (lab: still _NET_WM_STATE_FULLSCREEN), so GTK is
+    /// asked directly; elsewhere the page's own state change does it.
+    fn leave_fullscreen(&mut self) {
+        #[cfg(target_os = "linux")]
+        {
+            let hwnd = DISPLAY_WINDOWS.with(|w| w.borrow().get(&self.display).map(|(_, win)| win.get_hwnd()));
+            if let Some(h) = hwnd {
+                if !h.is_null() {
+                    // SAFETY: Sciter's HWINDOW on Linux is the toplevel GtkWindow of this
+                    // display window, alive while it is in DISPLAY_WINDOWS (UI thread).
+                    unsafe {
+                        // the handle can be a child widget: act on its toplevel window
+                        let top = gtk::ffi::gtk_widget_get_toplevel(h as *mut gtk::ffi::GtkWidget);
+                        let w = top as *mut gtk::ffi::GtkWindow;
+                        gtk::ffi::gtk_window_unfullscreen(w);
+                        gtk::ffi::gtk_window_maximize(w);
+                    }
+                    log::info!("display window {}: leave full screen (GTK)", self.display + 1);
+                }
+            }
+        }
+    }
+
+    /// Hand an action to the session's main window (remote.tis nemoDisplayWindowAction):
+    /// "all" = every display back in that one window, "toolbar" = bring it forward with
+    /// its header shown (menus: quality, keyboard, chat, recording ...).
+    fn main_action(&mut self, action: String) {
+        let Some(hwnd) = SESSION_HWND.with(|h| h.get()) else {
+            return;
+        };
+        if let Ok(root) = Element::from_window(hwnd) {
+            allow_err!(root.call_function("nemoDisplayWindowAction", &make_args!(action.as_str())));
+        }
+    }
 }
 
 impl sciter::EventHandler for DisplayWindowBehavior {
@@ -224,6 +277,11 @@ impl sciter::EventHandler for DisplayWindowBehavior {
         fn enter(String);
         fn leave(String);
         fn get_keyboard_mode();
+        fn ctrl_alt_del();
+        fn lock_screen();
+        fn main_action(String);
+        fn refresh();
+        fn leave_fullscreen();
     }
 }
 
@@ -258,6 +316,15 @@ fn parse_rect(s: &str) -> Option<(i32, i32, i32, i32)> {
 /// coordinates the same way the main window's tiles do it (remote.tis handleTileMouse).
 fn display_window_html(remote: (i32, i32, i32, i32), monitor_label: &str) -> String {
     let (rx, ry, rw, rh) = remote;
+    // the bar's labels, in the UI language (plain text: no markup in any translation)
+    let t = |k: &str| crate::lang::translate(k.to_owned()).replace('<', "").replace('>', "");
+    let (l_full, l_lock, l_all, l_main, l_close) = (
+        t("Fullscreen"),
+        t("Insert Lock"),
+        t("nemo_mode_all_tip"),
+        t("Show Toolbar"),
+        t("Close"),
+    );
     format!(
         r#"<html window-resizable window-frame="default">
 <head>
@@ -267,6 +334,13 @@ body {{ margin: 0; padding: 0; size: *; overflow: hidden; }}
 video#handler {{ behavior: native-display video; size: *; foreground-size: contain; }}
 div#hint {{ position: absolute; left: 12px; top: 10px; color: #bbb; font: system;
            background: rgba(0,0,0,0.55); padding: 4px 10px; border-radius: 4px; }}
+/* R24: this window's own bar (auto-hidden like the session header; top edge shows it) */
+div#bar {{ position: absolute; top: 0; left: 0; width: *; height: auto; display: none;
+          flow: horizontal; horizontal-align: center; }}
+div#bar > div {{ flow: horizontal; background: #f3f3f3; border: 1px solid #c8c8c8;
+                border-top: none; border-radius: 0 0 6px 6px; padding: 3px 8px;
+                border-spacing: 6px; font: system; }}
+div#bar button {{ padding: 2px 8px; }}
 </style>
 <script type="text/tiscript">
 const R = {{ x: {rx}, y: {ry}, w: {rw}, h: {rh} }};
@@ -348,6 +422,7 @@ handler.onMouse = function(evt) {{
       default: return false;
     }}
     if (mask == 0 && entered) holdGrab();
+    if (mask == 0) showBar(evt.y);
     var x = dx, y = dy;
     if (mask != 3) {{ var p = toRemote(evt.x, evt.y); x = p[0]; y = p[1]; }}
     handler.send_mouse((evt.buttons << 3) | mask, x, y,
@@ -358,6 +433,47 @@ handler.onMouse = function(evt) {{
 // stays visible wherever it is, and the title bar stays, so the window can be restored,
 // resized, moved and closed. (Full screen hid the taskbar and gave no way out.) The hint
 // says which remote display this is, and fades once the first frame has had time to arrive.
+// The bar: shown when the pointer rests on the top edge, hidden once it is back over the
+// picture. A maximized window sits with its invisible frame above the monitor, so the
+// reachable top rows start at y=8..12 -- hence 16 px there (remote.tis revealHeaderAt).
+var bar_pending = false;
+function barEdge() {{ return view.windowState == View.WINDOW_MAXIMIZED ? 16 : 4; }}
+function showBar(y) {{
+    var b = $(#bar);
+    if (y <= barEdge()) {{
+        if (bar_pending || b.style#display == "block") return;
+        bar_pending = true;
+        // on <body>: self.timer is taken by holdGrab (one timer per element, the latest call
+        // wins, and while the pointer is inside it is re-armed on every move), and the bar
+        // itself is display:none -- no timers run on a hidden element
+        $(body).timer(250ms, function() {{ if (bar_pending) {{ bar_pending = false; b.style.set {{ display: "block" }}; }} }});
+    }} else {{
+        bar_pending = false;
+        if (y > 40 + barEdge() && b.style#display != "none") b.style.set {{ display: "none" }};
+    }}
+}}
+// as header.tis does for the session window: a maximized window goes through "shown",
+// and Linux window managers need the full-screen request repeated
+event click $(#b-full) {{
+    $(#bar).style.set {{ display: "none" }};
+    if (view.windowState == View.WINDOW_FULL_SCREEN) {{
+        view.windowState = View.WINDOW_SHOWN;
+        handler.leave_fullscreen();
+        // maximize only once the window manager has left full screen (Linux)
+        $(#tk).timer(200ms, function() {{ view.windowState = View.WINDOW_MAXIMIZED; }});
+    }} else {{
+        if (view.windowState == View.WINDOW_MAXIMIZED) view.windowState = View.WINDOW_SHOWN;
+        view.windowState = View.WINDOW_FULL_SCREEN;
+        $(#tk).timer(150ms, function() {{ view.windowState = View.WINDOW_FULL_SCREEN; }});
+    }}
+}}
+// every size change (maximize, full screen, restore, resize): a new frame for the new surface
+view.on("size", function() {{ handler.timer(400ms, function() {{ handler.refresh(); }}); }});
+event click $(#b-cad) {{ handler.ctrl_alt_del(); }}
+event click $(#b-lock) {{ handler.lock_screen(); }}
+event click $(#b-all) {{ handler.main_action("all"); }}
+event click $(#b-main) {{ handler.main_action("toolbar"); }}
+event click $(#b-close) {{ view.close(); }}
 function self.ready() {{
     view.windowState = View.WINDOW_MAXIMIZED;
     self.timer(150ms, function() {{ view.windowState = View.WINDOW_MAXIMIZED; }});
@@ -365,7 +481,16 @@ function self.ready() {{
 }}
 </script>
 </head>
-<body><video #handler /><div #hint>{monitor_label}</div></body>
+<body><video #handler /><div #hint>{monitor_label}</div><div #tk style="width: 0; height: 0;"></div>
+<div #bar><div>
+  <button #b-full>{l_full}</button>
+  <span style="padding: 2px 6px;">{monitor_label}</span>
+  <button #b-cad>Ctrl+Alt+Del</button>
+  <button #b-lock title="{l_lock}">Win+L</button>
+  <button #b-all title="{l_all}">1 &#x25A3;</button>
+  <button #b-main title="{l_main}">&#x2630;</button>
+  <button #b-close title="{l_close}">&#x2715;</button>
+</div></div></body>
 </html>"#
     )
 }
