@@ -1819,7 +1819,8 @@ md \"{path}\"
 reg add {subkey} /f
 reg add {subkey} /f /v DisplayIcon /t REG_SZ /d \"{display_icon}\"
 reg add {subkey} /f /v DisplayName /t REG_SZ /d \"{display_name}\"
-reg add {subkey} /f /v DisplayVersion /t REG_SZ /d \"{version}\"
+reg add {subkey} /f /v DisplayVersion /t REG_SZ /d \"{version} {ui_label}\"
+reg add {subkey} /f /v TBFDeskUI /t REG_SZ /d \"{ui_kind}\"
 reg add {subkey} /f /v Version /t REG_SZ /d \"{version}\"
 reg add {subkey} /f /v BuildDate /t REG_SZ /d \"{build_date}\"
 reg add {subkey} /f /v InstallLocation /t REG_SZ /d \"{path}\"
@@ -1843,6 +1844,8 @@ copy /Y \"{tmp_path}\\Uninstall {display_name}.lnk\" \"{path}\\\"
     ",
         display_icon = get_custom_icon(&path, &cur_exe).unwrap_or(exe.to_string()),
         version = crate::VERSION.replace("-", "."),
+        ui_label = crate::common::nemo_ui_label(),
+        ui_kind = crate::common::NEMO_UI_KIND,
         build_date = crate::BUILD_DATE,
         after_install = get_after_install(
             &exe,
@@ -3466,6 +3469,10 @@ pub fn update_me(debug: bool) -> ResultType<()> {
         version_build = versions[2];
     }
     let version = crate::VERSION.replace("-", ".");
+    // Apps & Features shows "<version> Flutter" / "<version> Sciter"; TBFDeskUI is the
+    // machine-readable form. `Version` stays a bare version number.
+    let ui_label = crate::common::nemo_ui_label();
+    let ui_kind = crate::common::NEMO_UI_KIND;
     let size = get_directory_size_kb(&path);
     let build_date = crate::BUILD_DATE;
     // Use the icon in the previous installation directory if possible.
@@ -3495,7 +3502,8 @@ pub fn update_me(debug: bool) -> ResultType<()> {
         format!(
             "
 {reg_display_icon}
-reg add {subkey} /f /v DisplayVersion /t REG_SZ /d \"{version}\"
+reg add {subkey} /f /v DisplayVersion /t REG_SZ /d \"{version} {ui_label}\"
+reg add {subkey} /f /v TBFDeskUI /t REG_SZ /d \"{ui_kind}\"
 reg add {subkey} /f /v Version /t REG_SZ /d \"{version}\"
 reg add {subkey} /f /v BuildDate /t REG_SZ /d \"{build_date}\"
 reg add {subkey} /f /v VersionMajor /t REG_DWORD /d {version_major}

@@ -58,10 +58,21 @@ def write_package_metadata(md5_table: dict, output_folder: str, exe: str):
         f.write(exe.encode(encoding='utf-8'))
     print(f"Metadata has been written to {output_path}")
 
-def write_app_metadata(output_folder: str):
+def detect_ui(folder: str) -> str:
+    # TBFDesk: a Flutter build ships its assets in data/flutter_assets; a Sciter build
+    # is one self-contained exe (+ sciter.dll). Detected, not passed, so no build can
+    # forget it.
+    return "flutter" if os.path.isdir(os.path.join(folder, "data", "flutter_assets")) else "sciter"
+
+def write_app_metadata(output_folder: str, ui: str = ""):
     output_path = os.path.join(output_folder, "app_metadata.toml")
     with open(output_path, "w") as f:
         f.write(f"timestamp = {int(datetime.datetime.now().timestamp() * 1000)}\n")
+        # TBFDesk: embedded UNCOMPRESSED in the packer exe (include_bytes!), so the
+        # management server can tell a Flutter installer from a Sciter one on upload
+        # and refuse to publish it on the wrong update channel.
+        if ui:
+            f.write(f'tbfdesk_ui = "{ui}"\n')
     print(f"App metadata has been written to {output_path}")
 
 def build_portable(output_folder: str, target: str):
@@ -104,5 +115,7 @@ if __name__ == '__main__':
     print("Compression level: " + str(options.level))
     md5_table = generate_md5_table(folder, options.level)
     write_package_metadata(md5_table, output_folder, exe)
-    write_app_metadata(output_folder)
+    ui = detect_ui(folder)
+    print("UI: " + ui)
+    write_app_metadata(output_folder, ui)
     build_portable(output_folder, options.target)
