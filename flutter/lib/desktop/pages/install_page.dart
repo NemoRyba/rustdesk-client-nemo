@@ -138,8 +138,13 @@ class _InstallPageBodyState extends State<_InstallPageBody>
               Text(translate('Installation'),
                   style: Theme.of(context).textTheme.headlineMedium),
               // TBFDesk: which build -- and which UI (Flutter / Sciter) -- this installs.
-              Text('TBFDesk $version \u00b7 Build ${bind.mainGetBuildId()}',
-                  style: TextStyle(color: Theme.of(context).hintColor)),
+              // The CLIENT version from the Rust core -- the Dart `version` global is
+              // the Flutter package version, a different number.
+              FutureBuilder<String>(
+                  future: bind.mainGetVersion(),
+                  builder: (context, snap) => Text(
+                      'TBFDesk ${snap.data ?? ''} \u00b7 Build ${bind.mainGetBuildId()}',
+                      style: TextStyle(color: Theme.of(context).hintColor))),
               Row(
                 children: [
                   Text('${translate('Installation Path')}:')
