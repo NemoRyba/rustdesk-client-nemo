@@ -1712,9 +1712,13 @@ class FfiModel with ChangeNotifier {
   // layoutViewAll / handleTileMouse). Set by NemoDisplayMode while this window
   // spans the local monitors, null otherwise.
   final nemoSpan = Rxn<NemoSpanLayout>();
+  // TBFDesk (R24): the monitor of the span the toolbar is on -- the one the pointer last
+  // touched the top edge of, so every monitor has its controls.
+  final nemoSpanToolbarMonitor = 0.obs;
 
   void nemoSetSpan(NemoSpanLayout? span) {
     nemoSpan.value = span;
+    nemoSpanToolbarMonitor.value = 0;
     notifyListeners();
   }
 
@@ -4122,8 +4126,20 @@ class NemoSpanLayout {
   final Map<int, Rect> monitors;
   // The leftmost monitor: the toolbar is centred on it, not on the seam.
   final Rect firstMonitor;
+  // Every local monitor, left to right (window-frame units, relative to the window):
+  // the toolbar moves to the one whose top edge the pointer reaches (R24).
+  final List<Rect> all;
 
-  const NemoSpanLayout({required this.monitors, required this.firstMonitor});
+  const NemoSpanLayout(
+      {required this.monitors, required this.firstMonitor, this.all = const []});
+
+  // Index into [all] of the monitor holding window-local logical point [p], or -1.
+  int monitorAt(Offset p) {
+    for (var i = 0; i < all.length; i++) {
+      if (toLogical(all[i]).contains(p)) return i;
+    }
+    return -1;
+  }
 
   // Window-frame units (mainGetDisplays / WindowController.getFrame) ->
   // window-local logical pixels: frame units are physical pixels on Windows

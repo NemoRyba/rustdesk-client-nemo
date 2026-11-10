@@ -380,7 +380,10 @@ class _RemoteToolbarState extends State<RemoteToolbar> {
       // on the seam between two (R4, Sciter header.tis span_first_width).
       final span = widget.ffi.ffiModel.nemoSpan.value;
       if (span == null) return toolbar;
-      final m = NemoSpanLayout.toLogical(span.firstMonitor);
+      // R24: on the monitor whose top edge the pointer last reached (default: leftmost)
+      final k = widget.ffi.ffiModel.nemoSpanToolbarMonitor.value;
+      final m = NemoSpanLayout.toLogical(
+          k > 0 && k < span.all.length ? span.all[k] : span.firstMonitor);
       return Stack(children: [
         Positioned(
           left: m.left - CanvasModel.leftToEdge,
@@ -3320,7 +3323,10 @@ class NemoDisplayMode {
       }
     }
     ffi.ffiModel.nemoSetSpan(
-        NemoSpanLayout(monitors: monitors, firstMonitor: rel(mons[0])));
+        NemoSpanLayout(
+            monitors: monitors,
+            firstMonitor: rel(mons[0]),
+            all: [for (final m in mons) rel(m)]));
     debugPrint('nemo span: ${mons.length} monitors, window $frame, '
         '${monitors.isNotEmpty ? '1:1 mapping $monitors' : 'proportional'}');
   }

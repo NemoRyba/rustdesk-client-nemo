@@ -1281,6 +1281,16 @@ class InputModel {
 
   void onPointHoverImage(PointerHoverEvent e) {
     _stopFling = true;
+    // TBFDesk (R24): spanning several monitors, the pointer at the top edge of one of
+    // them brings the toolbar to THAT monitor (it starts on the leftmost).
+    final ffiModel = parent.target?.ffiModel;
+    final span = ffiModel?.nemoSpan.value;
+    if (span != null && e.position.dy <= 6) {
+      final k = span.monitorAt(e.position);
+      if (k >= 0 && ffiModel!.nemoSpanToolbarMonitor.value != k) {
+        ffiModel.nemoSpanToolbarMonitor.value = k;
+      }
+    }
     if (isViewOnly && !showMyCursor) return;
     if (e.kind != ui.PointerDeviceKind.mouse) return;
 
