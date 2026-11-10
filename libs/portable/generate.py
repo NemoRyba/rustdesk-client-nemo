@@ -113,9 +113,11 @@ if __name__ == '__main__':
     exe = '.' + exe[len(os.path.abspath(folder)):]
     print("Executable path: " + exe)
     print("Compression level: " + str(options.level))
+    # before generate_md5_table: it chdirs into the folder and never back (os.curdir is
+    # the literal '.'), so a relative folder no longer resolves after it
+    ui = detect_ui(os.path.abspath(folder))
+    print("UI: " + ui)
     md5_table = generate_md5_table(folder, options.level)
     write_package_metadata(md5_table, output_folder, exe)
-    ui = detect_ui(folder)
-    print("UI: " + ui)
     write_app_metadata(output_folder, ui)
     build_portable(output_folder, options.target)
