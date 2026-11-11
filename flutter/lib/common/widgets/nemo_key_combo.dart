@@ -4,7 +4,7 @@
 //
 // Remote desktop session: sent with session_input_key -- the main key "pressed" with the
 // modifiers as flags (the way the mobile soft keyboard sends combinations); AltGr as
-// right-Alt down / key / right-Alt up.
+// the "AltGr+" name prefix (right Alt in the key's own modifier list).
 // Console (terminal) session: the xterm byte sequence for the combination (Ctrl+letter =
 // control character, Alt = ESC prefix, modified arrows/F-keys = CSI 1;<mod>).
 //
@@ -27,6 +27,22 @@ class NemoKey {
   const NemoKey(this.label, this.vk);
 }
 
+List<NemoKey> _keysWhere(bool Function(NemoKey) f) => nemoComboKeys.where(f).toList();
+
+bool _isLetter(NemoKey k) => k.vk.length == 4 && RegExp(r'^VK_[A-Z]$').hasMatch(k.vk);
+bool _isDigitOrSign(NemoKey k) =>
+    RegExp(r'^VK_[0-9]$').hasMatch(k.vk) ||
+    ['VK_MINUS', 'VK_PLUS', 'VK_COMMA', 'VK_SLASH'].contains(k.vk);
+bool _isFKey(NemoKey k) => RegExp(r'^VK_F[0-9]+$').hasMatch(k.vk);
+
+final List<(String, List<NemoKey>)> _keyGroups = [
+  ('nemo_key_group_function', _keysWhere(_isFKey)),
+  ('nemo_key_group_special',
+      _keysWhere((k) => !_isLetter(k) && !_isDigitOrSign(k) && !_isFKey(k))),
+  ('nemo_key_group_letters', _keysWhere(_isLetter)),
+  ('nemo_key_group_digits', _keysWhere(_isDigitOrSign)),
+];
+
 final List<NemoKey> nemoComboKeys = [
   for (var c = 'A'.codeUnitAt(0); c <= 'Z'.codeUnitAt(0); c++)
     NemoKey(String.fromCharCode(c), 'VK_${String.fromCharCode(c)}'),
@@ -36,21 +52,21 @@ final List<NemoKey> nemoComboKeys = [
   const NemoKey('Tab', 'VK_TAB'),
   const NemoKey('Enter', 'VK_RETURN'),
   const NemoKey('Backspace', 'VK_BACK'),
-  const NemoKey('Entf / Del', 'VK_DELETE'),
-  const NemoKey('Einfg / Ins', 'VK_INSERT'),
-  const NemoKey('Pos1 / Home', 'VK_HOME'),
-  const NemoKey('Ende / End', 'VK_END'),
-  const NemoKey('Bild ↑ / PgUp', 'VK_PRIOR'),
-  const NemoKey('Bild ↓ / PgDn', 'VK_NEXT'),
+  const NemoKey('Entf/Del', 'VK_DELETE'),
+  const NemoKey('Einfg/Ins', 'VK_INSERT'),
+  const NemoKey('Pos1/Home', 'VK_HOME'),
+  const NemoKey('Ende/End', 'VK_END'),
+  const NemoKey('Bild↑', 'VK_PRIOR'),
+  const NemoKey('Bild↓', 'VK_NEXT'),
   const NemoKey('↑', 'VK_UP'),
   const NemoKey('↓', 'VK_DOWN'),
   const NemoKey('←', 'VK_LEFT'),
   const NemoKey('→', 'VK_RIGHT'),
-  const NemoKey('Leertaste / Space', 'VK_SPACE'),
-  const NemoKey('Druck / Print', 'VK_SNAPSHOT'),
+  const NemoKey('Leer/Space', 'VK_SPACE'),
+  const NemoKey('Druck/Print', 'VK_SNAPSHOT'),
   const NemoKey('Pause', 'VK_PAUSE'),
-  const NemoKey('Rollen / Scroll Lock', 'VK_SCROLL'),
-  const NemoKey('Menü / Menu', 'Apps'),
+  const NemoKey('Rollen', 'VK_SCROLL'),
+  const NemoKey('Menü', 'Apps'),
   const NemoKey('Win', 'Meta'),
   const NemoKey('-', 'VK_MINUS'),
   const NemoKey('+', 'VK_PLUS'),
@@ -185,39 +201,18 @@ class NemoCombo {
     return null;
   }
 
-  /// Send it into a remote desktop session.
+  /// Send it into a remote desktop session. AltGr travels as the "AltGr+" name prefix
+  /// (Session::input_key): the key with right Alt in its own modifier list.
   void sendToSession(SessionID sessionId) {
-    if (altgr) {
-      bind.sessionInputKey(
-          sessionId: sessionId,
-          name: 'RAlt',
-          down: true,
-          press: false,
-          alt: false,
-          ctrl: false,
-          shift: false,
-          command: false);
-    }
     bind.sessionInputKey(
         sessionId: sessionId,
-        name: vk,
+        name: altgr ? 'AltGr+$vk' : vk,
         down: false,
         press: true,
         alt: alt,
         ctrl: ctrl,
         shift: shift,
         command: win);
-    if (altgr) {
-      bind.sessionInputKey(
-          sessionId: sessionId,
-          name: 'RAlt',
-          down: false,
-          press: false,
-          alt: false,
-          ctrl: false,
-          shift: false,
-          command: false);
-    }
   }
 }
 
@@ -301,18 +296,31 @@ Future<void> showNemoKeyComboDialog(
                     enabled: !isTerminal),
               ]),
               const SizedBox(height: 12),
-              Text(translate('nemo_key')),
-              DropdownButton<String>(
-                isExpanded: true,
-                value: combo.vk,
-                items: nemoComboKeys
-                    .map((k) => DropdownMenuItem(value: k.vk, child: Text(k.label)))
-                    .toList(),
-                onChanged: (v) => setState(() {
-                  if (v != null) combo.vk = v;
-                  error = null;
-                }),
-              ),
+              // Keys as tappable chips in groups (a 70-entry dropdown was clumsy with
+              // a mouse and worse on a phone).
+              for (final group in _keyGroups) ...[
+                const SizedBox(height: 10),
+                Text(translate(group.$1),
+                    style: const TextStyle(fontSize: 12, color: Colors.grey)),
+                const SizedBox(height: 4),
+                Wrap(
+                  spacing: 4,
+                  runSpacing: 4,
+                  children: group.$2
+                      .map((k) => ChoiceChip(
+                            label: Text(k.label),
+                            selected: combo.vk == k.vk,
+                            visualDensity: VisualDensity.compact,
+                            materialTapTargetSize:
+                                MaterialTapTargetSize.shrinkWrap,
+                            onSelected: (_) => setState(() {
+                              combo.vk = k.vk;
+                              error = null;
+                            }),
+                          ))
+                      .toList(),
+                ),
+              ],
               const SizedBox(height: 8),
               Text(combo.label,
                   style: const TextStyle(fontWeight: FontWeight.bold)),

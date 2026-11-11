@@ -860,7 +860,7 @@ handler.updateRecordStatus = function(status) {
 // TBFDesk: "Send key combination" -- any modifiers plus any key, for what the local
 // keyboard cannot deliver (the local OS grabs Win+L, Alt+Tab, Ctrl+Alt+F1, ...). Same as
 // the Flutter UI (flutter/lib/common/widgets/nemo_key_combo.dart): the key "pressed" with
-// modifier flags; AltGr = right Alt down / key / right Alt up. Recent combinations are
+// modifier flags; AltGr = the key with right Alt in its modifier list ("AltGr+" prefix). Recent combinations are
 // remembered per remote computer (peer option nemo-key-combo-recent).
 var NEMO_COMBO_KEYS = (function() {
     var k = [];
@@ -914,9 +914,8 @@ function nemoComboRecent() {
 }
 
 function nemoSendCombo(c) {
-    if (c.altgr) handler.nemo_input_key("RAlt", true, false, false, false, false, false);
-    handler.nemo_input_key(c.vk, false, true, c.alt, c.ctrl, c.shift, c.win);
-    if (c.altgr) handler.nemo_input_key("RAlt", false, false, false, false, false, false);
+    // AltGr: "AltGr+" prefix = right Alt in the key's own modifier list (ui_session_interface).
+    handler.nemo_input_key((c.altgr ? "AltGr+" : "") + c.vk, false, true, c.alt, c.ctrl, c.shift, c.win);
     var list = [nemoComboEncode(c)];
     for (var r in nemoComboRecent()) {
         var e = nemoComboEncode(r);
