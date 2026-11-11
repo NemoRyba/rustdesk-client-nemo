@@ -313,6 +313,7 @@ class Header: Reactor.Component {
                 {handler.get_audit_server("conn") && <li #note>{translate('Note')}</li>}
                 <div .separator />
                 {keyboard_enabled && (pi.platform == "Linux" || pi.sas_enabled) ? <li #ctrl-alt-del>{translate('Insert')} Ctrl + Alt + Del</li> : ""}
+                {keyboard_enabled ? <li #nemo-key-combo>{translate('nemo_key_combo')}...</li> : ""}
                 {restart_enabled && (pi.platform == "Linux" || pi.platform == "Windows" || pi.platform == "Mac OS") ? <li #restart_remote_device>{translate('Restart remote device')}</li> : ""}
                 {keyboard_enabled ? <li #lock-screen>{translate('Insert Lock')}</li> : ""}
                 {keyboard_enabled && pi.platform == "Windows" && pi.sas_enabled ? <li #block-input>{translate("Block user input")}</li> : ""}
@@ -475,6 +476,10 @@ class Header: Reactor.Component {
 
     event click $(#ctrl-alt-del) {
         handler.ctrl_alt_del();
+    }
+
+    event click $(#nemo-key-combo) {
+        nemoKeyCombo();
     }
 
     event click $(#restart_remote_device) {
@@ -849,4 +854,99 @@ handler.setConnectionType = function(secured, direct, stream_type) {
 handler.updateRecordStatus = function(status) {
     recording = status;
     header.update();
+}
+
+
+// TBFDesk: "Send key combination" -- any modifiers plus any key, for what the local
+// keyboard cannot deliver (the local OS grabs Win+L, Alt+Tab, Ctrl+Alt+F1, ...). Same as
+// the Flutter UI (flutter/lib/common/widgets/nemo_key_combo.dart): the key "pressed" with
+// modifier flags; AltGr = the key with right Alt in its modifier list ("AltGr+" prefix). Recent combinations are
+// remembered per remote computer (peer option nemo-key-combo-recent).
+var NEMO_COMBO_KEYS = (function() {
+    var k = [];
+    for (var c = 65; c <= 90; c++) { var ch = String.fromCharCode(c); k.push([ch, "VK_" + ch]); }
+    for (var d = 0; d <= 9; d++) k.push([d.toString(), "VK_" + d]);
+    for (var f = 1; f <= 12; f++) k.push(["F" + f, "VK_F" + f]);
+    return k.concat([["Esc", "VK_ESCAPE"], ["Tab", "VK_TAB"], ["Enter", "VK_RETURN"],
+        ["Backspace", "VK_BACK"], ["Entf / Del", "VK_DELETE"], ["Einfg / Ins", "VK_INSERT"],
+        ["Pos1 / Home", "VK_HOME"], ["Ende / End", "VK_END"], ["Bild \u2191 / PgUp", "VK_PRIOR"],
+        ["Bild \u2193 / PgDn", "VK_NEXT"], ["\u2191", "VK_UP"], ["\u2193", "VK_DOWN"],
+        ["\u2190", "VK_LEFT"], ["\u2192", "VK_RIGHT"], ["Leertaste / Space", "VK_SPACE"],
+        ["Druck / Print", "VK_SNAPSHOT"], ["Pause", "VK_PAUSE"], ["Rollen / Scroll Lock", "VK_SCROLL"],
+        ["Men\u00fc / Menu", "Apps"], ["Win", "Meta"], ["-", "VK_MINUS"], ["+", "VK_PLUS"],
+        [",", "VK_COMMA"], ["/", "VK_SLASH"]]);
+})();
+
+function nemoComboKeyLabel(vk) {
+    for (var k in NEMO_COMBO_KEYS) if (k[1] == vk) return k[0];
+    return vk;
+}
+
+function nemoComboLabel(c) {
+    var p = [];
+    if (c.ctrl) p.push(translate("nemo_key_ctrl"));
+    if (c.alt) p.push("Alt");
+    if (c.altgr) p.push("AltGr");
+    if (c.shift) p.push(translate("nemo_key_shift"));
+    if (c.win) p.push("Win");
+    p.push(nemoComboKeyLabel(c.vk));
+    return p.join(" + ");
+}
+
+function nemoComboEncode(c) {
+    return (c.ctrl ? "c" : "") + (c.alt ? "a" : "") + (c.shift ? "s" : "") + (c.win ? "w" : "") + (c.altgr ? "g" : "") + ":" + c.vk;
+}
+
+function nemoComboDecode(s) {
+    var i = s.indexOf(":");
+    if (i < 0) return null;
+    var m = s.substr(0, i);
+    return { ctrl: m.indexOf("c") >= 0, alt: m.indexOf("a") >= 0, shift: m.indexOf("s") >= 0,
+             win: m.indexOf("w") >= 0, altgr: m.indexOf("g") >= 0, vk: s.substr(i + 1) };
+}
+
+function nemoComboRecent() {
+    var raw = handler.get_option("nemo-key-combo-recent") || "";
+    var out = [];
+    if (!raw) return out;
+    for (var s in raw.split(";")) { var c = nemoComboDecode(s); if (c) out.push(c); }
+    return out;
+}
+
+function nemoSendCombo(c) {
+    // AltGr: "AltGr+" prefix = right Alt in the key's own modifier list (ui_session_interface).
+    handler.nemo_input_key((c.altgr ? "AltGr+" : "") + c.vk, false, true, c.alt, c.ctrl, c.shift, c.win);
+    var list = [nemoComboEncode(c)];
+    for (var r in nemoComboRecent()) {
+        var e = nemoComboEncode(r);
+        if (e != list[0] && list.length < 8) list.push(e);
+    }
+    handler.set_option("nemo-key-combo-recent", list.join(";"));
+}
+
+function nemoKeyCombo() {
+    var recent = nemoComboRecent();
+    var keyOptions = NEMO_COMBO_KEYS.map(function(k) {
+        return <option value={k[1]} selected={k[1] == "VK_DELETE"}>{k[0]}</option>;
+    });
+    var recentOptions = [<option value="">{"\u2014"}</option>].concat(recent.map(function(c) {
+        return <option value={nemoComboEncode(c)}>{nemoComboLabel(c)}</option>;
+    }));
+    msgbox("custom", translate("nemo_key_combo"), <div .form style="line-height: 2em;">
+        <div>
+          <button|checkbox name="ctrl">{translate("nemo_key_ctrl")}</button>
+          <button|checkbox name="alt">Alt</button>
+          <button|checkbox name="shift">{translate("nemo_key_shift")}</button>
+          <button|checkbox name="win">Win</button>
+          <button|checkbox name="altgr">AltGr</button>
+        </div>
+        <div>{translate("nemo_key")}: <select|dropdown name="vk">{keyOptions}</select></div>
+        {recent.length ? <div>{translate("nemo_key_combo_recent")}: <select|dropdown name="recent">{recentOptions}</select></div> : ""}
+      </div>, "", function(res=null) {
+        if (!res) return;
+        var c = null;
+        if (res.recent) c = nemoComboDecode(res.recent);
+        if (!c) c = { ctrl: !!res.ctrl, alt: !!res.alt, shift: !!res.shift, win: !!res.win, altgr: !!res.altgr, vk: res.vk || "VK_DELETE" };
+        nemoSendCombo(c);
+      }, recent.length ? 260 : 220, 520);
 }

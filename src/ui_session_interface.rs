@@ -908,6 +908,35 @@ impl<T: InvokeUiSession> Session<T> {
         shift: bool,
         command: bool,
     ) {
+        // TBFDesk "AltGr+<name>" (key-combination picker, both UIs): the key with the right
+        // Alt (AltGr) held -- one down and one up event that carry ControlKey::RAlt in their
+        // modifiers; the receiver presses listed modifiers before the key (input_service
+        // press_modifiers). A separate RAlt down / key / RAlt up did not work: the key
+        // event's modifier sync released the right Alt first (lab: Alt_R, then a plain q).
+        if let Some(rest) = name.strip_prefix("AltGr+") {
+            let chars: Vec<char> = rest.chars().collect();
+            let key = if chars.len() == 1 {
+                Some(Key::_Raw(chars[0] as _))
+            } else {
+                KEY_MAP.get(rest).cloned()
+            };
+            if let Some(key) = key {
+                for key_down in [true, false] {
+                    let mut key_event = KeyEvent::new();
+                    match &key {
+                        Key::Chr(chr) => key_event.set_chr(*chr),
+                        Key::ControlKey(k) => key_event.set_control_key(k.clone()),
+                        Key::_Raw(raw) => key_event.set_chr(*raw),
+                    }
+                    key_event.down = key_down;
+                    keyboard::client::legacy_modifiers(&mut key_event, alt, ctrl, shift, command);
+                    key_event.modifiers.push(ControlKey::RAlt.into());
+                    key_event.mode = KeyboardMode::Legacy.into();
+                    self.send_key_event(&key_event);
+                }
+            }
+            return;
+        }
         let chars: Vec<char> = name.chars().collect();
         if chars.len() == 1 {
             let key = Key::_Raw(chars[0] as _);

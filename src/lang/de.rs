@@ -966,5 +966,12 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("malformed ticket key", "ungültiger Autorisierungsschlüssel"),
         ("the connecting computer did not prove the authorization is its own", "der verbindende Computer konnte nicht nachweisen, dass die Autorisierung ihm gehört"),
         ("this computer has no management key to check the authorization with", "dieser Computer hat keinen Verwaltungsschlüssel, um die Autorisierung zu prüfen"),
+        ("nemo_key_combo", "Tastenkombination senden"),
+        ("nemo_key_combo_recent", "Zuletzt verwendet"),
+        ("nemo_key", "Taste"),
+        ("nemo_key_ctrl", "Strg"),
+        ("nemo_key_shift", "Umschalt"),
+        ("You are blocked by the administrator", "Der Administrator hat diese Verbindung gesperrt."),
+        ("Remote terminal is not supported by the remote side", "Die Gegenstelle bietet keine Konsole (Terminal) an – z. B. ein Android-Gerät."),
     ].iter().cloned().collect();
 }
