@@ -973,5 +973,6 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("nemo_key_shift", "Umschalt"),
         ("You are blocked by the administrator", "Der Administrator hat diese Verbindung gesperrt."),
         ("Remote terminal is not supported by the remote side", "Die Gegenstelle bietet keine Konsole (Terminal) an – z. B. ein Android-Gerät."),
+        ("No active console user logged on, please connect and logon first.", "An diesem Computer ist niemand angemeldet. Bitte zuerst verbinden und anmelden."),
     ].iter().cloned().collect();
 }
