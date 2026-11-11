@@ -971,6 +971,7 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("Share log", "Protokoll teilen"),
         ("Support", "Support"),
         ("Build", "Build"),
+        ("No active console user logged on, please connect and logon first.", "An diesem Computer ist niemand angemeldet. Bitte zuerst verbinden und anmelden."),
         ("nemo_key_combo", "Tastenkombination senden"),
         ("nemo_key_combo_short", "Kombi"),
         ("nemo_key_combo_send", "Senden"),
