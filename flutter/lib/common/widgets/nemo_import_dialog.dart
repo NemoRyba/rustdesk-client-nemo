@@ -40,6 +40,15 @@ Future<String?> _pickSetupFile() async {
   } catch (e) {
     debugPrint('nemo import: cannot read $path: $e');
     return '';
+  } finally {
+    // TBFDesk: on Android/iOS the picker hands over a COPY in the app cache
+    // (cache/file_picker/...). A setup string carries the device's private key, so the
+    // copy must not stay behind once it has been read.
+    if (isAndroid || isIOS) {
+      try {
+        await FilePicker.platform.clearTemporaryFiles();
+      } catch (_) {}
+    }
   }
 }
 

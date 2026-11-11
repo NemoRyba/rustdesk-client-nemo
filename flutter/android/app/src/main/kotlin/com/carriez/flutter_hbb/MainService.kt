@@ -245,7 +245,11 @@ class MainService : Service() {
         val configPath = prefs.getString(KEY_APP_DIR_CONFIG_PATH, "") ?: ""
         FFI.startServer(configPath, "")
 
-        createForegroundNotification()
+        // TBFDesk (targetSdk 37): no startForeground here. The service is bound as soon as
+        // the app starts, and since Android 14 a "mediaProjection" foreground service may
+        // only start AFTER the user agreed to screen capture -- otherwise the app crashed
+        // ("Starting FGS with type mediaProjection ... requires permission"). It goes to
+        // the foreground in onStartCommand, once the consent result is there.
     }
 
     override fun onDestroy() {
@@ -327,8 +331,6 @@ class MainService : Service() {
         Log.d("whichService", "this service: ${Thread.currentThread()}")
         super.onStartCommand(intent, flags, startId)
         if (intent?.action == ACT_INIT_MEDIA_PROJECTION_AND_SERVICE) {
-            createForegroundNotification()
-
             if (intent.getBooleanExtra(EXT_INIT_FROM_BOOT, false)) {
                 FFI.startService()
             }
@@ -337,8 +339,23 @@ class MainService : Service() {
                 getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
 
             intent.getParcelableExtra<Intent>(EXT_MEDIA_PROJECTION_RES_INTENT)?.let {
+                // consent given: foreground first, then the projection (Android 14+ order)
+                createForegroundNotification()
                 mediaProjection =
                     mediaProjectionManager.getMediaProjection(Activity.RESULT_OK, it)
+                // TBFDesk (targetSdk 34+): createVirtualDisplay throws "Must register a
+                // callback before starting capture" without this -- a connected viewer then
+                // waited forever for the first frame. onStop = the user (status-bar chip)
+                // or the system ended the projection: stop sharing the same way the app's
+                // own "stop" does.
+                mediaProjection?.registerCallback(object : MediaProjection.Callback() {
+                    override fun onStop() {
+                        Log.d(logTag, "MediaProjection stopped by the system or the user")
+                        MainActivity.flutterMethodChannel?.invokeMethod(
+                            "on_media_projection_canceled", null
+                        )
+                    }
+                }, Handler(Looper.getMainLooper()))
                 checkMediaPermission()
                 _isReady = true
             } ?: let {

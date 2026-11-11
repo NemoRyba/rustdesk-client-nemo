@@ -44,6 +44,12 @@ class HomePageState extends State<HomePage> {
   void initState() {
     super.initState();
     initPages();
+    // TBFDesk (Android 17): ask for local-network access at start, with an explanation
+    // when refused (connect and screen sharing check again).
+    if (isAndroid) {
+      WidgetsBinding.instance
+          .addPostFrameCallback((_) => nemoEnsureLocalNetworkAccess());
+    }
   }
 
   void initPages() {

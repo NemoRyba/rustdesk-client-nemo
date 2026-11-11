@@ -590,6 +590,15 @@ impl Drop for CheckTestNatType {
 }
 
 pub fn test_nat_type() {
+    // TBFDesk: the NAT test talks to the rendezvous server only. With none configured
+    // (a fresh, unprovisioned client) there is nothing in the company network to ask, and
+    // the upstream loop retried an empty address forever ("failed to lookup address").
+    // (get_rendezvous_server() appends ":21116" to an empty host, so check the host.)
+    let server = Config::get_rendezvous_server();
+    if server.split(':').next().unwrap_or("").trim().is_empty() {
+        log::info!("NAT test skipped: no rendezvous server configured");
+        return;
+    }
     test_ipv6_sync();
     use std::sync::atomic::{AtomicBool, Ordering};
     std::thread::spawn(move || {
@@ -3553,6 +3562,10 @@ static STUNS_V6: [&str; 3] = [
 ];
 
 pub async fn test_nat_ipv4() -> ResultType<(SocketAddr, String)> {
+    // TBFDesk: public STUN servers are never contacted (see test_ipv6).
+    if crate::nemo_public_network_blocked() {
+        bail!("public STUN disabled in TBF company network mode");
+    }
     use hbb_common::futures::future::{select_ok, FutureExt};
     let tests = STUNS_V4
         .iter()
@@ -3590,6 +3603,13 @@ async fn test_bind_ipv6() -> ResultType<SocketAddr> {
 }
 
 pub async fn test_ipv6() -> Option<tokio::task::JoinHandle<()>> {
+    // TBFDesk: no public hosts, ever. Upstream asks public STUN servers (Google,
+    // Cloudflare, Nextcloud) for this machine's public IPv6 address -- at start, on every
+    // connect and on every punch request. A company-network client has no business
+    // contacting them; IPv6 hole punching through a public STUN result is simply off.
+    if crate::nemo_public_network_blocked() {
+        return None;
+    }
     if PUBLIC_IPV6_ADDR
         .lock()
         .unwrap()

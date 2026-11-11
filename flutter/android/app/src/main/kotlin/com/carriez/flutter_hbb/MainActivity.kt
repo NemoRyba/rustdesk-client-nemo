@@ -18,6 +18,8 @@ import android.content.ClipboardManager
 import android.os.Bundle
 import android.os.Build
 import android.os.IBinder
+import android.os.Looper
+import android.os.Handler
 import android.util.Log
 import android.view.WindowManager
 import android.media.MediaCodecInfo
@@ -101,7 +103,6 @@ class MainActivity : FlutterActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        requestLocalNetworkAccess()
         if (_rdClipboardManager == null) {
             _rdClipboardManager = RdClipboardManager(getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager)
             FFI.setClipboardManager(_rdClipboardManager!!)
@@ -111,12 +112,29 @@ class MainActivity : FlutterActivity() {
     // Android 17 (API 37): reaching a private / LAN address (the company server, relay and
     // direct endpoints are all on it) needs the runtime permission ACCESS_LOCAL_NETWORK.
     // Without it the system silently drops the connection and every connect times out.
-    // XXPermissions 18.5 predates it, so ask with the platform API, once, at start.
+    // XXPermissions 18.5 predates it, so the platform API is used. The app (Dart) decides
+    // when to ask: at start, before every connection and before sharing the screen.
+    private fun hasLocalNetworkAccess(): Boolean =
+        Build.VERSION.SDK_INT < 37 ||
+            checkSelfPermission(PERMISSION_LOCAL_NETWORK) == PackageManager.PERMISSION_GRANTED
+
     private fun requestLocalNetworkAccess() {
-        if (Build.VERSION.SDK_INT < 37) return
-        if (checkSelfPermission(PERMISSION_LOCAL_NETWORK) == PackageManager.PERMISSION_GRANTED) return
+        if (hasLocalNetworkAccess()) {
+            reportPermissionResult(PERMISSION_LOCAL_NETWORK, true)
+            return
+        }
         Log.i(logTag, "requesting $PERMISSION_LOCAL_NETWORK")
         requestPermissions(arrayOf(PERMISSION_LOCAL_NETWORK), REQUEST_LOCAL_NETWORK)
+    }
+
+    // Unlike common.kt requestPermission (XXPermissions), a denial is reported as well, so
+    // the app can explain and offer "ask again" / "open settings" instead of waiting.
+    private fun reportPermissionResult(type: String, granted: Boolean) {
+        Handler(Looper.getMainLooper()).post {
+            flutterMethodChannel?.invokeMethod(
+                "on_android_permission_result", mapOf("type" to type, "result" to granted)
+            )
+        }
     }
 
     override fun onRequestPermissionsResult(
@@ -126,6 +144,7 @@ class MainActivity : FlutterActivity() {
         if (requestCode == REQUEST_LOCAL_NETWORK) {
             val ok = grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED
             Log.i(logTag, "$PERMISSION_LOCAL_NETWORK granted=$ok")
+            reportPermissionResult(PERMISSION_LOCAL_NETWORK, ok)
         }
     }
 
@@ -182,14 +201,27 @@ class MainActivity : FlutterActivity() {
                     }
                 }
                 "check_permission" -> {
-                    if (call.arguments is String) {
+                    if (call.arguments == PERMISSION_LOCAL_NETWORK) {
+                        result.success(hasLocalNetworkAccess())
+                    } else if (call.arguments is String) {
                         result.success(XXPermissions.isGranted(context, call.arguments as String))
                     } else {
                         result.success(false)
                     }
                 }
+                "should_show_rationale" -> {
+                    // true after one denial: asking again shows the system prompt again.
+                    // false after "don't ask again" (the prompt would not appear any more).
+                    result.success(
+                        call.arguments is String &&
+                            shouldShowRequestPermissionRationale(call.arguments as String)
+                    )
+                }
                 "request_permission" -> {
-                    if (call.arguments is String) {
+                    if (call.arguments == PERMISSION_LOCAL_NETWORK) {
+                        requestLocalNetworkAccess()
+                        result.success(true)
+                    } else if (call.arguments is String) {
                         requestPermission(context, call.arguments as String)
                         result.success(true)
                     } else {

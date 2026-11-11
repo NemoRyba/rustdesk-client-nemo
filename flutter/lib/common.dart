@@ -1542,6 +1542,43 @@ class AndroidPermissionManager {
   }
 }
 
+const kAccessLocalNetwork = "android.permission.ACCESS_LOCAL_NETWORK";
+
+/// TBFDesk (Android 17): reaching the company network (server, relay, direct endpoints,
+/// and incoming sessions on the LAN) needs the runtime permission ACCESS_LOCAL_NETWORK.
+/// Without it Android silently drops the connection and everything just times out. So:
+/// check, ask, and if refused say why it is needed and offer to ask again -- or, after
+/// "don't ask again", to open the app's settings page. Called at start, before every
+/// connection and before the screen is shared. Returns whether access is granted now.
+Future<bool> nemoEnsureLocalNetworkAccess() async {
+  if (!isAndroid) return true;
+  if (await AndroidPermissionManager.check(kAccessLocalNetwork)) return true;
+  for (var round = 0; round < 3; round++) {
+    if (await AndroidPermissionManager.request(kAccessLocalNetwork)) return true;
+    final canAskAgain =
+        await gFFI.invokeMethod("should_show_rationale", kAccessLocalNetwork);
+    final retry = await gFFI.dialogManager.show<bool>((setState, close, context) {
+      return CustomAlertDialog(
+        title: Text(translate('nemo_local_network_title')),
+        content: Text(translate('nemo_local_network_text')),
+        actions: [
+          dialogButton('Cancel', onPressed: () => close(false), isOutline: true),
+          dialogButton(
+              canAskAgain ? 'nemo_local_network_ask_again' : 'nemo_local_network_open_settings',
+              onPressed: () => close(true)),
+        ],
+      );
+    });
+    if (retry != true) return false;
+    if (!canAskAgain) {
+      // The system prompt would not appear any more: the switch is in the app settings.
+      AndroidPermissionManager.startAction(kActionApplicationDetailsSettings);
+      return false;
+    }
+  }
+  return false;
+}
+
 RadioListTile<T> getRadio<T>(
     Widget title, T toValue, T curValue, ValueChanged<T?>? onChange,
     {bool? dense}) {
@@ -2559,6 +2596,9 @@ connect(BuildContext context, String id,
     String? connToken,
     bool? isSharedPassword}) async {
   if (id == '') return;
+  // TBFDesk (Android 17): no connection without local-network access -- explain instead
+  // of letting it time out.
+  if (isAndroid && !await nemoEnsureLocalNetworkAccess()) return;
   if (!isDesktop || desktopType == DesktopType.main) {
     try {
       if (Get.isRegistered<IDTextEditingController>()) {
@@ -3764,12 +3804,10 @@ Widget loadPowered(BuildContext context) {
   if (bind.mainGetBuildinOption(key: "hide-powered-by-me") == 'Y') {
     return SizedBox.shrink();
   }
+  // TBFDesk: the attribution stays, the link to rustdesk.com does not (no public hosts;
+  // same in the Sciter UI).
   return MouseRegion(
-    cursor: SystemMouseCursors.click,
     child: GestureDetector(
-      onTap: () {
-        launchUrl(Uri.parse('https://rustdesk.com'));
-      },
       child: Opacity(
           opacity: 0.5,
           child: Text(

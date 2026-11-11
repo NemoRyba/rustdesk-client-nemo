@@ -414,6 +414,8 @@ class ServerModel with ChangeNotifier {
         stopService();
       }
     } else {
+      // TBFDesk (Android 17): incoming sessions arrive over the company LAN too.
+      if (!await nemoEnsureLocalNetworkAccess()) return;
       await checkRequestNotificationPermission();
       if (bind.mainGetLocalOption(key: kOptionDisableFloatingWindow) != 'Y') {
         await checkFloatingWindowPermission();

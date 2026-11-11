@@ -334,6 +334,10 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("Share log", "Share log"),
         ("Support", "Support"),
         ("Build", "Build"),
+        ("nemo_local_network_title", "Access to the local network"),
+        ("nemo_local_network_text", "TBFDesk reaches the company server and the computers in the company network over the local network. Android only allows this with your permission; without it every connection fails."),
+        ("nemo_local_network_ask_again", "Ask again"),
+        ("nemo_local_network_open_settings", "Open settings"),
         ("Use the ⋮ menu for a direct-only connection.", "Use the ⋮ menu for a direct-only connection."),
     ].iter().cloned().collect();
 }
