@@ -971,6 +971,7 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("Share log", "Protokoll teilen"),
         ("Support", "Support"),
         ("Build", "Build"),
+        ("You are blocked by the administrator", "Der Administrator hat diese Verbindung gesperrt."),
         ("Remote terminal is not supported by the remote side", "Die Gegenstelle bietet keine Konsole (Terminal) an – z. B. ein Android-Gerät."),
         ("Remote terminal not supported", "Konsole nicht verfügbar"),
         ("Remote terminal is not supported by the remote side. Please upgrade to version 1.4.1 or higher.", "Die Gegenstelle bietet keine Konsole (Terminal) an. Bitte dort auf Version 1.4.1 oder neuer aktualisieren."),

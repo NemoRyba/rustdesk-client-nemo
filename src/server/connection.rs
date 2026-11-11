@@ -123,7 +123,7 @@ fn should_record_linux_headless_os_auth_failure(
         && err_msg == crate::client::LOGIN_MSG_PASSWORD_WRONG
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[cfg(not(target_os = "ios"))]
 fn should_use_terminal_os_login_scope(is_terminal: bool, os_login_username: &str) -> bool {
     cfg!(target_os = "windows") && is_terminal && !os_login_username.trim().is_empty()
 }
@@ -237,7 +237,7 @@ pub enum AuthConnType {
     Terminal,
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[cfg(not(target_os = "ios"))]
 #[derive(Clone, Debug)]
 enum TerminalUserToken {
     SelfUser,
@@ -245,7 +245,7 @@ enum TerminalUserToken {
     CurrentLogonUser(crate::terminal_service::UserToken),
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[cfg(not(target_os = "ios"))]
 impl TerminalUserToken {
     fn to_terminal_service_token(&self) -> Option<crate::terminal_service::UserToken> {
         match self {
@@ -353,7 +353,7 @@ pub struct Connection {
     // The user token must be set when terminal is enabled.
     // 0 indicates SYSTEM user
     // other values indicate current user
-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    #[cfg(not(target_os = "ios"))]
     terminal_user_token: Option<TerminalUserToken>,
     terminal_generic_service: Option<Box<GenericService>>,
 }
@@ -532,7 +532,7 @@ impl Connection {
             cm_read_job_ids: HashSet::new(),
             terminal_service_id: "".to_owned(),
             terminal_persistent: false,
-            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            #[cfg(not(target_os = "ios"))]
             terminal_user_token: None,
             terminal_generic_service: None,
         };
@@ -1780,9 +1780,9 @@ impl Connection {
             .unwrap()
             .insert(self.lr.my_id.clone(), self.tx_input.clone());
 
-        // Terminal feature is supported on desktop only
-        #[allow(unused_mut)]
-        let mut terminal = cfg!(not(any(target_os = "android", target_os = "ios")));
+                #[allow(unused_mut)]
+        // TBFDesk: Android too (a shell as the app user, see terminal_service.rs).
+        let mut terminal = cfg!(not(target_os = "ios"));
         #[cfg(target_os = "windows")]
         {
             terminal = terminal && portable_pty::win::check_support().is_ok();
@@ -1791,7 +1791,7 @@ impl Connection {
         pi.sas_enabled = sas_enabled;
         pi.features = Some(Features {
             privacy_mode: privacy_mode::is_privacy_mode_supported(),
-            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            #[cfg(not(target_os = "ios"))]
             terminal,
             ..Default::default()
         })
@@ -1898,7 +1898,7 @@ impl Connection {
             }
         } else if self.terminal {
             self.keyboard = false;
-            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            #[cfg(not(target_os = "ios"))]
             self.init_terminal_service().await;
         } else if self.view_camera {
             if !wait_session_id_confirm {
@@ -2695,7 +2695,7 @@ impl Connection {
             if (password::approve_mode() == ApproveMode::Click && !allow_logon_screen_password)
                 || password::approve_mode() == ApproveMode::Both && !password::has_valid_password()
             {
-                #[cfg(not(any(target_os = "android", target_os = "ios")))]
+                #[cfg(not(target_os = "ios"))]
                 if should_use_terminal_os_login_scope(self.terminal, &lr.os_login.username) {
                     if let Some(keep_alive) = self.prepare_terminal_login_for_authorization().await
                     {
@@ -2723,7 +2723,7 @@ impl Connection {
                 }
             } else if lr.password.is_empty() {
                 if err_msg.is_empty() {
-                    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+                    #[cfg(not(target_os = "ios"))]
                     if should_use_terminal_os_login_scope(self.terminal, &lr.os_login.username) {
                         if let Some(keep_alive) =
                             self.prepare_terminal_login_for_authorization().await
@@ -3655,7 +3655,7 @@ impl Connection {
                     }
                 }
                 Some(message::Union::TerminalAction(action)) => {
-                    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+                    #[cfg(not(target_os = "ios"))]
                     allow_err!(self.handle_terminal_action(action).await);
                     #[cfg(any(target_os = "android", target_os = "ios"))]
                     log::warn!("Terminal action received but not supported on this platform");
@@ -3902,8 +3902,14 @@ impl Connection {
         None
     }
 
+    // TBFDesk: Android -- there is no OS login and only one user: the shell runs as the
+    // TBFDesk app user itself (terminal_service.rs). iOS has no terminal service at all.
     #[cfg(any(target_os = "android", target_os = "ios"))]
     async fn prepare_terminal_login_for_authorization(&mut self) -> Option<bool> {
+        #[cfg(target_os = "android")]
+        if self.terminal && self.terminal_user_token.is_none() {
+            self.terminal_user_token = Some(TerminalUserToken::SelfUser);
+        }
         None
     }
 
@@ -4591,7 +4597,7 @@ impl Connection {
                 }
             }
         }
-        #[cfg(not(any(target_os = "android", target_os = "ios")))]
+        #[cfg(not(target_os = "ios"))]
         if let Ok(q) = o.terminal_persistent.enum_value() {
             if q != BoolOption::NotSet {
                 self.update_terminal_persistence(q == BoolOption::Yes).await;
@@ -5339,13 +5345,13 @@ impl Connection {
         self.send(msg_out).await;
     }
 
-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    #[cfg(not(target_os = "ios"))]
     async fn update_terminal_persistence(&mut self, persistent: bool) {
         self.terminal_persistent = persistent;
         terminal_service::set_persistent(&self.terminal_service_id, persistent).ok();
     }
 
-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    #[cfg(not(target_os = "ios"))]
     async fn init_terminal_service(&mut self) {
         debug_assert!(self.terminal_user_token.is_some());
         let Some(user_token) = self.terminal_user_token.clone() else {
@@ -5365,7 +5371,7 @@ impl Connection {
         self.terminal_generic_service = Some(s);
     }
 
-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    #[cfg(not(target_os = "ios"))]
     async fn handle_terminal_action(&mut self, action: TerminalAction) -> ResultType<()> {
         debug_assert!(self.terminal_user_token.is_some());
         let Some(user_token) = self.terminal_user_token.clone() else {

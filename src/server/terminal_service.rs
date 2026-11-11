@@ -112,7 +112,16 @@ fn get_default_shell() -> String {
         // Shared implementation from terminal_helper; TBFDesk: honours nemo-terminal-shell
         super::terminal_helper::shell_for_kind(super::terminal_helper::nemo_terminal_shell_kind())
     }
-    #[cfg(not(target_os = "windows"))]
+    // TBFDesk: Android's shell. It runs as the TBFDesk app user -- everything an
+    // unprivileged app may do (getprop, ls /sdcard with "all files access", ping, logcat of
+    // its own logs, ...), nothing that needs root or the adb "shell" user. It can read
+    // TBFDesk's own files, the device key included: grant "Enable terminal" accordingly
+    // (operator decision 2026-11-11).
+    #[cfg(target_os = "android")]
+    {
+        return "/system/bin/sh".to_owned();
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "android")))]
     {
         // First try the SHELL environment variable
         if let Ok(shell) = std::env::var("SHELL") {
@@ -1208,6 +1217,20 @@ impl TerminalServiceProxy {
                 cmd.env("LC_CTYPE", "en_US.UTF-8");
                 log::debug!("Set LC_CTYPE=en_US.UTF-8 for macOS PTY");
             }
+        }
+
+        // TBFDesk: Android -- a terminal type the shell knows, a sane PATH, and start in the
+        // shared storage (the app's own data dir is not where an admin wants to land).
+        #[cfg(target_os = "android")]
+        {
+            cmd.env("TERM", "xterm-256color");
+            cmd.env("PATH", "/product/bin:/apex/com.android.runtime/bin:/apex/com.android.art/bin:/system_ext/bin:/system/bin:/system/xbin:/odm/bin:/vendor/bin:/vendor/xbin");
+            let start = ["/storage/emulated/0", "/sdcard", "/"]
+                .into_iter()
+                .find(|d| std::fs::read_dir(d).is_ok())
+                .unwrap_or("/");
+            cmd.cwd(start);
+            cmd.env("HOME", start);
         }
 
         // Note: On Windows with user_token, we use helper mode (handle_open_with_helper)
