@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_hbb/common/widgets/nemo_key_combo.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_hbb/common.dart';
 import 'package:flutter_hbb/common/shared_state.dart';
@@ -236,6 +237,14 @@ List<TTextMenu> toolbarControls(BuildContext context, String id, FFI ffi) {
       TTextMenu(
           child: Text('${translate("Insert Ctrl + Alt + Del")}'),
           onPressed: () => bind.sessionCtrlAltDel(sessionId: sessionId)),
+    );
+  }
+  // TBFDesk: any key combination (nemo_key_combo.dart), on every platform
+  if (isDefaultConn && !ffiModel.viewOnly && ffiModel.keyboard) {
+    v.add(
+      TTextMenu(
+          child: Text('${translate("nemo_key_combo")}...'),
+          onPressed: () => showNemoKeyComboDialog(sessionId: sessionId)),
     );
   }
   // restart

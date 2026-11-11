@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:desktop_multi_window/desktop_multi_window.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_hbb/common/widgets/nemo_key_combo.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_hbb/common.dart';
 import 'package:flutter_hbb/common/widgets/dialog.dart';
@@ -260,6 +261,25 @@ class _TerminalTabPageState extends State<TerminalTabPage> {
         cancelFunc();
         // Also try to close any BotToast overlays
         BotToast.cleanAll();
+      },
+      padding: padding,
+    ));
+
+    // TBFDesk: send any key combination into the selected console
+    menu.add(MenuEntryButton<String>(
+      childBuilder: (TextStyle? style) => Text(
+        '${translate('nemo_key_combo')}...',
+        style: style,
+      ),
+      proc: () {
+        cancelFunc();
+        BotToast.cleanAll();
+        final key = tabController.state.value.selectedTabInfo.key;
+        final parsed = _parseTabKey(key);
+        if (parsed == null) return;
+        final ffi = Get.find<FFI>(tag: 'terminal_${parsed.$1}');
+        final model = ffi.terminalModels[parsed.$2];
+        if (model != null) showNemoKeyComboDialog(terminal: model);
       },
       padding: padding,
     ));

@@ -1063,6 +1063,7 @@ impl sciter::EventHandler for SciterSession {
         fn enter(String);
         fn leave(String);
         fn ctrl_alt_del();
+        fn nemo_input_key(String, bool, bool, bool, bool, bool, bool);
         fn transfer_file();
         fn tunnel();
         fn lock_screen();
@@ -1183,6 +1184,21 @@ impl SciterSession {
 
     pub fn t(&self, name: String) -> String {
         crate::client::translate(name)
+    }
+
+    /// TBFDesk "Send key combination" (header.tis nemoKeyCombo; Flutter:
+    /// nemo_key_combo.dart): one key with modifier flags, or a right-Alt down/up for AltGr.
+    pub fn nemo_input_key(
+        &mut self,
+        name: String,
+        down: bool,
+        press: bool,
+        alt: bool,
+        ctrl: bool,
+        shift: bool,
+        command: bool,
+    ) {
+        self.input_key(&name, down, press, alt, ctrl, shift, command);
     }
 
     pub fn get_icon(&self) -> String {

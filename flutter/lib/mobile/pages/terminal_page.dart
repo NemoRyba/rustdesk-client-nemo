@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:math';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_hbb/common/widgets/nemo_key_combo.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_hbb/common.dart';
 import 'package:flutter_hbb/common/widgets/dialog.dart';
@@ -333,6 +334,22 @@ class _TerminalPageState extends State<TerminalPage>
                 _buildKeyButton('End'),
                 const SizedBox(width: 2),
                 _buildKeyButton('PgUp'),
+                const SizedBox(width: 2),
+                // TBFDesk: any key combination (nemo_key_combo.dart)
+                ElevatedButton(
+                  onPressed: () =>
+                      showNemoKeyComboDialog(terminal: _terminalModel),
+                  child: Text(translate('nemo_key_combo_short')),
+                  style: ElevatedButton.styleFrom(
+                    minimumSize: const Size(48, 32),
+                    padding: const EdgeInsets.symmetric(horizontal: 6),
+                    textStyle: const TextStyle(fontSize: 12),
+                    backgroundColor:
+                        Theme.of(context).colorScheme.surfaceVariant,
+                    foregroundColor:
+                        Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+                ),
               ],
             ),
             Row(
