@@ -1443,11 +1443,19 @@ class AccessibilityListener extends StatelessWidget {
 
   AccessibilityListener({this.child});
 
+  // TBFDesk: only while this phone is being controlled. Injected gestures arrive through
+  // the accessibility service only then; but every touch with size 1.0 was duplicated --
+  // adb taps and (some) touchscreens report size 1.0 too, so a phone CONTROLLING another
+  // computer saw each tap as two fingers: a right-click on the remote, no pointer
+  // movement (lab 2026-11-12: one tap -> pointers 3 and 103 -> onDoubleFinerTap).
+  static bool get _beingControlled =>
+      gFFI.serverModel.isStart && gFFI.serverModel.clients.isNotEmpty;
+
   @override
   Widget build(BuildContext context) {
     return Listener(
         onPointerDown: (evt) {
-          if (evt.size == 1) {
+          if (evt.size == 1 && _beingControlled) {
             GestureBinding.instance.handlePointerEvent(PointerAddedEvent(
                 pointer: evt.pointer + offset, position: evt.position));
             GestureBinding.instance.handlePointerEvent(PointerDownEvent(
@@ -1457,7 +1465,7 @@ class AccessibilityListener extends StatelessWidget {
           }
         },
         onPointerUp: (evt) {
-          if (evt.size == 1) {
+          if (evt.size == 1 && _beingControlled) {
             GestureBinding.instance.handlePointerEvent(PointerUpEvent(
                 pointer: evt.pointer + offset,
                 size: 0.1,
@@ -1467,7 +1475,7 @@ class AccessibilityListener extends StatelessWidget {
           }
         },
         onPointerMove: (evt) {
-          if (evt.size == 1) {
+          if (evt.size == 1 && _beingControlled) {
             GestureBinding.instance.handlePointerEvent(PointerMoveEvent(
                 pointer: evt.pointer + offset,
                 size: 0.1,
