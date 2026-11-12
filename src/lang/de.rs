@@ -974,5 +974,13 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("You are blocked by the administrator", "Der Administrator hat diese Verbindung gesperrt."),
         ("Remote terminal is not supported by the remote side", "Die Gegenstelle bietet keine Konsole (Terminal) an – z. B. ein Android-Gerät."),
         ("No active console user logged on, please connect and logon first.", "An diesem Computer ist niemand angemeldet. Bitte zuerst verbinden und anmelden."),
+        // Server answers to a sign-in / address-book request (hbbs nemo_management.rs), shown as sent.
+        ("invalid username or password", "Benutzername oder Passwort ist falsch."),
+        ("Username and password required", "Benutzername und Passwort erforderlich."),
+        ("Your account is not authorized to use TBFDesk. Contact your administrator.", "Ihr Konto ist nicht für TBFDesk freigegeben. Bitte wenden Sie sich an Ihren Administrator."),
+        ("This server only accepts sign-ins from a provisioned computer. Import the device key your administrator issued for this computer (or ask your administrator for one) and sign in again.", "Dieser Server nimmt Anmeldungen nur von eingerichteten Geräten an. Importieren Sie den Geräteschlüssel, den Ihr Administrator für dieses Gerät ausgestellt hat (oder fragen Sie danach), und melden Sie sich erneut an."),
+        ("This server only accepts encrypted logins. This TBFDesk client is too old to encrypt your password - please update it (or ask your administrator to) and sign in again.", "Dieser Server nimmt nur verschlüsselte Anmeldungen an. Diese TBFDesk-Version ist zu alt, um Ihr Passwort zu verschlüsseln - bitte aktualisieren (lassen) und erneut anmelden."),
+        ("this sign-in is bound to another computer; sign in again from this one", "Diese Anmeldung gehört zu einem anderen Gerät. Bitte auf diesem Gerät neu anmelden."),
+        ("Invalid token", "Die Anmeldung ist nicht mehr gültig. Bitte erneut anmelden."),
     ].iter().cloned().collect();
 }
