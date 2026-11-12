@@ -58,7 +58,10 @@ class KeystoreHelper {
         return gen.generateKey()
     }
 
-    /** plaintext -> base64(iv ‖ ciphertext+tag). A fresh random IV per call (GCM default). */
+    /** plaintext -> base64(iv ‖ ciphertext+tag). A fresh random IV per call (GCM default).
+     *  @Synchronized so a concurrent first-launch get-or-generate of the key cannot race (the
+     *  Rust side also serialises; this is defence in depth). */
+    @Synchronized
     fun wrap(plaintext: String): String {
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, secretKey())
@@ -71,6 +74,7 @@ class KeystoreHelper {
     }
 
     /** base64(iv ‖ ciphertext+tag) -> plaintext. Throws if the blob or tag does not verify. */
+    @Synchronized
     fun unwrap(blob: String): String {
         val raw = Base64.decode(blob, Base64.NO_WRAP)
         require(raw.size > IV_LEN) { "device-key blob too short" }

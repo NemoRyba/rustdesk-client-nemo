@@ -2803,6 +2803,14 @@ pub const NEMO_DEVICE_KEY_WRAP_PREFIX: &str = "ks1:";
 static NEMO_DEVICE_KEY_CACHE: std::sync::Mutex<Option<(String, String)>> =
     std::sync::Mutex::new(None);
 
+// Serialises the WHOLE load/store on Android. Without it, two threads on first launch (the UI
+// gate and the management poll) can both migrate the legacy plaintext at once: the Keystore's
+// get-or-generate would generate the wrapping key twice under the one alias (the second
+// overwrites the first), so the blob written by the losing thread can never be unwrapped and
+// the device key is LOST. Held across the read+decide+wrap/unwrap so only one migration runs.
+#[cfg(target_os = "android")]
+static NEMO_DEVICE_KEY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Persist the device key. Android wraps it with the Keystore AES key (`ks1:` blob) so no
 /// plaintext seed reaches the toml; every other platform keeps the historical plaintext
 /// (desktop relies on OS user-account isolation, a different threat model). Empty clears it.
@@ -2810,6 +2818,8 @@ pub fn nemo_device_key_store(plaintext: &str) {
     let plaintext = plaintext.trim();
     #[cfg(target_os = "android")]
     {
+        // Serialise with load() so a store never races a concurrent first-launch migration.
+        let _lock = NEMO_DEVICE_KEY_LOCK.lock();
         if let Ok(mut c) = NEMO_DEVICE_KEY_CACHE.lock() {
             *c = None;
         }
@@ -2858,6 +2868,15 @@ pub fn nemo_device_key_load() -> String {
     }
     #[cfg(target_os = "android")]
     {
+        // Serialise the whole read+decide+migrate so only one thread ever migrates (see the
+        // lock's comment), then RE-READ under the lock: another thread may have migrated the
+        // value while we waited, in which case we must take the unwrap path, not re-migrate.
+        let _lock = NEMO_DEVICE_KEY_LOCK.lock();
+        let raw = Config::get_option("nemo-device-key");
+        let raw = raw.trim();
+        if raw.is_empty() {
+            return String::new();
+        }
         if let Some(blob) = raw.strip_prefix(NEMO_DEVICE_KEY_WRAP_PREFIX) {
             if let Ok(c) = NEMO_DEVICE_KEY_CACHE.lock() {
                 if let Some((cached_raw, pt)) = c.as_ref() {
@@ -2883,22 +2902,23 @@ pub fn nemo_device_key_load() -> String {
         // blob so it stops being cat-able, but keep working even if the Keystore refuses the
         // wrap (return the plaintext we already have rather than brick provisioning).
         match scrap::android::ffi::nemo_device_key_wrap(raw) {
-            Some(blob) => {
-                Config::set_option(
-                    "nemo-device-key".to_owned(),
-                    format!("{}{}", NEMO_DEVICE_KEY_WRAP_PREFIX, blob),
-                );
+            // Only replace the plaintext once the blob is proven to round-trip back to the
+            // exact same key: a wrap that cannot be unwrapped (keystore churn, a wrong key)
+            // must never overwrite the only copy of the seed.
+            Some(blob)
+                if scrap::android::ffi::nemo_device_key_unwrap(&blob).as_deref() == Some(raw) =>
+            {
+                let stored = format!("{}{}", NEMO_DEVICE_KEY_WRAP_PREFIX, blob);
+                Config::set_option("nemo-device-key".to_owned(), stored.clone());
                 if let Ok(mut c) = NEMO_DEVICE_KEY_CACHE.lock() {
-                    *c = Some((
-                        format!("{}{}", NEMO_DEVICE_KEY_WRAP_PREFIX, blob),
-                        raw.to_owned(),
-                    ));
+                    *c = Some((stored, raw.to_owned()));
                 }
                 log::info!("nemo device key: migrated a legacy plaintext key into the Keystore");
             }
-            None => {
+            _ => {
                 log::error!(
-                    "nemo device key: could not migrate the legacy key into the Keystore (left as-is)"
+                    "nemo device key: could not migrate the legacy key into the Keystore \
+                     (round-trip check failed); left as plaintext"
                 );
             }
         }
