@@ -774,6 +774,9 @@ function getAb() {
     httpRequest(handler.get_api_server() + "/api/ab/get", #post, reqParams, function(data) {
         if (data) {
             if (data.error) {
+                // A revoked sign-in (user disabled, targets / admin flag changed):
+                // sign out so the sign-in prompt replaces a stale address book.
+                if (data.error == 'Invalid token') reset_token();
                 handleAbError(data.error);
                 return;
             }
