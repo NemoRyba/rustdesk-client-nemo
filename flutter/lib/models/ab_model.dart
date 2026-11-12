@@ -103,6 +103,10 @@ class AbModel {
           _syncFromRecent();
         }
       });
+    }
+    // TBFDesk: A21 also on Android/iOS (no desktopType there): the timer used to sit
+    // inside the desktop-main branch, so a phone never followed a server-side change.
+    if (desktopType == DesktopType.main || isMobile) {
       // TBFDesk: A21 - re-fetch the address book when the server bumps
       // "nemo-ab-version" (Sciter index.tis nemoEnforceLogin). Polled every 3 s
       // while logged in; the first value seen is only recorded, not acted on.
@@ -1191,7 +1195,10 @@ class LegacyAb extends BaseAb {
         pullError.value =
             '${translate('pull_ab_failed_tip')}: ${translate(err.toString())}';
       }
-      if (statusCode == 401) {
+      // TBFDesk: the server answers a revoked sign-in (user disabled, targets or
+      // admin flag changed) with HTTP 200 + {"error": "Invalid token"}: sign out,
+      // so the sign-in prompt replaces a stale address book (Sciter ab.tis getAb).
+      if (statusCode == 401 || err.toString() == 'Invalid token') {
         gFFI.userModel.reset(resetOther: true);
       }
     }

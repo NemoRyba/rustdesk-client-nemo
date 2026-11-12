@@ -85,6 +85,12 @@ class UserModel {
       }
       final data = json.decode(response.body);
       final error = data['error'];
+      // TBFDesk: a revoked sign-in comes back as 200 + "Invalid token"; drop it
+      // like Sciter's refreshCurrentUser (reset_token) instead of keeping a dead login.
+      if (error == 'Invalid token') {
+        await reset(resetOther: true);
+        return;
+      }
       if (error != null) {
         throw error;
       }
