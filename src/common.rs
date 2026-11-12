@@ -2780,16 +2780,145 @@ pub fn nemo_seal_login(_key_b64: &str, signed_key_b64: &str, username: &str, pas
     encode64(sealedbox::seal(payload.as_bytes(), &server_pk))
 }
 
+// P-2 (Android device-key at rest): on a phone every process of the app shares one uid,
+// so a console session -- which runs as that same uid -- can read the app's config files
+// even at mode 600. To keep the Ed25519 device-key seed from being a `cat`-able secret in
+// `TBFDesk2.toml`, Android stores it WRAPPED by a non-exportable AES-256-GCM key held in
+// the Android Keystore (alias in KeystoreHelper.kt). The wrapped value lives under the
+// SAME option name `nemo-device-key` with a `ks1:` prefix, so every list, log-redaction
+// and script-secret filter keyed on that name keeps working unchanged; a value with no
+// prefix is legacy plaintext, migrated to wrapped on first load.
+//
+// Honest scope (do NOT claim "P-2 closed"): the Keystore authorises by CALLING UID, and
+// the console shell has the same uid and SELinux domain, so it too could ask keystore2 to
+// unwrap. This removes the plaintext at rest and forces an attacker to run Keystore-calling
+// code inside the app's context instead of reading a file -- a bar-raise, not a boundary.
+// A hard boundary needs the console shell to run under a different uid, out of scope here.
+pub const NEMO_DEVICE_KEY_WRAP_PREFIX: &str = "ks1:";
+
+// In-memory cache of the unwrapped key, keyed on the exact stored blob, so the UI render
+// path (`nemo_device_key_present`) and every poll do not hit the Keystore per call. Cleared
+// on store; repopulated by the next load.
+#[cfg(target_os = "android")]
+static NEMO_DEVICE_KEY_CACHE: std::sync::Mutex<Option<(String, String)>> =
+    std::sync::Mutex::new(None);
+
+/// Persist the device key. Android wraps it with the Keystore AES key (`ks1:` blob) so no
+/// plaintext seed reaches the toml; every other platform keeps the historical plaintext
+/// (desktop relies on OS user-account isolation, a different threat model). Empty clears it.
+pub fn nemo_device_key_store(plaintext: &str) {
+    let plaintext = plaintext.trim();
+    #[cfg(target_os = "android")]
+    {
+        if let Ok(mut c) = NEMO_DEVICE_KEY_CACHE.lock() {
+            *c = None;
+        }
+        if plaintext.is_empty() {
+            Config::set_option("nemo-device-key".to_owned(), String::new());
+            return;
+        }
+        if plaintext.starts_with(NEMO_DEVICE_KEY_WRAP_PREFIX) {
+            // Already a wrapped blob -- e.g. a settings save that round-trips the value the
+            // UI read back. Store verbatim; never re-wrap (that would double-encrypt it).
+            Config::set_option("nemo-device-key".to_owned(), plaintext.to_owned());
+            return;
+        }
+        match scrap::android::ffi::nemo_device_key_wrap(plaintext) {
+            Some(blob) => {
+                Config::set_option(
+                    "nemo-device-key".to_owned(),
+                    format!("{}{}", NEMO_DEVICE_KEY_WRAP_PREFIX, blob),
+                );
+            }
+            None => {
+                // Fail closed: never fall back to writing the plaintext seed. Store nothing;
+                // the import's read-back compare then reports the key as refused rather than
+                // silently leaking it. (AndroidKeyStore is present on every supported device,
+                // so this is the "no secure keystore at all" edge, not a normal path.)
+                log::error!(
+                    "nemo device key: Keystore wrap failed; refusing to store the key in cleartext"
+                );
+            }
+        }
+        return;
+    }
+    #[cfg(not(target_os = "android"))]
+    Config::set_option("nemo-device-key".to_owned(), plaintext.to_owned());
+}
+
+/// Read the device key back as the plaintext base64 seed. Android unwraps the `ks1:` blob
+/// via the Keystore (and transparently migrates a legacy plaintext value to wrapped on the
+/// first read); on unwrap failure it returns empty WITHOUT logging the value and without
+/// touching the stored blob. Every other platform returns the stored value unchanged.
+pub fn nemo_device_key_load() -> String {
+    let raw = Config::get_option("nemo-device-key");
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return String::new();
+    }
+    #[cfg(target_os = "android")]
+    {
+        if let Some(blob) = raw.strip_prefix(NEMO_DEVICE_KEY_WRAP_PREFIX) {
+            if let Ok(c) = NEMO_DEVICE_KEY_CACHE.lock() {
+                if let Some((cached_raw, pt)) = c.as_ref() {
+                    if cached_raw == raw {
+                        return pt.clone();
+                    }
+                }
+            }
+            match scrap::android::ffi::nemo_device_key_unwrap(blob) {
+                Some(pt) => {
+                    if let Ok(mut c) = NEMO_DEVICE_KEY_CACHE.lock() {
+                        *c = Some((raw.to_owned(), pt.clone()));
+                    }
+                    return pt;
+                }
+                None => {
+                    log::error!("nemo device key: Keystore unwrap failed; treating as absent");
+                    return String::new();
+                }
+            }
+        }
+        // No prefix: a legacy plaintext key from before this change. Migrate it to a wrapped
+        // blob so it stops being cat-able, but keep working even if the Keystore refuses the
+        // wrap (return the plaintext we already have rather than brick provisioning).
+        match scrap::android::ffi::nemo_device_key_wrap(raw) {
+            Some(blob) => {
+                Config::set_option(
+                    "nemo-device-key".to_owned(),
+                    format!("{}{}", NEMO_DEVICE_KEY_WRAP_PREFIX, blob),
+                );
+                if let Ok(mut c) = NEMO_DEVICE_KEY_CACHE.lock() {
+                    *c = Some((
+                        format!("{}{}", NEMO_DEVICE_KEY_WRAP_PREFIX, blob),
+                        raw.to_owned(),
+                    ));
+                }
+                log::info!("nemo device key: migrated a legacy plaintext key into the Keystore");
+            }
+            None => {
+                log::error!(
+                    "nemo device key: could not migrate the legacy key into the Keystore (left as-is)"
+                );
+            }
+        }
+        return raw.to_owned();
+    }
+    #[cfg(not(target_os = "android"))]
+    raw.to_owned()
+}
+
 // S-DUALKEY: the imported device key (config `nemo-device-key`, base64 of the
 // 64-byte Ed25519 secret key laid out seed(32)||public(32)). None when it is
 // absent or malformed. Lives here (always compiled) so both the management poll
-// and the Sciter UI bridge can reach it regardless of feature gating.
+// and the Sciter UI bridge can reach it regardless of feature gating. On Android the
+// stored value is Keystore-wrapped; `nemo_device_key_load` returns the plaintext seed.
 pub fn nemo_device_ed25519() -> Option<(
     hbb_common::sodiumoxide::crypto::sign::PublicKey,
     hbb_common::sodiumoxide::crypto::sign::SecretKey,
 )> {
     use hbb_common::sodiumoxide::crypto::sign;
-    let sk_b64 = Config::get_option("nemo-device-key");
+    let sk_b64 = nemo_device_key_load();
     let sk_b64 = sk_b64.trim();
     if sk_b64.is_empty() {
         return None;

@@ -490,7 +490,20 @@ pub fn set_options(mut m: HashMap<String, String>) {
         ipc::set_options(m).ok();
     }
     #[cfg(any(target_os = "android", target_os = "ios"))]
-    Config::set_options(m);
+    {
+        // P-2: a device key riding in the map must stay wrapped at rest. `set_options`
+        // REPLACES the stored map, so wrap it, then carry the stored (wrapped) form in the
+        // map so the replace keeps it. `nemo_device_key_store` passes an already-wrapped
+        // value through unchanged, so a settings round-trip does not double-encrypt it.
+        if let Some(dk) = m.remove("nemo-device-key") {
+            crate::common::nemo_device_key_store(&dk);
+            let stored = Config::get_option("nemo-device-key");
+            if !stored.is_empty() {
+                m.insert("nemo-device-key".to_owned(), stored);
+            }
+        }
+        Config::set_options(m);
+    }
 }
 
 /// Provisioning write: the one path that may NOT be silently dropped.
@@ -528,7 +541,12 @@ pub fn nemo_set_provisioned_options(values: Vec<(String, String)>) {
 #[cfg(any(target_os = "android", target_os = "ios"))]
 pub fn nemo_set_provisioned_options(values: Vec<(String, String)>) {
     for (key, value) in values {
-        Config::set_option(key, value);
+        if key == "nemo-device-key" {
+            // P-2: keep the provisioned device key wrapped at rest on Android.
+            crate::common::nemo_device_key_store(&value);
+        } else {
+            Config::set_option(key, value);
+        }
     }
 }
 
@@ -580,7 +598,12 @@ pub fn set_option(key: String, value: String) {
     #[cfg(any(target_os = "android", target_os = "ios"))]
     {
         let _nat = crate::CheckTestNatType::new();
-        Config::set_option(key, value);
+        if key == "nemo-device-key" {
+            // P-2: keep the device key wrapped at rest on Android (identity on iOS).
+            crate::common::nemo_device_key_store(&value);
+        } else {
+            Config::set_option(key, value);
+        }
     }
 }
 

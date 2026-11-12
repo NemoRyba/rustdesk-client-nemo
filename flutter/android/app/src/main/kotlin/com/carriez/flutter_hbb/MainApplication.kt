@@ -13,5 +13,8 @@ class MainApplication : Application() {
         super.onCreate()
         Log.d(TAG, "App start")
         FFI.onAppStart(applicationContext)
+        // TBFDesk P-2: register the device-key Keystore helper in every process (incl. a
+        // BootReceiver-started service) before the management poll first reads the key.
+        FFI.nemoSetKeystoreHelper(KeystoreHelper())
     }
 }

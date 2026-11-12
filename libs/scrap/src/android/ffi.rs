@@ -28,6 +28,11 @@ lazy_static! {
     static ref NDK_CONTEXT_INITED: Mutex<bool> = Default::default();
     static ref MEDIA_CODEC_INFOS: RwLock<Option<MediaCodecInfos>> = RwLock::new(None);
     static ref CLIPBOARD_MANAGER: RwLock<Option<GlobalRef>> = RwLock::new(None);
+    // TBFDesk P-2: a KeystoreHelper instance that wraps/unwraps the device key with a
+    // non-exportable Android-Keystore AES key. Registered from MainApplication.onCreate so
+    // it is available in every process (including a BootReceiver-started service with no
+    // activity), before the management poll first reads the key.
+    static ref KEYSTORE_HELPER: RwLock<Option<GlobalRef>> = RwLock::new(None);
     static ref CLIPBOARDS_HOST: Mutex<Option<MultiClipboards>> = Mutex::new(None);
     static ref CLIPBOARDS_CLIENT: Mutex<Option<MultiClipboards>> = Mutex::new(None);
 }
@@ -224,6 +229,78 @@ pub extern "system" fn Java_ffi_FFI_setClipboardManager(
             *CLIPBOARD_MANAGER.write().unwrap() = Some(manager);
         }
     }
+}
+
+// TBFDesk P-2: register the KeystoreHelper instance (from MainApplication.onCreate). Keeps
+// a GlobalRef so the Rust side can wrap/unwrap the device key on any thread via the Keystore.
+#[no_mangle]
+pub extern "system" fn Java_ffi_FFI_nemoSetKeystoreHelper(
+    env: JNIEnv,
+    _class: JClass,
+    helper: JObject,
+) {
+    log::debug!("KeystoreHelper init from java");
+    if let Ok(jvm) = env.get_java_vm() {
+        let mut jvm_lock = JVM.write().unwrap();
+        if jvm_lock.is_none() {
+            *jvm_lock = Some(jvm);
+        }
+        drop(jvm_lock);
+        if let Ok(helper) = env.new_global_ref(helper) {
+            *KEYSTORE_HELPER.write().unwrap() = Some(helper);
+        }
+    }
+}
+
+// Call a `String -> String` instance method on the registered KeystoreHelper. Returns None
+// if the helper is not registered yet or the Java side threw (e.g. no secure keystore): the
+// caller then treats the key as absent rather than guessing. Never logs the value.
+fn nemo_keystore_call(method: &str, arg: &str) -> Option<String> {
+    let jvm_lock = JVM.read().unwrap();
+    let helper_lock = KEYSTORE_HELPER.read().unwrap();
+    let (Some(jvm), Some(helper)) = (jvm_lock.as_ref(), helper_lock.as_ref()) else {
+        log::error!("nemo keystore: helper not registered ({method})");
+        return None;
+    };
+    let mut env = jvm.attach_current_thread_as_daemon().ok()?;
+    let res = env.with_local_frame(16, |env| -> JniResult<String> {
+        let arg = env.new_string(arg)?;
+        let out = env
+            .call_method(
+                helper,
+                method,
+                "(Ljava/lang/String;)Ljava/lang/String;",
+                &[JValue::Object(&JObject::from(arg))],
+            )?
+            .l()?;
+        let out = JString::from(out);
+        let out = env.get_string(&out)?;
+        Ok(out.to_string_lossy().to_string())
+    });
+    match res {
+        Ok(s) => Some(s),
+        Err(e) => {
+            // A Java exception leaves it pending on the env; clear it so the next JNI call on
+            // this thread is not poisoned. Log the method, never the value.
+            if let Ok(mut env) = jvm.attach_current_thread_as_daemon() {
+                let _ = env.exception_clear();
+            }
+            log::error!("nemo keystore: {method} failed: {e}");
+            None
+        }
+    }
+}
+
+/// Wrap the device-key plaintext with the Keystore AES key. Returns the base64 blob (no
+/// `ks1:` prefix) or None if the keystore is unavailable.
+pub fn nemo_device_key_wrap(plaintext: &str) -> Option<String> {
+    nemo_keystore_call("wrap", plaintext)
+}
+
+/// Unwrap a base64 blob (without the `ks1:` prefix) back to the device-key plaintext, or
+/// None on failure.
+pub fn nemo_device_key_unwrap(blob: &str) -> Option<String> {
+    nemo_keystore_call("unwrap", blob)
 }
 
 #[derive(Debug, Deserialize, Clone)]

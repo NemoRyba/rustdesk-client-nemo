@@ -6,6 +6,7 @@ import android.content.Context
 import java.nio.ByteBuffer
 
 import com.carriez.flutter_hbb.RdClipboardManager
+import com.carriez.flutter_hbb.KeystoreHelper
 
 object FFI {
     init {
@@ -14,6 +15,8 @@ object FFI {
 
     external fun init(ctx: Context)
     external fun onAppStart(ctx: Context)
+    // TBFDesk P-2: hand Rust the KeystoreHelper so the device key is wrapped at rest.
+    external fun nemoSetKeystoreHelper(helper: KeystoreHelper)
     external fun setClipboardManager(clipboardManager: RdClipboardManager)
     external fun startServer(app_dir: String, custom_client_config: String)
     external fun startService()

@@ -302,8 +302,11 @@ pub fn apply_setup(bundle: &SetupBundle) -> SetupOutcome {
     // against a half-configured server.
     if !bundle.device_key.trim().is_empty() {
         let key = bundle.device_key.trim().to_owned();
-        Config::set_option("nemo-device-key".to_owned(), key.clone());
-        if Config::get_option("nemo-device-key").trim() == key {
+        // Android wraps this in the Keystore (P-2); every platform reads it back the same
+        // way, so the compare still proves the key took (a wrap failure reads back empty
+        // and is reported as refused rather than stored in cleartext).
+        crate::common::nemo_device_key_store(&key);
+        if crate::common::nemo_device_key_load().trim() == key {
             out.applied.push("device key imported".to_owned());
         } else {
             out.refused.push(refusal_reason("nemo-device-key", &key));
