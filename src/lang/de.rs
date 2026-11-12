@@ -982,5 +982,7 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("This server only accepts encrypted logins. This TBFDesk client is too old to encrypt your password - please update it (or ask your administrator to) and sign in again.", "Dieser Server nimmt nur verschlüsselte Anmeldungen an. Diese TBFDesk-Version ist zu alt, um Ihr Passwort zu verschlüsseln - bitte aktualisieren (lassen) und erneut anmelden."),
         ("this sign-in is bound to another computer; sign in again from this one", "Diese Anmeldung gehört zu einem anderen Gerät. Bitte auf diesem Gerät neu anmelden."),
         ("Invalid token", "Die Anmeldung ist nicht mehr gültig. Bitte erneut anmelden."),
+        ("you are not permitted to connect to this computer", "Sie dürfen sich nicht mit diesem Computer verbinden."),
+        ("log in to TBFDesk to connect", "Bitte melden Sie sich bei TBFDesk an, um eine Verbindung herzustellen."),
     ].iter().cloned().collect();
 }
