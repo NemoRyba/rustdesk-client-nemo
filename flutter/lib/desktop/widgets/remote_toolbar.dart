@@ -477,6 +477,11 @@ class _RemoteToolbarState extends State<RemoteToolbar> {
       toolbarItems.add(_KeyboardMenu(id: widget.id, ffi: widget.ffi));
     }
     toolbarItems.add(_ChatMenu(id: widget.id, ffi: widget.ffi));
+    // TBFDesk (P3): file transfer as a button of its own, next to chat (Sciter:
+    // header.tis #nemo-transfer-file). Same as the control menu's "Transfer file".
+    if (widget.ffi.connType == ConnType.defaultConn && isDesktop) {
+      toolbarItems.add(_NemoTransferFileMenu(id: widget.id, ffi: widget.ffi));
+    }
     if (!isWeb) {
       toolbarItems.add(_VoiceCallMenu(id: widget.id, ffi: widget.ffi));
     }
@@ -2280,6 +2285,46 @@ class _VoiceCallMenu extends StatelessWidget {
       onPressed: () => bind.sessionCloseVoiceCall(sessionId: ffi.sessionId),
       color: _ToolbarTheme.redColor,
       hoverColor: _ToolbarTheme.hoverRedColor,
+    );
+  }
+}
+
+/// TBFDesk (P3): "Transfer file" -- opens a file-transfer window to this computer next
+/// to the running session, with the session's connection token (toolbar.dart
+/// connectWithSessionToken), exactly like the control-menu entry. Shown only while
+/// nemoSessionFileTransferAllowed: FfiModel notifies on a permission change and on the
+/// view-only toggle, so the button comes and goes live.
+class _NemoTransferFileMenu extends StatelessWidget {
+  final String id;
+  final FFI ffi;
+  const _NemoTransferFileMenu({Key? key, required this.id, required this.ffi})
+      : super(key: key);
+
+  @override
+  Widget build(BuildContext context) {
+    // Subscribe to FfiModel (the same instance as ffi.ffiModel, see RemotePage).
+    Provider.of<FfiModel>(context);
+    if (!nemoSessionFileTransferAllowed(ffi)) return Offstage();
+    return _IconMenuButton(
+      // file_transfer.svg fills its whole view box: centred and smaller, so it
+      // matches the other toolbar icons.
+      icon: SizedBox(
+        width: _ToolbarTheme.buttonSize,
+        height: _ToolbarTheme.buttonSize,
+        child: Center(
+          child: SvgPicture.asset(
+            'assets/file_transfer.svg',
+            width: 18,
+            height: 18,
+            colorFilter: ColorFilter.mode(Colors.white, BlendMode.srcIn),
+          ),
+        ),
+      ),
+      tooltip: 'Transfer file',
+      onPressed: () =>
+          connectWithSessionToken(context, id, ffi, isFileTransfer: true),
+      color: _ToolbarTheme.blueColor,
+      hoverColor: _ToolbarTheme.hoverBlueColor,
     );
   }
 }

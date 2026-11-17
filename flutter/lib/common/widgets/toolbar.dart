@@ -94,7 +94,42 @@ handleOsPasswordAction(
   }
 }
 
-List<TTextMenu> toolbarControls(BuildContext context, String id, FFI ffi) {
+/// TBFDesk (P3): may this session open a file transfer to its computer? One rule for
+/// every place that offers it -- the "Transfer file" control-menu entry and toolbar
+/// button on desktop (remote_toolbar.dart), "Switch to file transfer" on the phone
+/// (mobile/pages/remote_page.dart) and Sciter (header.tis nemoFileTransferAllowed):
+/// a remote-control session, the remote computer allows file transfer for it
+/// (permission "file" -- its own setting, or the TBF policy / control ticket, pushed
+/// live), and the session is not view-only. Hidden otherwise, like the record button.
+bool nemoSessionFileTransferAllowed(FFI ffi) =>
+    ffi.connType == ConnType.defaultConn &&
+    ffi.ffiModel.permissions['file'] != false &&
+    !ffi.ffiModel.viewOnly;
+
+/// Opens another connection to the peer of [ffi]'s session -- file transfer, camera,
+/// terminal or TCP tunnel -- with that session's connection token, so the password it
+/// logged in with is used again (https://github.com/rustdesk/rustdesk/pull/9731).
+/// Does not work for a connection established by "accept".
+/// TBFDesk: a top-level function, so the toolbar's file-transfer button
+/// (remote_toolbar.dart) does exactly what the control-menu entry does.
+void connectWithSessionToken(BuildContext context, String id, FFI ffi,
+    {bool isFileTransfer = false,
+    bool isViewCamera = false,
+    bool isTcpTunneling = false,
+    bool isTerminal = false}) {
+  final connToken = bind.sessionGetConnToken(sessionId: ffi.sessionId);
+  connect(context, id,
+      isFileTransfer: isFileTransfer,
+      isViewCamera: isViewCamera,
+      isTerminal: isTerminal,
+      isTcpTunneling: isTcpTunneling,
+      connToken: connToken);
+}
+
+/// [onSwitchToFileTransfer]: TBFDesk (P3), the phone's "Switch to file transfer"
+/// (mobile/pages/remote_page.dart); null everywhere else.
+List<TTextMenu> toolbarControls(BuildContext context, String id, FFI ffi,
+    {VoidCallback? onSwitchToFileTransfer}) {
   final ffiModel = ffi.ffiModel;
   final pi = ffiModel.pi;
   final perms = ffiModel.permissions;
@@ -166,25 +201,26 @@ List<TTextMenu> toolbarControls(BuildContext context, String id, FFI ffi) {
   // https://github.com/rustdesk/rustdesk/pull/9731
   // Does not work for connection established by "accept".
   connectWithToken(
-      {bool isFileTransfer = false,
-      bool isViewCamera = false,
-      bool isTcpTunneling = false,
-      bool isTerminal = false}) {
-    final connToken = bind.sessionGetConnToken(sessionId: ffi.sessionId);
-    connect(context, id,
-        isFileTransfer: isFileTransfer,
-        isViewCamera: isViewCamera,
-        isTerminal: isTerminal,
-        isTcpTunneling: isTcpTunneling,
-        connToken: connToken);
-  }
+          {bool isFileTransfer = false,
+          bool isViewCamera = false,
+          bool isTcpTunneling = false,
+          bool isTerminal = false}) =>
+      connectWithSessionToken(context, id, ffi,
+          isFileTransfer: isFileTransfer,
+          isViewCamera: isViewCamera,
+          isTcpTunneling: isTcpTunneling,
+          isTerminal: isTerminal);
 
+  // TBFDesk (P3): file transfer only where this session may open one.
+  final fileTransferAllowed = nemoSessionFileTransferAllowed(ffi);
   if (isDefaultConn && isDesktop) {
-    v.add(
-      TTextMenu(
-          child: Text(translate('Transfer file')),
-          onPressed: () => connectWithToken(isFileTransfer: true)),
-    );
+    if (fileTransferAllowed) {
+      v.add(
+        TTextMenu(
+            child: Text(translate('Transfer file')),
+            onPressed: () => connectWithToken(isFileTransfer: true)),
+      );
+    }
     v.add(
       TTextMenu(
           child: Text(translate('View camera')),
@@ -199,6 +235,14 @@ List<TTextMenu> toolbarControls(BuildContext context, String id, FFI ffi) {
       TTextMenu(
           child: Text(translate('TCP tunneling')),
           onPressed: () => connectWithToken(isTcpTunneling: true)),
+    );
+  }
+  // TBFDesk (P3): a phone has one session at a time, so it switches over instead.
+  if (isDefaultConn && onSwitchToFileTransfer != null && fileTransferAllowed) {
+    v.add(
+      TTextMenu(
+          child: Text(translate('nemo_switch_to_file_transfer')),
+          onPressed: onSwitchToFileTransfer),
     );
   }
   // note
