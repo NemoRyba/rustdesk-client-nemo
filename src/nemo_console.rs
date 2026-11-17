@@ -601,6 +601,14 @@ pub fn open_window(id: &str, admin: bool, force_relay: bool) -> String {
                 Err(e) => return format!("{}: {}", tr("Failed"), e),
             },
         };
+        // Nothing startable in its place (TBFDesk removed while this window stayed open,
+        // exe_for_spawn then returns the deleted path): a terminal would still open and
+        // only show "No such file or directory", and Connect would look fine. Say it here,
+        // with the same text as new_remote's error box.
+        if !exe.is_file() {
+            log::error!("console session: {} is not startable", exe.display());
+            return tr("nemo_app_updated_restart_tip");
+        }
         for (term, exec_flag) in linux_terminals() {
             let mut cmd = std::process::Command::new(&term);
             if !exec_flag.is_empty() {
