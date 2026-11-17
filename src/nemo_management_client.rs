@@ -1386,8 +1386,13 @@ fn apply_permanent_password(policy: &ManagementPolicy) {
         return;
     };
     if crate::common::is_server() {
+        // Re-asserted on every poll (set_permanent_password writes nothing when the stored
+        // hash already matches); only an actual change is worth a log line.
+        let before = Config::get_local_permanent_password_storage_and_salt();
         Config::set_permanent_password(password);
-        log::info!("Nemo management applied incoming access password");
+        if Config::get_local_permanent_password_storage_and_salt() != before {
+            log::info!("Nemo management applied incoming access password");
+        }
     } else if crate::ui_interface::set_permanent_password_with_result(password.to_owned()) {
         log::info!("Nemo management applied incoming access password through IPC");
     } else {
