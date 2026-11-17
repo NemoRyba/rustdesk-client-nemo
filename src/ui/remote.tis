@@ -299,10 +299,56 @@ function headerAutoHide() {
         || display_mode == "span" || display_mode == "windows";
 }
 
+// The auto-hidden header (full screen, span, window per display) comes down OVER the
+// picture, as Flutter's toolbar does, instead of taking its place in the layout: there
+// it pushed the page down by its own height every time it came and went, and the
+// picture jumped (lab, Ubuntu 26.04, 2026-11-17; PARITY-GAPS P11). Positioned, it is hit
+// first where it covers the picture, so the pointer on it reaches its buttons; below it,
+// the picture's own mouse handlers still see the pointer and hide it again
+// (revealHeaderAt, handler.onMouse).
+// Not on macOS (its own header handling, adjustBorder), and not in a MAXIMIZED window:
+// there the page sits inside a frame border (adjustBorder: window-frame-width, the
+// invisible resize frame on Windows) that a header placed at 0,0 could start under.
+var header_overlaid = false;    // the header is over the picture right now
+var header_overlay_ok = true;   // false once the tiles were seen to cover it (revealHeaderAt)
+var header_overlay_misses = 0;
+function headerIntoLayout(h) {
+    h.style#position = undefined;
+    h.style#left = undefined;
+    h.style#top = undefined;
+    h.style#width = undefined;
+    h.style["z-index"] = undefined;
+    header_overlaid = false;
+}
+// `pad`: the top padding the callers always gave it (2 * workarea_offset [+ extra]).
+function revealHeaderOverlay(pad) {
+    var h = $(header);
+    if (!h) return;
+    if (!is_osx && header_overlay_ok && view.windowState != View.WINDOW_MAXIMIZED) {
+        h.style.set {
+            position: "absolute",
+            left: "0px",
+            top: "0px",
+            width: "100%",
+            "z-index": "10",
+        };
+        header_overlaid = true;
+        header_overlay_misses = 0;
+    } else if (header_overlaid) {
+        headerIntoLayout(h);
+    }
+    h.style.set { display: "block", padding: pad + "px 0 0 0" };
+}
+
+// The header as a plain bar, in the layout (v), or hidden. A header that came down over
+// the picture (revealHeaderOverlay) goes back into the layout here.
 function setHeaderVisible(v) {
     var h = $(header);
     if (!h) return;
-    if (v) h.style.set { display: "block", padding: "0" };
+    if (v) {
+        if (header_overlaid) headerIntoLayout(h);
+        h.style.set { display: "block", padding: "0" };
+    }
     else h.style.set { display: "none" };
 }
 
@@ -754,6 +800,18 @@ function revealHeaderAt(y, x = -1) {
     // the user can reach is already y=8..12: with the 4 px edge the header, once hidden,
     // never came back -- no toolbar, no full screen, no way out (lab 2026-11-10, Win11).
     var edge = view.windowState == View.WINDOW_MAXIMIZED ? 16 : 4;
+    // Self-check of the overlay (revealHeaderOverlay): over the tiles, the header keeps
+    // the pointer to itself in its rows, so the tiles never report it there. If they do,
+    // the tiles are painted over it and its buttons cannot be reached -- from now on it
+    // comes down in the layout, as it always did.
+    // (the upper half of its rows only, and / scaleFactor: never a row below it)
+    if (header_overlaid && h.style#display == "block" && y >= 0 && y < h.box(#height, #border) / scaleFactor / 2) {
+        if (++header_overlay_misses >= 3) {
+            header_overlay_ok = false;
+            headerIntoLayout(h);
+            stdout.println("header overlay: covered by the tiles, revealed in the layout from now on");
+        }
+    }
     if (y <= edge) {
         if (reveal_pending || h.style#display == "block") return;
         reveal_pending = true;
@@ -762,7 +820,7 @@ function revealHeaderAt(y, x = -1) {
             reveal_pending = false;
             if (headerAutoHide()) {
                 if (display_mode == "span" && x >= 0) span_toolbar_mon = spanMonitorAt(x);
-                h.style.set { display: "block", padding: (2 * workarea_offset) + "px 0 0 0" };
+                revealHeaderOverlay(2 * workarea_offset);
                 updateWindowToolbarPosition();
             }
         });
@@ -781,8 +839,12 @@ function nemoDisplayWindowAction(action) {
     } else if (action == "toolbar") {
         if (view.windowState == View.WINDOW_MINIMIZED) view.windowState = View.WINDOW_MAXIMIZED;
         try { view.activate(true); } catch (e) {}
-        var h = $(header);
-        if (h) { h.style.set { display: "block", padding: (2 * workarea_offset) + "px 0 0 0" }; updateWindowToolbarPosition(); }
+        if ($(header)) {
+            // over the picture while the header auto-hides, a plain bar otherwise
+            if (headerAutoHide()) revealHeaderOverlay(2 * workarea_offset);
+            else setHeaderVisible(true);
+            updateWindowToolbarPosition();
+        }
     }
 }
 
@@ -889,11 +951,9 @@ function handler.onMouse(evt)
                     // workaround for stupid Sciter, without this, click
                     // event not triggered on top part of buttons on toolbar
                     if (is_osx) extra = 10; 
+                    // over the picture, not pushing it down (revealHeaderOverlay)
                     if (view.windowState == View.WINDOW_FULL_SCREEN) {
-                        $(header).style.set {
-                          display: "block",
-                          padding: (2 * workarea_offset + extra) + "px 0 0 0",
-                        };
+                        revealHeaderOverlay(2 * workarea_offset + extra);
                     }
                     wait_window_toolbar = false;
                 });
