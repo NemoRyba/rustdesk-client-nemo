@@ -1102,6 +1102,9 @@ impl Connection {
         video_service::notify_video_frame_fetched_by_conn_id(id, None);
         if conn.authorized {
             password::update_temporary_password();
+            // FT-04: name every rotation in the log so "it changed" can be traced to its
+            // cause (session end / wrong attempts / refresh request / server restart).
+            log::info!("Temporary password rotated: an authorized session ended");
         }
         if let Err(err) = conn
             .try_port_forward_loop(&mut rx_from_cm, &mut rx_from_authed)

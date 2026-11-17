@@ -751,6 +751,14 @@ fn should_start_server(
             should_kill = true;
         }
     } else if is_display_changed || desktop.uid != *uid && !desktop.uid.is_empty() {
+        // FT-04: this restart also gives the server a new one-time password; say so,
+        // because on Wayland nothing else in the log marks it (set_x11_env is X11-only).
+        if server.is_some() {
+            log::info!(
+                "restart server: {} changed (the one-time password changes with it)",
+                if is_display_changed { "display/xauth" } else { "user" }
+            );
+        }
         *uid = desktop.uid.clone();
         if try_x11 {
             set_x11_env(&desktop);
@@ -773,7 +781,10 @@ fn should_start_server(
         // as a workaround to resolve "SpotUdp" (dns resolve)
         // and x server get displays failure issue
         should_kill = true;
-        log::info!("restart server");
+        log::info!(
+            "restart server: {} (the one-time password changes with it)",
+            if *cm0 { "the connection manager closed (sessions ended)" } else { "hourly restart" }
+        );
     }
 
     if should_kill {
