@@ -496,18 +496,28 @@ impl DirectFailure {
     /// May a second "Connect directly" attempt plausibly succeed where this one failed?
     ///
     /// Timeouts: yes. A lost packet, a slow path or a gate that opened late are exactly
-    /// what a second try with a longer budget fixes. A refusal: only when a knock is
-    /// involved, because a knock-gated port can answer with a reset until the daemon has
+    /// what a second try with a longer budget fixes. A refusal: only after a knock that
+    /// went out, because a knock-gated port can answer with a reset until the daemon has
     /// opened it (lab: "connection refused" 0.3 s after the knock); a fresh knock and a
-    /// second connect may find it open. Everything else names something that waiting does
-    /// not change, and an identity failure must never be retried until it happens to pass.
+    /// second connect may find it open. With knocking on but no knock sent (no usable
+    /// key), the second attempt would send none either and meet the same refusal.
+    /// Everything else names something that waiting does not change, and an identity
+    /// failure must never be retried until it happens to pass.
     pub fn retryable(&self, knock: &KnockState) -> bool {
         match self {
             DirectFailure::ConnectTimeout { .. } | DirectFailure::HandshakeTimeout { .. } => true,
-            DirectFailure::Refused => *knock != KnockState::Off,
+            DirectFailure::Refused => matches!(knock, KnockState::Sent(_)),
             _ => false,
         }
     }
+}
+
+/// Did one of `Client::secure_connection`'s own timers expire (READ_TIMEOUT for the
+/// peer's first message, CONNECT_TIMEOUT for our reply, both 18 s)? On a policy budget
+/// or a retry budget above that, they fire before the direct attempt's handshake timer,
+/// and their bare "deadline has elapsed" is a stalled handshake like any other.
+pub fn is_timer_expiry(e: &hbb_common::anyhow::Error) -> bool {
+    e.downcast_ref::<tokio::time::error::Elapsed>().is_some()
 }
 
 /// One failed attempt: why, what the knock did, and how long the attempt took.
@@ -1103,6 +1113,12 @@ mod tests {
         assert!(DirectFailure::HandshakeTimeout { tcp_ms: 1, ms: 1 }.retryable(&off));
         assert!(!DirectFailure::Refused.retryable(&off), "nothing listens: waiting does not help");
         assert!(DirectFailure::Refused.retryable(&sent), "a knock-gated port may open late");
+        assert!(
+            !DirectFailure::Refused.retryable(&KnockState::NotSent("no key".to_owned())),
+            "no knock went out, and the second attempt would send none either"
+        );
+        assert!(DirectFailure::ConnectTimeout { ms: 1 }
+            .retryable(&KnockState::NotSent("no key".to_owned())));
         for f in [
             DirectFailure::KeyMismatch(String::new()),
             DirectFailure::NoServerKey(String::new()),
@@ -1113,6 +1129,24 @@ mod tests {
         ] {
             assert!(!f.retryable(&sent), "{f:?}");
         }
+    }
+
+    /// secure_connection's own 18 s timers surface as tokio's Elapsed inside anyhow; that
+    /// is what the direct attempt turns into a handshake timeout. A message that merely
+    /// reads like one is not.
+    #[test]
+    fn an_inner_handshake_timer_is_recognised_by_type() {
+        let rt = hbb_common::tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        let elapsed = rt
+            .block_on(async { hbb_common::timeout(0, std::future::pending::<()>()).await })
+            .unwrap_err();
+        let e: hbb_common::anyhow::Error = elapsed.into();
+        assert!(is_timer_expiry(&e));
+        assert!(!is_timer_expiry(&hbb_common::anyhow::anyhow!("deadline has elapsed")));
+        assert!(!is_timer_expiry(&handshake_refusal(HandshakeRefusal::Closed, "closed")));
     }
 
     /// The dialog text: the FORCED_DIRECT_FAILED prefix (keeps it out of the automatic

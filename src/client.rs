@@ -426,9 +426,10 @@ impl Client {
         // there and skip the rendezvous. Relay costs ~36% of the link on the lab WAN
         // path, which is the whole reason this exists.
         //
-        // Strictly additive — no endpoint for the id, a knock we could not send, a
-        // refused connect, or a handshake we cannot anchor all return None and fall
-        // through to the unchanged hole-punch / relay path below. Skipped for
+        // Strictly additive — no endpoint for the id (None), a knock we could not send, a
+        // refused connect, or a handshake we cannot anchor (Some(Err), with the reason)
+        // all fall through to the unchanged hole-punch / relay path below, unless the
+        // user asked for "Connect directly" (force_direct, below). Skipped for
         // `other_server` sessions (whose endpoints are not ours to know) and when the
         // user asked for relay explicitly.
         // "Connect directly" (per-peer nemo-force-direct, set by the peer menu): the
@@ -775,6 +776,7 @@ impl Client {
         // nemo-require-encrypted-session is on (it defaults on), so a direct endpoint
         // can never buy an attacker a plaintext session.
         let handshake_ms = ms_left().max(1);
+        let handshake_start = Instant::now();
         let secured = timeout(
             handshake_ms,
             Self::secure_connection(peer_id, Vec::new(), key, &mut conn),
@@ -782,6 +784,16 @@ impl Client {
         .await;
         match secured {
             Ok(Ok(pk)) => Ok((conn, pk)),
+            // secure_connection's own 18 s timers win over ours once the budget leaves
+            // more than that for the handshake (a large policy budget, or the up-to-20 s
+            // retry). Their "deadline has elapsed" is a stalled handshake as well, and is
+            // retried like one, not shown as the catch-all.
+            Ok(Err(e)) if crate::nemo_direct::is_timer_expiry(&e) => {
+                Err(fail(DirectFailure::HandshakeTimeout {
+                    tcp_ms,
+                    ms: handshake_start.elapsed().as_millis() as u64,
+                }))
+            }
             Ok(Err(e)) => Err(fail(crate::nemo_direct::classify_handshake_error(&e))),
             Err(_) => Err(fail(DirectFailure::HandshakeTimeout {
                 tcp_ms,
