@@ -696,7 +696,7 @@ function handleTileMouse(evt, dispIndex) {
     // main surface reveals it when the pointer rests on the top edge (handler.onMouse),
     // but tiles sit on top of that surface and swallow the pointer -- without this the
     // toolbar, and with it the way back out of these modes, was unreachable.
-    if (mask == 0 && headerAutoHide()) revealHeaderAt(evt.yView, evt.xView);
+    if (mask == 0 && headerAutoHide()) revealHeaderAt(evt.yView, evt.xView, evt.buttons != 0);
     if (mask == 0 && entered) holdKeyboardGrab();
     if (!keyboard_enabled) return false;
     var rx = 0;
@@ -742,7 +742,7 @@ function enterViewAll(shown = null) {
     // own (handleTileMouse); this covers the background, or span / window-per-display
     // would leave no way back to the toolbar (found on Windows, 3 screens on 2 monitors).
     view_all_wrapper.onMouse = function(evt) {
-        if (evt.type == Event.MOUSE_MOVE && headerAutoHide()) revealHeaderAt(evt.yView, evt.xView);
+        if (evt.type == Event.MOUSE_MOVE && headerAutoHide()) revealHeaderAt(evt.yView, evt.xView, evt.buttons != 0);
         return false;
     };
     var tiles = view_all_wrapper.$$(video.remote-tile);
@@ -792,7 +792,8 @@ function holdKeyboardGrab() {
 var reveal_pending = false;
 // Show the header while the pointer rests on the window's top edge, hide it once the
 // pointer moves away -- the same gesture full screen has always used.
-function revealHeaderAt(y, x = -1) {
+// `pressed`: a mouse button is down (a drag inside the remote picture).
+function revealHeaderAt(y, x = -1, pressed = false) {
     var h = $(header);
     if (!h) return;
     // A few pixels, not exactly the top row: outside full screen the window has a 1px
@@ -807,7 +808,10 @@ function revealHeaderAt(y, x = -1) {
     // the tiles are painted over it and its buttons cannot be reached -- from now on it
     // comes down in the layout, as it always did.
     // (the upper half of its rows only, and / scaleFactor: never a row below it)
-    if (header_overlaid && h.style#display == "block" && y >= 0 && y < h.box(#height, #border) / scaleFactor / 2) {
+    // Not while a button is down: a drag that started on a tile keeps reporting to that
+    // tile wherever the pointer goes -- e.g. a remote window dragged to the top edge to
+    // snap it, which also reveals the header -- and would switch the overlay off for good.
+    if (!pressed && header_overlaid && h.style#display == "block" && y >= 0 && y < h.box(#height, #border) / scaleFactor / 2) {
         if (++header_overlay_misses >= 3) {
             header_overlay_ok = false;
             headerIntoLayout(h);
