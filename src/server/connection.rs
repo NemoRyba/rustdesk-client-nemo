@@ -2344,7 +2344,20 @@ impl Connection {
         ) {
             Ok(Some(grant)) => {
                 crate::nemo_control::log_grant(&lr.my_id, &Some(grant.clone()));
+                let before = self.nemo_sent_permissions();
                 self.apply_control_grant(&grant);
+                // The controller was told the permissions right after the connection
+                // opened, before this login carried the ticket. Tell it what the grant
+                // changed, or its toolbar keeps offering what this computer now refuses
+                // (file transfer, keyboard, ...) -- in a direct session the ticket is the
+                // only place the admin's permissions come from.
+                for ((permission, was), (_, now)) in
+                    before.into_iter().zip(self.nemo_sent_permissions())
+                {
+                    if was != now {
+                        self.send_permission(permission, now).await;
+                    }
+                }
                 self.post_conn_audit(json!({
                     "action": "authorized",
                     "user": grant.user,
@@ -2387,6 +2400,21 @@ impl Connection {
                 false
             }
         }
+    }
+
+    /// The permissions sent to the controller with `send_permission` (see `start`), as
+    /// they stand now.
+    fn nemo_sent_permissions(&self) -> [(Permission, bool); 8] {
+        [
+            (Permission::Keyboard, self.keyboard),
+            (Permission::Clipboard, self.clipboard),
+            (Permission::Audio, self.audio),
+            (Permission::File, self.file),
+            (Permission::Restart, self.restart),
+            (Permission::Recording, self.recording),
+            (Permission::BlockInput, self.block_input),
+            (Permission::PrivacyMode, self.privacy_mode),
+        ]
     }
 
     /// Apply a ticket's permissions exactly as if the server had attached them at the
