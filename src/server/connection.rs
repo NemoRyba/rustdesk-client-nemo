@@ -5456,12 +5456,27 @@ async fn start_ipc(
         }
         sleep(1.).await;
     }
-    // Nemo: always run the connection manager headless (--cm-no-ui) on Linux.
-    // The Sciter --cm GUI (libsciter-gtk.so) crashes on some desktop hosts, and
-    // unattended company hosts don't need the CM window anyway; the --server
-    // still captures the real desktop session.
+    // TBFDesk (FT-05): the service's --server of a user's desktop session starts the
+    // connection manager WITH its window ("--cm") from that session, as on Windows
+    // (it runs as the user, with the session's DISPLAY / WAYLAND_DISPLAY / XAUTHORITY).
+    // The windowless "--cm-no-ui" stays for a --server running as root (GDM login
+    // screen, root desktop: it waits for the seat0 user and uses that user's socket)
+    // and for a headless desktop of the desktop manager (allow-linux-headless, the
+    // condition of LinuxHeadlessHandle::is_headless below).
+    // This used to be `crate::is_server()` alone ("Sciter --cm crashes on some
+    // desktop hosts"), i.e. "--cm-no-ui" for every session of the service's
+    // --server. The Sciter build had no "--cm-no-ui" (it exited at once), so such a
+    // session logged "Failed to connect to connection manager" and ran without a CM:
+    // no window, no remote file list, no chat, no local disconnect, and with no --cm
+    // process the service's hourly --server restart (platform/linux.rs
+    // should_start_server) could end a live session. The Flutter build ran one
+    // windowless CM forever. Only a server hosted by the main window (no service
+    // --server answering; is_server() false) showed the window. Sciter windows run
+    // under XWayland since 1.4.24 (ui.rs prefer_xwayland_for_sciter).
     #[cfg(target_os = "linux")]
-    let headless_cm = crate::is_server();
+    let headless_cm = crate::is_server()
+        && (crate::platform::is_root()
+            || (crate::platform::is_headless_allowed() && linux_desktop_manager::is_headless()));
     #[cfg(not(target_os = "linux"))]
     let headless_cm = false;
     let mut stream = None;
@@ -5568,13 +5583,20 @@ async fn start_ipc(
             } else {
                 run_done = false;
             }
+            // Kept here until the wait below is over (check_zombie reaps whatever is
+            // in CHILD_PROCESS), so the Linux fallback can see a CM that died at start.
+            let mut cm_child = None;
             if !run_done {
                 log::debug!("Start cm");
-                super::CHILD_PROCESS
-                    .lock()
-                    .unwrap()
-                    .push(crate::run_me(args)?);
+                cm_child = Some(crate::run_me(args)?);
             }
+            // TBFDesk: if the CM window process ("--cm") dies at start (no usable
+            // display, a GUI toolkit crash), start the windowless CM instead, so the
+            // session keeps the remote file list, chat and the local disconnect.
+            // Only on an exit, not on a slow start: once running, the windowless CM
+            // answers every later session of this --server.
+            #[cfg(target_os = "linux")]
+            let mut windowless_started = headless_cm;
             for _ in 0..20 {
                 sleep(0.3).await;
                 #[cfg(target_os = "linux")]
@@ -5591,6 +5613,31 @@ async fn start_ipc(
                     stream = Some(s);
                     break;
                 }
+                #[cfg(target_os = "linux")]
+                if !windowless_started {
+                    let exited: Option<std::process::ExitStatus> = cm_child
+                        .as_mut()
+                        .and_then(|c: &mut std::process::Child| c.try_wait().ok().flatten());
+                    if let Some(status) = exited {
+                        windowless_started = true;
+                        log::warn!(
+                            "The connection manager window exited at start ({}); starting the connection manager without a window",
+                            status
+                        );
+                        match crate::run_me(vec!["--cm-no-ui"]) {
+                            Ok(child) => cm_child = Some(child),
+                            Err(err) => {
+                                log::error!(
+                                    "Failed to start the connection manager without a window: {}",
+                                    err
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            if let Some(child) = cm_child {
+                super::CHILD_PROCESS.lock().unwrap().push(child);
             }
         }
     }
