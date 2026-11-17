@@ -444,6 +444,15 @@ class _DesktopHomePageState extends State<DesktopHomePage>
     final showOneTime = model.approveMode != 'click' &&
         model.verificationMethod != kUsePermanentPassword &&
         !model.localPasswordDisabled;
+    final passwordField = TextFormField(
+      controller: model.serverPasswd,
+      readOnly: true,
+      decoration: InputDecoration(
+        border: InputBorder.none,
+        contentPadding: EdgeInsets.only(top: 14, bottom: 10),
+      ),
+      style: TextStyle(fontSize: 15),
+    ).workaroundFreezeLinuxMint();
     return Container(
       margin: EdgeInsets.only(left: 20.0, right: 16, top: 13, bottom: 13),
       child: Row(
@@ -478,16 +487,13 @@ class _DesktopHomePageState extends State<DesktopHomePage>
                               showToast(translate("Copied"));
                             }
                           },
-                          child: TextFormField(
-                            controller: model.serverPasswd,
-                            readOnly: true,
-                            decoration: InputDecoration(
-                              border: InputBorder.none,
-                              contentPadding:
-                                  EdgeInsets.only(top: 14, bottom: 10),
-                            ),
-                            style: TextStyle(fontSize: 15),
-                          ).workaroundFreezeLinuxMint(),
+                          // TBFDesk: say why it shows "-" (Sciter PasswordEyeArea title).
+                          child: model.localPasswordDisabled
+                              ? Tooltip(
+                                  message: translate(
+                                      'Password login disabled by policy'),
+                                  child: passwordField)
+                              : passwordField,
                         ),
                       ),
                       if (showOneTime)

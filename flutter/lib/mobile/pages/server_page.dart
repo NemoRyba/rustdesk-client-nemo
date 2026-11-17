@@ -590,10 +590,15 @@ class ServerInfo extends StatelessWidget {
               )
             ]),
             Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-              Text(
-                !showOneTime ? '-' : model.serverPasswd.value.text,
-                style: textStyleValue,
-              ),
+              // TBFDesk: say why it shows "-" (Sciter PasswordEyeArea title).
+              serverModel.localPasswordDisabled
+                  ? Tooltip(
+                      message: translate('Password login disabled by policy'),
+                      child: Text('-', style: textStyleValue))
+                  : Text(
+                      !showOneTime ? '-' : model.serverPasswd.value.text,
+                      style: textStyleValue,
+                    ),
               !showOneTime
                   ? SizedBox.shrink()
                   : Row(children: [
