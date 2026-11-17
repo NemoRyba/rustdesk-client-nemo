@@ -1374,7 +1374,7 @@ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
                   kNemoOptionDisableLocalPassword,
                   enabled: false,
                   fakeValue: true,
-                  tip: kNemoTipDisableLocalPassword)
+                  tip: _nemoTip(kNemoOptionDisableLocalPassword))
             else if (model.ldapLoginSufficient)
               _OptionCheckBox(
                   context,
@@ -1382,7 +1382,7 @@ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
                   kNemoOptionLdapLoginSufficient,
                   enabled: false,
                   fakeValue: true,
-                  tip: kNemoTipLdapLoginSufficient),
+                  tip: _nemoTip(kNemoOptionLdapLoginSufficient)),
             _nemoTipped(
                 _nemoTip(modeInitialKey == 'password'
                     ? 'approve-mode-password'
@@ -3434,6 +3434,9 @@ const Map<String, String> _kNemoSettingTips = {
       'Set or change the fixed password for incoming access.',
   'clear-permanent-password':
       'Remove the fixed password so only the one-time password works.',
+  // Machine policies (Sciter NEMO_SETTING_TIPS has the same two option keys).
+  kNemoOptionDisableLocalPassword: kNemoTipDisableLocalPassword,
+  kNemoOptionLdapLoginSufficient: kNemoTipLdapLoginSufficient,
   'tpl-6': 'Make the one-time password 6 characters long.',
   'tpl-8': 'Make the one-time password 8 characters long.',
   'tpl-10': 'Make the one-time password 10 characters long.',
