@@ -576,7 +576,8 @@ impl UI {
         crate::lan::send_wol(id)
     }
 
-    fn new_remote(&mut self, id: String, remote_type: String, force_relay: bool) -> bool {
+    // "" = started, "already-open", else the text for an error box (ui_interface::new_remote)
+    fn new_remote(&mut self, id: String, remote_type: String, force_relay: bool) -> String {
         new_remote(id, remote_type, force_relay)
     }
 
