@@ -39,7 +39,26 @@ struct UIHostHandler;
 // H25 helpers live in ui_interface: the Flutter launch path uses the same ones.
 use crate::ui_interface::peer_password_from_args;
 
+/// Linux on a Wayland desktop (Ubuntu 26.04 has no other): run the Sciter windows under
+/// XWayland. TBFDesk reads the keyboard of a remote session through an X11 grab; keys
+/// typed into a NATIVE Wayland window never reach it, so typing into the remote computer
+/// did nothing (field report 2026-11-17, reproduced on Ubuntu 26.04 GNOME: the same keys
+/// from an XWayland window arrived). X11 also lets Sciter place its own windows (span,
+/// one window per display). Must run before GTK starts. Only when an X server (XWayland)
+/// is there and nobody chose a backend; TBFDESK_NATIVE_WAYLAND=1 keeps native Wayland.
+#[cfg(target_os = "linux")]
+fn prefer_xwayland_for_sciter() {
+    let set = |k: &str| std::env::var_os(k).map_or(false, |v| !v.is_empty());
+    if !set("WAYLAND_DISPLAY") || !set("DISPLAY") || set("GDK_BACKEND") || set("TBFDESK_NATIVE_WAYLAND") {
+        return;
+    }
+    std::env::set_var("GDK_BACKEND", "x11");
+    log::info!("Wayland desktop: the TBFDesk windows run under XWayland (GDK_BACKEND=x11), so the remote keyboard works");
+}
+
 pub fn start(args: &mut [String]) {
+    #[cfg(target_os = "linux")]
+    prefer_xwayland_for_sciter();
     #[cfg(target_os = "macos")]
     crate::platform::delegate::show_dock();
     #[cfg(all(target_os = "linux", feature = "inline"))]
