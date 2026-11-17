@@ -1939,7 +1939,13 @@ class NemoSettingsDialog: Reactor.Component {
         } else if (kind == "tshell") {
             handler.set_option("nemo-terminal-shell", id == "tshell-cmd" ? "cmd" : "");
         } else if (kind == "tpl") {
-            handler.set_option('temporary-password-length', id.substring(4));
+            var tpl_new = id.substring(4);
+            var tpl_old = handler.get_option('temporary-password-length') || "6";
+            handler.set_option('temporary-password-length', tpl_new);
+            // A new length takes effect at once, as in Flutter (server_model.dart) and the
+            // old Sciter password menu; before, the old-length password stayed until the
+            // next rotation. Re-clicking the current length (unset = 6) changes nothing.
+            if (tpl_new != tpl_old) handler.update_temporary_password();
             if (passwordArea) passwordArea.update();
         } else if (kind == "tfa") {
             nemoToggle2fa();
