@@ -1683,8 +1683,9 @@ pub fn close_voice_call(id: i32) {
 
 /// TBFDesk: the windowless connection manager (`--cm-no-ui`) of the Sciter build.
 ///
-/// The Linux `--server` starts it for a headless desktop (`server/connection.rs`
-/// `start_ipc`); the Flutter build has its own
+/// The Linux `--server` starts it when it runs as root, for a headless desktop, and
+/// when the CM window dies at start (`server/connection.rs` `start_ipc`); the
+/// Flutter build has its own
 /// (`flutter::connection_manager::start_cm_no_ui`). The Sciter build had none, so
 /// `--cm-no-ui` exited at once and nothing listened on `_cm`. It does the CM's work
 /// that needs no window: the file system side of file transfer, the `_pa` audio
