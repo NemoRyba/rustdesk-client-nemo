@@ -8,8 +8,8 @@ use hbb_common::{
 };
 use serde_derive::{Deserialize, Serialize};
 use std::{
-    collections::HashMap,
-    sync::{Mutex, Once},
+    collections::{BTreeMap, HashMap},
+    sync::{Mutex, MutexGuard, Once},
     time::{Duration, Instant},
 };
 
@@ -285,11 +285,93 @@ const OPTION_NEMO_POLICY_ISSUED_TS: &str = "nemo-policy-issued-ts";
 const POLICY_MAX_AGE_SECS: u64 = 600;
 const POLICY_MAX_FUTURE_SECS: u64 = 600;
 
-fn policy_issued_ts_high_water() -> u64 {
+fn persisted_policy_issued_ts() -> u64 {
     Config::get_option(OPTION_NEMO_POLICY_ISSUED_TS)
         .trim()
         .parse::<u64>()
         .unwrap_or(0)
+}
+
+/// A2 high-water bookkeeping for this process.
+///
+/// The server stamps `issued_ts` with its own clock on EVERY response, so writing each new
+/// value to disk rewrote TBFDesk2.toml on every 30 s poll although nothing had changed --
+/// and on Linux/macOS the user's `--server` then pushed its whole config to root each time
+/// ("config updated, sync to root", server.rs `sync_and_watch_config_dir`). Now:
+/// - `seen` (memory) advances on every accepted poll, so within a process the rollback
+///   check is exactly as tight as before;
+/// - the disk copy is written only when the accepted payload differs from the one this
+///   process last wrote it for (and once per process start). It then names the first
+///   response that carried the content now in force, so after a restart every response
+///   with OLDER content is still refused. What a restarted client still accepts is a
+///   response with the content already in force (harmless), inside the age window that
+///   bounds every replay anyway.
+///
+/// "Differs" is judged on the UNMASKED payload (`policy_content_digest`, secrets included,
+/// held in memory only). Judging the stored blob, where a password or knock key is a
+/// placeholder, would let a pre-rotation response back in after a restart.
+struct IssuedTsTracker {
+    seen: u64,
+    persisted_for: Option<[u8; 32]>,
+}
+
+impl IssuedTsTracker {
+    const fn new() -> Self {
+        Self {
+            seen: 0,
+            persisted_for: None,
+        }
+    }
+
+    /// The high-water the next policy is checked against: never below the disk copy.
+    fn high_water(&self, persisted: u64) -> u64 {
+        self.seen.max(persisted)
+    }
+
+    /// Record an ACCEPTED policy (`content` = `policy_content_digest`). `Some(ts)` = write
+    /// `ts` to disk now; `None` = the disk copy already covers this content.
+    fn accept(&mut self, issued_ts: u64, content: [u8; 32], persisted: u64) -> Option<u64> {
+        self.seen = self.seen.max(issued_ts);
+        let changed = self.persisted_for != Some(content);
+        self.persisted_for = Some(content);
+        (changed && issued_ts > persisted).then_some(issued_ts)
+    }
+}
+
+static ISSUED_TS: Mutex<IssuedTsTracker> = Mutex::new(IssuedTsTracker::new());
+
+fn issued_ts_tracker() -> MutexGuard<'static, IssuedTsTracker> {
+    // A poisoned lock means a panic elsewhere; the high-water itself is still valid.
+    ISSUED_TS.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn policy_issued_ts_high_water() -> u64 {
+    let persisted = persisted_policy_issued_ts();
+    issued_ts_tracker().high_water(persisted)
+}
+
+/// Digest of everything an accepted response carries except its issue time: every option
+/// VALUE (secrets too -- this never leaves memory), `allow_user_override` and
+/// `terminate_sessions_before`. Independent of the HashMap's iteration order.
+fn policy_content_digest(policy: &ManagementPolicy, terminate_sessions_before: u64) -> [u8; 32] {
+    use hbb_common::sodiumoxide::crypto::hash::sha256;
+    let mut entries: Vec<(&str, &str)> = policy
+        .options
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+    entries.sort_unstable();
+    let mut bytes = Vec::new();
+    bytes.push(policy.allow_user_override as u8);
+    bytes.extend_from_slice(&terminate_sessions_before.to_le_bytes());
+    // Length-prefixed, so no two different maps can encode to the same bytes.
+    for (k, v) in entries {
+        for s in [k, v] {
+            bytes.extend_from_slice(&(s.len() as u64).to_le_bytes());
+            bytes.extend_from_slice(s.as_bytes());
+        }
+    }
+    sha256::hash(&bytes).0
 }
 
 // A2: reject a replayed/rolled-back policy. `now` is the client clock (epoch secs).
@@ -942,11 +1024,16 @@ fn sync_policy() -> ResultType<()> {
         bail!("management policy rejected: {reason}");
     }
     // check_policy_freshness already refused issued_ts == 0, so this is always > 0.
-    if payload.issued_ts > high_water {
-        Config::set_option(
-            OPTION_NEMO_POLICY_ISSUED_TS.to_owned(),
-            payload.issued_ts.to_string(),
-        );
+    // The in-memory high-water advances on every accepted poll; the disk copy only when
+    // the content changed (IssuedTsTracker) -- the stamp itself moves on every poll, and
+    // writing it each time was a config write + root sync every 30 s. Still BEFORE
+    // apply_policy, as before: a crash mid-apply must not leave the new content cached
+    // with the old high-water on disk.
+    let content = policy_content_digest(&payload.policy, payload.terminate_sessions_before);
+    let persisted = persisted_policy_issued_ts();
+    let persist = issued_ts_tracker().accept(payload.issued_ts, content, persisted);
+    if let Some(ts) = persist {
+        Config::set_option(OPTION_NEMO_POLICY_ISSUED_TS.to_owned(), ts.to_string());
     }
     // Read the two signals before apply_policy() consumes the payload. The server
     // inserts `nemo-logged-in-user` iff it resolved our token to a live session,
@@ -1174,9 +1261,11 @@ fn apply_policy(policy: ManagementPolicy) -> ResultType<()> {
             apply_policy_option(scope, key, value, policy.allow_user_override);
         }
     }
+    // Canonical (sorted) text, so an unchanged policy is an unchanged value and
+    // set_option skips the write -- see canonical_policy_json.
     Config::set_option(
         OPTION_NEMO_MANAGEMENT_LAST_POLICY.to_owned(),
-        serde_json::to_string(&policy_for_storage(&policy))?,
+        canonical_policy_json(&policy_for_storage(&policy))?,
     );
     // Persist the require-login flag durably so the UI login gate is correct at
     // the very next startup, before the first policy poll completes (avoids a
@@ -1240,6 +1329,29 @@ fn apply_policy(policy: ManagementPolicy) -> ResultType<()> {
     );
     crate::ui_interface::refresh_options();
     Ok(())
+}
+
+/// The cached policy as stored in `nemo-management-last-policy`: the `ManagementPolicy`
+/// shape (so `previous_policy()` reads old and new blobs alike) with the option keys
+/// SORTED. `options` is a HashMap deserialised fresh from every poll, and a HashMap
+/// serialises in a different order per instance, so the very same policy came out as a
+/// different string each time and `Config::set_option` -- which skips an unchanged value
+/// -- stored TBFDesk2.toml on every 30 s poll (and, on Linux/macOS, the user's `--server`
+/// then synced the whole config to root: "config updated, sync to root").
+fn canonical_policy_json(policy: &ManagementPolicy) -> serde_json::Result<String> {
+    #[derive(Serialize)]
+    struct Canonical<'a> {
+        allow_user_override: bool,
+        options: BTreeMap<&'a str, &'a str>,
+    }
+    serde_json::to_string(&Canonical {
+        allow_user_override: policy.allow_user_override,
+        options: policy
+            .options
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect(),
+    })
 }
 
 fn previous_policy() -> ManagementPolicy {
@@ -1679,5 +1791,227 @@ mod applied_policy_tests {
         let parts: Vec<&str> = msg.splitn(4, ':').collect();
         let digest: String = sha256::hash(report.as_bytes()).0.iter().map(|b| format!("{b:02x}")).collect();
         assert_eq!(parts, vec!["nemo-policy-report", "12513041", "1800000000", digest.as_str()]);
+    }
+}
+
+// Config churn (Ubuntu field report 2026-11-17: "config updated, sync to root" every 30 s):
+// the server re-sends an unchanged policy on every poll with a fresh issued_ts, and the
+// client deserialises it into a fresh HashMap each time. Neither may turn into a config
+// write. Pure: nothing here touches Config or the process-global tracker.
+#[cfg(test)]
+mod config_churn_tests {
+    use super::*;
+
+    const POLICY: &[(&str, &str)] = &[
+        ("api-server", "https://mgmt.example:21114"),
+        ("allow-insecure-tls-fallback", "N"),
+        ("custom-rendezvous-server", "tbf.example"),
+        ("relay-server", "tbf.example"),
+        ("direct-server", "Y"),
+        ("direct-access-port", "21118"),
+        ("enable-audio", "N"),
+        ("enable-clipboard", "Y"),
+        ("enable-file-transfer", "Y"),
+        ("nemo-alias", "Empfang"),
+        ("nemo-ab-version", "17"),
+        ("nemo-blocked-ids", "111111111,222222222"),
+        ("nemo-clock-tolerance-secs", "600"),
+        ("nemo-control-epoch", "1794927000"),
+        ("nemo-knock-key", "dGVzdC1rbm9jay1rZXk="),
+        ("nemo-outbound-enabled", "Y"),
+        ("nemo-outbound-targets", "*"),
+        ("nemo-peer-keys", "111111111,AAAA;222222222,BBBB"),
+        ("nemo-permanent-password", "test-password-1"),
+        ("nemo-require-encrypted-session", "Y"),
+        ("nemo-update-version", "1.4.24"),
+    ];
+
+    /// One poll's policy as the client gets it: a FRESH deserialisation (fresh HashMap,
+    /// fresh iteration order), with the JSON members in the given order.
+    fn poll(entries: &[(&str, &str)], reversed: bool) -> ManagementPolicy {
+        let mut members: Vec<String> = entries
+            .iter()
+            .map(|(k, v)| {
+                format!(
+                    "{}:{}",
+                    serde_json::to_string(k).unwrap(),
+                    serde_json::to_string(v).unwrap()
+                )
+            })
+            .collect();
+        if reversed {
+            members.reverse();
+        }
+        let json = format!(
+            r#"{{"allow_user_override":false,"options":{{{}}}}}"#,
+            members.join(",")
+        );
+        serde_json::from_str(&json).unwrap()
+    }
+
+    /// POLICY with one value replaced.
+    fn with<'a>(key: &'a str, value: &'a str) -> Vec<(&'a str, &'a str)> {
+        assert!(POLICY.iter().any(|(k, _)| *k == key), "{key} is not in POLICY");
+        POLICY
+            .iter()
+            .map(|&(k, v)| if k == key { (k, value) } else { (k, v) })
+            .collect()
+    }
+
+    fn stored(p: &ManagementPolicy) -> String {
+        canonical_policy_json(&policy_for_storage(p)).unwrap()
+    }
+
+    /// One ACCEPTED poll against `t` and a simulated disk copy of the high-water, the way
+    /// sync_policy runs it. true = this poll wrote the config.
+    fn accept(
+        t: &mut IssuedTsTracker,
+        disk: &mut u64,
+        issued_ts: u64,
+        p: &ManagementPolicy,
+        terminate: u64,
+    ) -> bool {
+        assert!(
+            check_policy_freshness(issued_ts, t.high_water(*disk), issued_ts).is_ok(),
+            "the poll at {issued_ts} must be accepted"
+        );
+        match t.accept(issued_ts, policy_content_digest(p, terminate), *disk) {
+            Some(ts) => {
+                *disk = ts;
+                true
+            }
+            None => false,
+        }
+    }
+
+    #[test]
+    fn an_unchanged_policy_is_stored_as_the_same_text_on_every_poll() {
+        let first = stored(&poll(POLICY, false));
+        for i in 0..64 {
+            assert_eq!(
+                stored(&poll(POLICY, i % 2 == 1)),
+                first,
+                "poll {i}: same policy, different stored text = a config write on every poll"
+            );
+        }
+        // Still exactly what previous_policy() parses, secrets still masked.
+        let parsed: ManagementPolicy = serde_json::from_str(&first).unwrap();
+        assert_eq!(canonical_policy_json(&parsed).unwrap(), first);
+        assert_eq!(parsed.options.len(), POLICY.len());
+        assert_eq!(parsed.options[OPTION_NEMO_PERMANENT_PASSWORD], MANAGED_SECRET_PLACEHOLDER);
+        assert_eq!(parsed.options[crate::nemo_direct::OPTION_KNOCK_KEY], MANAGED_SECRET_PLACEHOLDER);
+        assert!(!first.contains("test-password-1"));
+        // A blob stored by an older build (HashMap order) reads back to the same policy:
+        // the first poll after the update rewrites it once, then never again.
+        let legacy = serde_json::to_string(&policy_for_storage(&poll(POLICY, true))).unwrap();
+        let legacy: ManagementPolicy = serde_json::from_str(&legacy).unwrap();
+        assert_eq!(stored(&legacy), first);
+        // A real change is still a different value, so it is still written at once.
+        assert_ne!(stored(&poll(&with("enable-audio", "Y"), false)), first);
+        let mut overridable = poll(POLICY, false);
+        overridable.allow_user_override = true;
+        assert_ne!(stored(&overridable), first);
+    }
+
+    #[test]
+    fn the_content_digest_ignores_order_but_sees_every_value() {
+        let base = policy_content_digest(&poll(POLICY, false), 0);
+        assert_eq!(policy_content_digest(&poll(POLICY, true), 0), base);
+        assert_ne!(policy_content_digest(&poll(&with("enable-audio", "Y"), false), 0), base);
+        // Secrets count, although the stored blob masks them.
+        let rotated = poll(&with("nemo-permanent-password", "test-password-2"), false);
+        assert_eq!(stored(&rotated), stored(&poll(POLICY, false)));
+        assert_ne!(policy_content_digest(&rotated, 0), base);
+        let mut overridable = poll(POLICY, false);
+        overridable.allow_user_override = true;
+        assert_ne!(policy_content_digest(&overridable, 0), base);
+        assert_ne!(policy_content_digest(&poll(POLICY, false), 1_800_000_000), base);
+        // Length-prefixed: moving a character between key and value is a different map.
+        let a = ManagementPolicy {
+            allow_user_override: false,
+            options: [("ab".to_owned(), "c".to_owned())].into_iter().collect(),
+        };
+        let b = ManagementPolicy {
+            allow_user_override: false,
+            options: [("a".to_owned(), "bc".to_owned())].into_iter().collect(),
+        };
+        assert_ne!(policy_content_digest(&a, 0), policy_content_digest(&b, 0));
+    }
+
+    #[test]
+    fn an_unchanged_policy_never_rewrites_the_high_water_but_still_blocks_rollback() {
+        let t0 = 1_800_000_000u64;
+        let mut t = IssuedTsTracker::new();
+        let mut disk = 0u64;
+        // First poll of a process: written once.
+        assert!(accept(&mut t, &mut disk, t0, &poll(POLICY, false), 0));
+        assert_eq!(disk, t0);
+        // A day of unchanged polls, 30 s apart, each a fresh stamp: no write at all.
+        let mut ts = t0;
+        for i in 0..2880 {
+            ts += 30;
+            assert!(
+                !accept(&mut t, &mut disk, ts, &poll(POLICY, i % 2 == 1), 0),
+                "unchanged policy at {ts} wrote the config"
+            );
+        }
+        assert_eq!(disk, t0);
+        // ...yet in memory the high-water followed every poll, so inside this process a
+        // response older than the last one is refused exactly as before.
+        assert_eq!(t.high_water(disk), ts);
+        assert!(check_policy_freshness(ts - 30, t.high_water(disk), ts).is_err());
+
+        // A real change is written at once, then nothing again while it stays.
+        ts += 30;
+        let changed = poll(&with("enable-audio", "Y"), false);
+        assert!(accept(&mut t, &mut disk, ts, &changed, 0));
+        assert_eq!(disk, ts);
+        let applied_at = ts;
+        for _ in 0..10 {
+            ts += 30;
+            assert!(!accept(&mut t, &mut disk, ts, &poll(&with("enable-audio", "Y"), true), 0));
+        }
+        assert_eq!(disk, applied_at);
+
+        // A rotated password is a change, although the stored (masked) blob is identical.
+        ts += 30;
+        let mut rotated = poll(&with("nemo-permanent-password", "test-password-2"), false);
+        rotated.options.insert("enable-audio".to_owned(), "Y".to_owned());
+        assert_eq!(stored(&rotated), stored(&changed));
+        assert!(accept(&mut t, &mut disk, ts, &rotated, 0), "a rotated secret must move the high-water");
+        let rotated_at = ts;
+        // So do a session cut and a flip of allow_user_override.
+        ts += 30;
+        assert!(accept(&mut t, &mut disk, ts, &rotated, ts - 5));
+        ts += 30;
+        let mut overridable = rotated.clone();
+        overridable.allow_user_override = true;
+        assert!(accept(&mut t, &mut disk, ts, &overridable, ts - 35));
+        let last_change = ts;
+
+        // Restart: a new process starts from the disk copy. A replay of anything from
+        // before the last change (here the pre-rotation password, still inside the age
+        // window) is refused; the first poll of the new process writes once.
+        let mut t2 = IssuedTsTracker::new();
+        let now = last_change + 60;
+        assert_eq!(t2.high_water(disk), last_change);
+        assert!(check_policy_freshness(rotated_at - 30, t2.high_water(disk), now).is_err());
+        assert!(check_policy_freshness(last_change - 1, t2.high_water(disk), now).is_err());
+        assert!(accept(&mut t2, &mut disk, now, &overridable, last_change - 35));
+        assert!(!accept(&mut t2, &mut disk, now + 30, &overridable, last_change - 35));
+    }
+
+    #[test]
+    fn a_same_second_change_needs_no_write_but_is_remembered() {
+        let t0 = 1_800_000_000u64;
+        let mut t = IssuedTsTracker::new();
+        let mut disk = 0u64;
+        assert!(accept(&mut t, &mut disk, t0, &poll(POLICY, false), 0));
+        // Same stamp, other content: the disk copy already equals that stamp.
+        let changed = poll(&with("enable-audio", "Y"), false);
+        assert!(!accept(&mut t, &mut disk, t0, &changed, 0));
+        // ...and the next poll with that content does not write either.
+        assert!(!accept(&mut t, &mut disk, t0 + 30, &changed, 0));
+        assert_eq!(disk, t0);
     }
 }
