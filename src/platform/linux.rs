@@ -2091,7 +2091,7 @@ pub fn exe_for_spawn() -> std::io::Result<PathBuf> {
         }
         None => {
             log::error!(
-                "{} was replaced or removed and no installed TBFDesk binary was found (looked at {:?})",
+                "{} was replaced or removed and nothing startable is in its place (an installed client also looks at {:?})",
                 current.display(),
                 INSTALLED_EXES
             );
