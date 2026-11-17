@@ -61,6 +61,13 @@ class _DropDownAction extends StatelessWidget {
               isOptionFixed(kOptionAllowNumericOneTimePassword);
           final isAllowNumericOneTimePassword =
               gFFI.serverModel.allowNumericOneTimePassword;
+          // TBFDesk: machine policies. "Disable local password" greys every
+          // password entry (none of them has an effect); both are shown as a
+          // locked, ticked entry (Sciter Settings -> Password, desktop Password card).
+          final localPasswordDisabled = gFFI.serverModel.localPasswordDisabled;
+          final ldapLoginSufficient = gFFI.serverModel.ldapLoginSufficient;
+          final isVerificationMethodFixed =
+              isOptionFixed(kOptionVerificationMethod) || localPasswordDisabled;
           return [
             if (!isChangeIdDisabled())
               PopupMenuItem(
@@ -69,6 +76,23 @@ class _DropDownAction extends StatelessWidget {
                 child: Text(translate("Change ID")),
               ),
             if (!isChangeIdDisabled()) const PopupMenuDivider(),
+            if (localPasswordDisabled || ldapLoginSufficient)
+              PopupMenuItem(
+                value: "nemoPasswordPolicy",
+                enabled: false,
+                child: Tooltip(
+                  message: translate(localPasswordDisabled
+                      ? kNemoTipDisableLocalPassword
+                      : kNemoTipLdapLoginSufficient),
+                  child: listTile(
+                      localPasswordDisabled
+                          ? 'Password login disabled by policy'
+                          : 'Signed-in users connect without password (policy)',
+                      true),
+                ),
+              ),
+            if (localPasswordDisabled || ldapLoginSufficient)
+              const PopupMenuDivider(),
             PopupMenuItem(
               value: 'AcceptSessionsViaPassword',
               child: listTile(
@@ -93,12 +117,15 @@ class _DropDownAction extends StatelessWidget {
                 !isChangePermanentPasswordDisabled())
               PopupMenuItem(
                 value: "setPermanentPassword",
+                enabled: !localPasswordDisabled,
                 child: Text(translate("Set permanent password")),
               ),
             if (showPasswordOption &&
                 verificationMethod != kUsePermanentPassword)
               PopupMenuItem(
                 value: "setTemporaryPasswordLength",
+                enabled: !localPasswordDisabled &&
+                    !isOptionFixed('temporary-password-length'),
                 child: Text(translate("One-time password length")),
               ),
             if (showPasswordOption &&
@@ -107,24 +134,30 @@ class _DropDownAction extends StatelessWidget {
                 value: "allowNumericOneTimePassword",
                 child: listTile(translate("Numeric one-time password"),
                     isAllowNumericOneTimePassword),
-                enabled: !isNumericOneTimePasswordFixed,
+                enabled:
+                    !isNumericOneTimePasswordFixed && !localPasswordDisabled,
               ),
             if (showPasswordOption) const PopupMenuDivider(),
+            // TBFDesk: greyed when the policy fixes the verification method or
+            // disables the local password (Sciter vm_fixed rows).
             if (showPasswordOption)
               PopupMenuItem(
                 value: kUseTemporaryPassword,
+                enabled: !isVerificationMethodFixed,
                 child: listTile('Use one-time password',
                     verificationMethod == kUseTemporaryPassword),
               ),
             if (showPasswordOption)
               PopupMenuItem(
                 value: kUsePermanentPassword,
+                enabled: !isVerificationMethodFixed,
                 child: listTile('Use permanent password',
                     verificationMethod == kUsePermanentPassword),
               ),
             if (showPasswordOption)
               PopupMenuItem(
                 value: kUseBothPasswords,
+                enabled: !isVerificationMethodFixed,
                 child: listTile(
                     'Use both passwords',
                     verificationMethod != kUseTemporaryPassword &&
@@ -516,8 +549,11 @@ class ServerInfo extends StatelessWidget {
       }
     }
 
+    // TBFDesk: not while the "disable local password" policy would refuse it
+    // (desktop buildPasswordBoard2 and Sciter PasswordEyeArea likewise).
     final showOneTime = serverModel.approveMode != 'click' &&
-        serverModel.verificationMethod != kUsePermanentPassword;
+        serverModel.verificationMethod != kUsePermanentPassword &&
+        !serverModel.localPasswordDisabled;
     return PaddingCard(
         title: translate('Your Device'),
         child: Column(

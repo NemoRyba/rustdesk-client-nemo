@@ -439,8 +439,11 @@ class _DesktopHomePageState extends State<DesktopHomePage>
   buildPasswordBoard2(BuildContext context, ServerModel model) {
     RxBool refreshHover = false.obs;
     final textColor = Theme.of(context).textTheme.titleLarge?.color;
+    // TBFDesk: not while the "disable local password" policy would refuse it
+    // (Sciter PasswordEyeArea shows "-" then too).
     final showOneTime = model.approveMode != 'click' &&
-        model.verificationMethod != kUsePermanentPassword;
+        model.verificationMethod != kUsePermanentPassword &&
+        !model.localPasswordDisabled;
     return Container(
       margin: EdgeInsets.only(left: 20.0, right: 16, top: 13, bottom: 13),
       child: Row(
