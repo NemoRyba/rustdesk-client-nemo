@@ -171,6 +171,27 @@ function nemoOutboundEnabled() {
     return handler.get_option(nemo_outbound_enabled_option) != "N";
 }
 
+// The poller's "nemo-policy-problem" ("" = fine, else "code|detail") as one plain sentence.
+// Same wording in Flutter (nemoPolicyProblemText in common/nemo_policy.dart).
+// MUST stay above `class App`: TIScript does not hoist functions, and App.render calls this
+// -- defined further down, the main window failed to draw at all ("Wrong type - undefined,
+// expected instance of function at App.render", caught in the 26.04 VM before release).
+function nemoPolicyProblemText() {
+    var p = handler.get_option("nemo-policy-problem") || "";
+    if (!p) return "";
+    var i = p.indexOf("|");
+    var code = i < 0 ? p : p.substr(0, i);
+    var detail = i < 0 ? "" : p.substr(i + 1);
+    var why;
+    if (code == "stale") why = translate("nemo_policy_clock_ahead").replace("{min}", detail);
+    else if (code == "future") why = translate("nemo_policy_clock_behind").replace("{min}", detail);
+    else if (code == "rollback") why = translate("nemo_policy_rollback");
+    else if (code == "signature") why = translate("nemo_policy_signature");
+    else if (code == "failed") why = translate("nemo_policy_failed") + " " + detail;
+    else why = "(" + code + ")";
+    return translate("nemo_policy_not_applied") + " " + why;
+}
+
 function nemoOutboundTargetAllowed(id) {
     var targets = (handler.get_option(nemo_outbound_targets_option) || "").trim();
     if (!targets) return true;
@@ -2875,23 +2896,6 @@ var nemo_direct_ids_seen = "";
 var nemo_outbound_seen = nemoOutboundEnabled();
 var nemo_policy_problem_seen = "";
 
-// The poller's "nemo-policy-problem" ("" = fine, else "code|detail") as one plain sentence.
-// Same wording in Flutter (nemoPolicyProblemText in common/nemo_policy.dart).
-function nemoPolicyProblemText() {
-    var p = handler.get_option("nemo-policy-problem") || "";
-    if (!p) return "";
-    var i = p.indexOf("|");
-    var code = i < 0 ? p : p.substr(0, i);
-    var detail = i < 0 ? "" : p.substr(i + 1);
-    var why;
-    if (code == "stale") why = translate("nemo_policy_clock_ahead").replace("{min}", detail);
-    else if (code == "future") why = translate("nemo_policy_clock_behind").replace("{min}", detail);
-    else if (code == "rollback") why = translate("nemo_policy_rollback");
-    else if (code == "signature") why = translate("nemo_policy_signature");
-    else if (code == "failed") why = translate("nemo_policy_failed") + " " + detail;
-    else why = "(" + code + ")";
-    return translate("nemo_policy_not_applied") + " " + why;
-}
 function checkConnectStatus() {
     handler.check_mouse_time(); // trigger connection status updater
     self.timer(1s, function() {
