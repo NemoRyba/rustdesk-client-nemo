@@ -2104,6 +2104,7 @@ class App: Reactor.Component
                                 <button .button .outline #file-transfer disabled={nemoOutboundEnabled() ? "false" : "true"}>{translate('Transfer file')}</button>
                                 <button .button #connect disabled={nemoOutboundEnabled() ? "false" : "true"}>{translate('Connect')}</button>
                             </div>
+                            {nemoOutboundEnabled() ? "" : <div .nemo-outbound-off>{translate('Outgoing connections are disabled by TBF policy')}</div>}
                         </div>
                         <MultipleSessions @{this.multipleSessions} />
                     </div>
@@ -2870,6 +2871,7 @@ function showSettings() {
 }
 
 var nemo_direct_ids_seen = "";
+var nemo_outbound_seen = nemoOutboundEnabled();
 function checkConnectStatus() {
     handler.check_mouse_time(); // trigger connection status updater
     self.timer(1s, function() {
@@ -2880,6 +2882,16 @@ function checkConnectStatus() {
         var dids = handler.nemo_direct_ids();
         if (dids != nemo_direct_ids_seen) {
             nemo_direct_ids_seen = dids;
+            if (app) app.update();
+        }
+        // Connect / Transfer file take their disabled state from the outbound policy at
+        // render time, and that policy changes under a running window: a new device is
+        // pushed "outbound off" until the admin allows it. Without this re-render an allowed
+        // device kept grey, dead buttons until the whole app was restarted (lab 2026-11-17,
+        // Ubuntu 26.04) -- and a blocked one kept live buttons.
+        var outbound = nemoOutboundEnabled();
+        if (outbound != nemo_outbound_seen) {
+            nemo_outbound_seen = outbound;
             if (app) app.update();
         }
         var tmp = handler.get_option("stop-service") == "Y";
