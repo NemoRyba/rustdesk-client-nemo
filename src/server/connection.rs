@@ -272,6 +272,12 @@ pub struct Connection {
     tx_to_cm: mpsc::UnboundedSender<ipc::Data>,
     authorized: bool,
     require_2fa: Option<totp_rs::TOTP>,
+    /// The 2FA code was asked for (REQUIRE_2FA sent) after the CURRENT login passed its
+    /// credential step (password, recent session, management ticket). An Auth2fa message
+    /// is only an answer to that question: without it the code alone would admit a session
+    /// that never presented a password or ticket -- past "disable local password" and
+    /// "require management authorization". Cleared on every login request.
+    tfa_requested: bool,
     keyboard: bool,
     clipboard: bool,
     audio: bool,
@@ -454,6 +460,7 @@ impl Connection {
                 tx_video: Some(tx_video),
             },
             require_2fa: crate::auth_2fa::get_2fa(None),
+            tfa_requested: false,
             display_idx: *display_service::PRIMARY_DISPLAY_IDX,
             stream,
             server,
@@ -1608,6 +1615,7 @@ impl Connection {
                     });
                 }
             });
+            self.tfa_requested = true;
             self.send_login_error(crate::client::REQUIRE_2FA).await;
             // Keep the connection alive so the client can continue with 2FA.
             return true;
@@ -2584,6 +2592,8 @@ impl Connection {
         }
         // After handling CloseReason messages, proceed to process other message types
         if let Some(message::Union::LoginRequest(lr)) = msg.union {
+            // A new login must pass its own credential step before a 2FA code counts.
+            self.tfa_requested = false;
             self.handle_login_request_without_validation(&lr).await;
             if !self.apply_management_authorization(&lr).await {
                 return false;
@@ -2871,6 +2881,15 @@ impl Connection {
                 }
             }
         } else if let Some(message::Union::Auth2fa(tfa)) = msg.union {
+            // Only an answer to REQUIRE_2FA (see `tfa_requested`). A real controller sends
+            // Auth2fa only after it was asked, so nothing legitimate is lost here.
+            if !self.tfa_requested {
+                log::warn!(
+                    "2FA code from {} ignored: no login of this connection asked for one",
+                    self.lr.my_id
+                );
+                return true;
+            }
             let (failure, res) = self.check_failure(1).await;
             if !res {
                 return true;
