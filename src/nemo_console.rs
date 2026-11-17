@@ -594,7 +594,9 @@ pub fn open_window(id: &str, admin: bool, force_relay: bool) -> String {
             Ok(dir) if std::path::Path::new(&dir).join("AppRun").exists() => {
                 std::path::Path::new(&dir).join("AppRun")
             }
-            _ => match std::env::current_exe() {
+            // (not current_exe(): after an upgrade under this window it names the deleted
+            // file, and the terminal would open on "No such file or directory", FT-11)
+            _ => match crate::platform::linux::exe_for_spawn() {
                 Ok(p) => p,
                 Err(e) => return format!("{}: {}", tr("Failed"), e),
             },
