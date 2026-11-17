@@ -112,25 +112,40 @@ pub(super) async fn ensure_inited() -> ResultType<()> {
     check_init().await
 }
 
-pub(super) fn is_inited() -> Option<Message> {
-    if is_x11() {
-        None
-    } else {
-        if CAP_DISPLAY_INFO.read().unwrap().is_empty() {
-            let mut msg_out = Message::new();
-            let res = MessageBox {
-                msgtype: "nook-nocancel-hasclose".to_owned(),
-                title: "Wayland".to_owned(),
-                text: "Please Select the screen to be shared(Operate on the peer side).".to_owned(),
-                link: "".to_owned(),
-                ..Default::default()
-            };
-            msg_out.set_message_box(res);
-            Some(msg_out)
-        } else {
-            None
-        }
-    }
+/// TBFDesk: the displays for a login, with the whole capture set-up -- the
+/// xdg-desktop-portal handshake, which waits for the local user to answer GNOME's
+/// "share your screen" dialog (up to 3 minutes, pipewire.rs `request_remote_desktop`)
+/// -- run to completion on the calling thread. Called from the dedicated thread the
+/// connection starts at login (connection.rs, `start_wayland_portal_wait`). It used to
+/// run on the connection's own tokio task, inside its select loop: no heartbeat was read
+/// or answered during the dialog, and once the user clicked Share the loop's 30 s check
+/// closed the session with "Timeout" in the same second.
+#[tokio::main(flavor = "current_thread")]
+pub(super) async fn get_displays_blocking() -> ResultType<Vec<DisplayInfo>> {
+    get_displays().await
+}
+
+/// TBFDesk: the text of the box the controller sees while the local user still has to
+/// answer the portal's screen-sharing dialog. The controller translates it (en.rs, de.rs),
+/// so it is the English sentence itself: older controllers show it as it is.
+pub(super) const PORTAL_WAIT_TEXT: &str = "Waiting for the remote user to allow screen sharing...";
+
+/// TBFDesk: the box for `PORTAL_WAIT_TEXT`. "wait-remote-accept-nook" is the existing
+/// "waiting for the other side" box (also used while a session request waits for the
+/// remote user to accept it): an hourglass and a Cancel that ends the session, the same
+/// in Sciter (common.tis msgbox) and Flutter desktop and Android (model.dart
+/// showWaitAcceptDialog). It replaces upstream's "nook-nocancel-hasclose" box, whose
+/// Close ended the session in Sciter but only hid the box in Flutter.
+pub(super) fn portal_wait_msg() -> Message {
+    let mut msg_out = Message::new();
+    msg_out.set_message_box(MessageBox {
+        msgtype: "wait-remote-accept-nook".to_owned(),
+        title: "Prompt".to_owned(),
+        text: PORTAL_WAIT_TEXT.to_owned(),
+        link: "".to_owned(),
+        ..Default::default()
+    });
+    msg_out
 }
 
 pub(super) async fn check_init() -> ResultType<()> {
@@ -252,14 +267,40 @@ pub fn clear() {
         return;
     }
     let mut write_lock = CAP_DISPLAY_INFO.write().unwrap();
-    for (_, addr) in write_lock.iter() {
+    clear_locked(&mut write_lock);
+}
+
+/// TBFDesk: free the capturers set up for a session that ended before it used them --
+/// the controller gave up while the local user still had the share dialog open, and the
+/// user clicked Share afterwards. Left alone they would keep the screen cast (and GNOME's
+/// "screen is being shared" indicator) running with nobody watching until the next
+/// session. The write lock is taken before the video-service count is read, so a video
+/// service starting at the same moment is either counted already (nothing is freed) or
+/// finds the map empty afterwards (its get_capturer_for_display fails with an error);
+/// it never holds a pointer freed here. The caller has also made sure no other remote
+/// session is open, so no video service should be starting at all. Returns whether
+/// anything was freed.
+pub(super) fn clear_if_unused() -> bool {
+    if is_x11() {
+        return false;
+    }
+    let mut write_lock = CAP_DISPLAY_INFO.write().unwrap();
+    if write_lock.is_empty() || *ACTIVE_DISPLAY_COUNT.read().unwrap() > 0 {
+        return false;
+    }
+    clear_locked(&mut write_lock);
+    true
+}
+
+fn clear_locked(cap_display_info_map: &mut HashMap<usize, u64>) {
+    for (_, addr) in cap_display_info_map.iter() {
         let cap_display_info: *mut CapDisplayInfo = *addr as _;
         unsafe {
             let _box_capturer = Box::from_raw((*cap_display_info).capturer.0);
             let _box_cap_display_info = Box::from_raw(cap_display_info);
         }
     }
-    write_lock.clear();
+    cap_display_info_map.clear();
 
     // Reset PipeWire initialization flag to allow recreation on next init
     *PIPEWIRE_INITIALIZED.write().unwrap() = false;

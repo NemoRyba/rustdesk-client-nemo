@@ -950,6 +950,8 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("Updated successfully!", "Erfolgreich aktualisiert!"),
         ("WOL", "WOL"),
         ("Waiting for approval by your administrator", "Warten auf Freigabe durch Ihren Administrator"),
+        // Wayland target: the portal's share dialog is open there (server/wayland.rs PORTAL_WAIT_TEXT).
+        ("Waiting for the remote user to allow screen sharing...", "Warten, bis der Benutzer auf der Gegenseite die Bildschirmfreigabe erlaubt. Dort fragt ein Dialog, welche Bildschirme freigegeben werden sollen."),
         ("You cannot connect to your own computer", "Sie können sich nicht mit Ihrem eigenen Computer verbinden"),
         ("Your administrator refused this device key. Ask them to clear the request or to issue a new key for this machine.", "Ihr Administrator hat diesen Geräteschlüssel abgelehnt. Bitten Sie ihn, die Anfrage zurückzusetzen oder einen neuen Schlüssel für diesen Computer auszustellen."),
         // Session refusals sent by the target (nemo_control), shown via translate_text.

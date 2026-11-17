@@ -357,5 +357,7 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("nemo_local_network_ask_again", "Ask again"),
         ("nemo_local_network_open_settings", "Open settings"),
         ("Use the ⋮ menu for a direct-only connection.", "Use the ⋮ menu for a direct-only connection."),
+        // Wayland target: the portal's share dialog is open there (server/wayland.rs PORTAL_WAIT_TEXT).
+        ("Waiting for the remote user to allow screen sharing...", "Waiting for the remote user to allow screen sharing. A dialog on their screen asks which screens to share."),
     ].iter().cloned().collect();
 }
