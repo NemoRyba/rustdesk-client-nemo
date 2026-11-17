@@ -73,6 +73,11 @@ var svg_copy_password = <svg #copy-password xmlns="http://www.w3.org/2000/svg" w
 // Which field shows the short "Copied" note ("id" / "otp" / ""), see nemoCopyToClipboard.
 var nemo_copied_what = "";
 var nemo_copied_seq = 0;
+// Phase flags OR'ed into evt.type, resolved once (see nemoMouseIs). Sciter's SINKING is
+// 0x8000 (PHASE_MASK; this TIScript has no Event.SINKING name); HANDLED is Event.HANDLED.
+var nemo_evt_sinking = 0x8000;
+var nemo_evt_handled = 0;
+try { nemo_evt_handled = Event.HANDLED || 0; } catch (e) { nemo_evt_handled = 0; }
 
 var my_id = handler.get_id();
 function get_id() {
@@ -2472,7 +2477,7 @@ function nemoCopyOtp() {
 // containers below also look at the SINKING phase.
 function nemoMouseIs(evt, type) {
     var t = evt.type;
-    return t == type || t == (type | (Event.SINKING || 0)) || t == (type | (Event.HANDLED || 0));
+    return t == type || t == (type | nemo_evt_sinking) || (nemo_evt_handled != 0 && t == (type | nemo_evt_handled));
 }
 
 // The <input> an event is aimed at (the input itself, or something inside it), or null.
