@@ -155,7 +155,10 @@ var fs_press = false;     // pressed on #fullscreen, the release not seen yet
 var fs_clicked = false;   // the click of the current press came
 function clearFsPress() { fs_press = false; }
 function fsClickFallback() {
-    if (fs_clicked) return;
+    // fs_press: a NEW press is already down (fast double click: release -> next press
+    // within these 80 ms). Its own release decides; without this the first press's timer
+    // fired after the new mousedown had cleared fs_clicked and toggled a third time.
+    if (fs_clicked || fs_press) return;
     fs_clicked = true;
     stdout.println("fullscreen button: press and release without a click -- toggling from the release");
     toggleFullScreen();
