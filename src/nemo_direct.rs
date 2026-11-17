@@ -605,7 +605,7 @@ const FD_TIMEOUT: &str = "Direct connection to {} failed: no answer to the TCP c
 const FD_TIMEOUT_KNOCKED: &str = "Direct connection to {} failed: a knock was sent, but the TCP connection request got no answer. Either the knock was not accepted (wrong knock key, or this computer's clock is wrong), or a port forward or firewall drops the connection. The relay was NOT used because you asked for a direct connection.";
 const FD_REFUSED: &str = "Direct connection to {} failed: the connection was refused. Something at that address answered, but nothing accepts connections on that port: TBFDesk is not running on the computer, or the router answers the port itself instead of forwarding it. The relay was NOT used because you asked for a direct connection.";
 const FD_REFUSED_KNOCKED: &str = "Direct connection to {} failed: a knock was sent, but the connection was refused. Probably the knock was not accepted (wrong knock key, or this computer's clock is wrong) and the port stayed closed, or nothing accepts connections behind the port forward. The relay was NOT used because you asked for a direct connection.";
-const FD_KNOCK_NOT_SENT: &str = "Direct connection to {} failed: knocking is switched on, but this computer could not send the knock (no usable knock key, or sending failed), and the connection did not get through. The relay was NOT used because you asked for a direct connection.";
+const FD_KNOCK_NOT_SENT: &str = "Direct connection to {} failed: knocking is switched on, but no knock was sent (no usable knock key for this computer, or sending failed), and the connection did not get through. If this port is knock-gated, that is the reason; otherwise check the port forward. The relay was NOT used because you asked for a direct connection.";
 const FD_HANDSHAKE_TIMEOUT: &str = "Direct connection to {} failed: the TCP connection was established, but the TBFDesk handshake did not finish in time. The path is very slow, or the port forward reaches something that is not TBFDesk. The relay was NOT used because you asked for a direct connection.";
 const FD_CLOSED: &str = "Direct connection to {} failed: the connection was accepted and then closed before the TBFDesk handshake. The port forward probably reaches a computer or port where TBFDesk is not answering, or the computer dropped the connection. The relay was NOT used because you asked for a direct connection.";
 const FD_NOT_TBFDESK: &str = "Direct connection to {} failed: the endpoint answered, but not as TBFDesk. The port forward reaches a different service, not the computer. The relay was NOT used because you asked for a direct connection.";
@@ -1162,7 +1162,7 @@ mod tests {
                 endpoint: "h:1".to_owned(),
                 attempts: vec![attempt(failure, KnockState::NotSent("no key".to_owned()), 1)],
             };
-            assert!(failed.user_message("1").contains("could not send the knock"));
+            assert!(failed.user_message("1").contains("no knock was sent"));
         }
 
         // Every reason has its own text, and every text has exactly one placeholder.
