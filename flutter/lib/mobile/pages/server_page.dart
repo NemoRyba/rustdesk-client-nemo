@@ -569,8 +569,11 @@ class ServerInfo extends StatelessWidget {
                           visualDensity: VisualDensity.compact,
                           icon: Icon(Icons.copy_outlined),
                           onPressed: () {
-                            copyToClipboard(
-                                model.serverPasswd.value.text.trim());
+                            // As desktop: nothing to copy while it shows "-"
+                            // (service stopped); no "Copied" for a dash.
+                            final text = model.serverPasswd.value.text.trim();
+                            if (text.isEmpty || text == '-') return;
+                            copyToClipboard(text);
                           })
                     ])
             ]).marginOnly(left: 40, bottom: 15),
