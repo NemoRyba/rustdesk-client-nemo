@@ -623,6 +623,55 @@ if (is_osx) {
     setWindowButontsAndIcon();
 }
 
+// Linux: dragging the header moves the window through the WINDOW MANAGER, like a GTK
+// title bar (remote.rs begin_move_drag). Sciter's own window-caption moved it from the
+// client: on Ubuntu 26.04 (GNOME, Wayland only) the window could not be dragged at all,
+// so not to the other monitor either, and on X11 mutter kept it on its monitor (field
+// report + lab, 2026-11-17). So on Linux the caption role goes, and the gesture is
+// GTK's: press on empty header space, move a few pixels -> the compositor takes over.
+// A double click there still maximizes / restores.
+var hdr_press = null;
+function headerBackgroundAt(el) {
+    var h = $(header);
+    for (var e = el; e && e !== h; e = e.parent) {
+        if (["span", "button", "menu", "li", "input", "select", "img", "svg", "icon", "popup", "a"].indexOf(e.tag) >= 0) return false;
+        if (e.id == "screen" || e.id == "display-pick") return false;
+        var r = e.attributes["role"];
+        if (r && r != "window-caption") return false;
+    }
+    return true;
+}
+if (is_linux) {
+    var hdr_caption = $(header caption);
+    if (hdr_caption) hdr_caption.attributes["role"] = undefined;
+}
+event mousedown $(header) (evt) {
+    hdr_press = null;
+    if (!is_linux || !evt.mainButton || view.windowState == View.WINDOW_FULL_SCREEN) return false;
+    if (!headerBackgroundAt(evt.target)) return false;
+    hdr_press = [evt.xScreen, evt.yScreen];
+    return false;
+}
+event mousemove $(header) (evt) {
+    if (!hdr_press) return false;
+    if (!(evt.buttons & 1)) { hdr_press = null; return false; }
+    if (Math.abs(evt.xScreen - hdr_press[0]) + Math.abs(evt.yScreen - hdr_press[1]) < 6) return false;
+    hdr_press = null;
+    if (!handler.begin_move_drag()) stdout.println("header drag: the window manager move did not start");
+    return true;
+}
+event mouseup $(header) (evt) {
+    hdr_press = null;
+    return false;
+}
+event dblclick $(header) (evt) {
+    if (!is_linux || view.windowState == View.WINDOW_FULL_SCREEN) return false;
+    if (!headerBackgroundAt(evt.target)) return false;
+    hdr_press = null;
+    view.windowState = view.windowState == View.WINDOW_MAXIMIZED ? View.WINDOW_SHOWN : View.WINDOW_MAXIMIZED;
+    return true;
+}
+
 if (!(is_file_transfer || is_port_forward)) {
     $(header).style.set {
         height: "32px",

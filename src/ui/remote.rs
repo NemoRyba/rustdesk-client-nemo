@@ -1055,6 +1055,7 @@ impl sciter::EventHandler for SciterSession {
         fn is_file_transfer();
         fn is_port_forward();
         fn is_rdp();
+        fn begin_move_drag();
         fn login(String, String, String, bool);
         fn send2fa(String, bool);
         fn get_enable_trusted_devices();
@@ -1137,6 +1138,58 @@ impl sciter::EventHandler for SciterSession {
 }
 
 impl SciterSession {
+    /// Linux: let the window manager move this window, as a GTK title bar does.
+    ///
+    /// The session window draws its own header (window-frame="extended"), and Sciter's
+    /// window-caption moved it from the client side: GNOME on Wayland ignores such moves
+    /// (the window did not move at all), and on X11 mutter kept it on its monitor (it only
+    /// slid sideways). Ubuntu 26.04 has no X11 session, so there the window could not be
+    /// dragged to the other monitor (field report 2026-11-17, reproduced in the lab).
+    /// gtk_window_begin_move_drag hands the drag to the compositor (xdg_toplevel.move /
+    /// _NET_WM_MOVERESIZE), which moves it anywhere, across monitors too.
+    ///
+    /// Called by header.tis from the mouse event that started the drag, on the UI thread
+    /// and while the button is still down: on Wayland GTK takes the serial of that press,
+    /// so the call must not be deferred to a timer. Returns false when it could not start.
+    fn begin_move_drag(&self) -> bool {
+        #[cfg(target_os = "linux")]
+        {
+            let Some(hwnd) = SESSION_HWND.with(|h| h.get()) else {
+                return false;
+            };
+            if hwnd.is_null() {
+                return false;
+            }
+            // SAFETY: Sciter's HWINDOW on Linux is a GtkWidget of this window, alive while
+            // the page that calls this runs; GTK is only touched on the UI thread here.
+            unsafe {
+                use gtk::gdk::ffi as gdk;
+                let top = gtk::ffi::gtk_widget_get_toplevel(hwnd as *mut gtk::ffi::GtkWidget);
+                if top.is_null() {
+                    return false;
+                }
+                // Root coordinates of the pointer: X11 anchors the move there; Wayland
+                // ignores them (the compositor knows where its pointer is).
+                let (mut x, mut y) = (0i32, 0i32);
+                let display = gdk::gdk_display_get_default();
+                if !display.is_null() {
+                    let seat = gdk::gdk_display_get_default_seat(display);
+                    if !seat.is_null() {
+                        let pointer = gdk::gdk_seat_get_pointer(seat);
+                        if !pointer.is_null() {
+                            gdk::gdk_device_get_position(pointer, std::ptr::null_mut(), &mut x, &mut y);
+                        }
+                    }
+                }
+                // button 1, GDK_CURRENT_TIME
+                gtk::ffi::gtk_window_begin_move_drag(top as *mut gtk::ffi::GtkWindow, 1, x, y, 0);
+            }
+            return true;
+        }
+        #[allow(unreachable_code)]
+        false
+    }
+
     pub fn new(cmd: String, id: String, password: String, args: Vec<String>) -> Self {
         let force_relay = args.contains(&"--relay".to_string());
         let session: Session<SciterHandler> = Session {
