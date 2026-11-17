@@ -281,6 +281,10 @@ pub struct Connection {
     block_input: bool,
     privacy_mode: bool,
     control_permissions: Option<ControlPermissions>,
+    /// The management grant of the CURRENT login (a valid control ticket), or None.
+    /// Reset on every login request; read by `nemo_login_route` (machine policies "LDAP
+    /// login is sufficient" / "disable local password").
+    nemo_grant: Option<crate::nemo_control::Grant>,
     last_test_delay: Option<Instant>,
     network_delay: u32,
     lock_after_session_end: bool,
@@ -474,6 +478,7 @@ impl Connection {
             block_input: Self::permission(keys::OPTION_ENABLE_BLOCK_INPUT, &control_permissions),
             privacy_mode: Self::permission(keys::OPTION_ENABLE_PRIVACY_MODE, &control_permissions),
             control_permissions,
+            nemo_grant: None,
             last_test_delay: None,
             network_delay: 0,
             lock_after_session_end: false,
@@ -2156,6 +2161,11 @@ impl Connection {
     }
 
     fn verify_h1(&self, h1: &[u8]) -> bool {
+        // Policy "disable local password": this machine accepts none of its own passwords
+        // (one-time, permanent, stored hash, recent-session reconnect -- all end here).
+        if crate::nemo_control::local_password_disabled() {
+            return false;
+        }
         let mut hasher2 = Sha256::new();
         hasher2.update(h1);
         hasher2.update(self.hash.challenge.as_bytes());
@@ -2336,6 +2346,8 @@ impl Connection {
     /// connecting user can only be enforced here.
     async fn apply_management_authorization(&mut self, lr: &LoginRequest) -> bool {
         let required = crate::nemo_control::required();
+        // Only a valid ticket presented on THIS login may stand in for the password.
+        self.nemo_grant = None;
         match crate::nemo_control::authorize(
             &lr.nemo_control_ticket,
             &lr.nemo_control_sig,
@@ -2345,6 +2357,7 @@ impl Connection {
             Ok(Some(grant)) => {
                 crate::nemo_control::log_grant(&lr.my_id, &Some(grant.clone()));
                 self.apply_control_grant(&grant);
+                self.nemo_grant = Some(grant.clone());
                 self.post_conn_audit(json!({
                     "action": "authorized",
                     "user": grant.user,
@@ -2387,6 +2400,39 @@ impl Connection {
                 false
             }
         }
+    }
+
+    /// How this login is decided under the machine policies "LDAP login is sufficient" and
+    /// "disable local password" (nemo_control::login_route), from the ticket presented on
+    /// THIS login (apply_management_authorization) and the current approve mode.
+    fn nemo_login_route(&self, click_only: bool) -> crate::nemo_control::LoginRoute {
+        crate::nemo_control::login_route(
+            self.nemo_grant.as_ref().map(|g| g.user.as_str()),
+            crate::nemo_control::ldap_login_sufficient(),
+            crate::nemo_control::local_password_disabled(),
+            click_only,
+            // The CM shows no Accept button in "password" mode (cm.tis, server_page.dart).
+            password::approve_mode() != ApproveMode::Password,
+        )
+    }
+
+    /// "Disable local password" and nothing else can admit this login: no ticket of a
+    /// signed-in user, and no Accept button to put it to. Say so instead of "wrong
+    /// password" -- the password may well be right, it is just not taken here. The caller
+    /// closes the connection.
+    async fn refuse_local_password_disabled(&mut self, controller_id: &str) {
+        log::warn!(
+            "session from {} refused: local password disabled by policy and no signed-in authorization",
+            controller_id
+        );
+        self.post_conn_audit(json!({
+            "action": "refused",
+            "reason": "local password disabled by policy",
+            "path": self.path,
+        }));
+        self.send_login_error(crate::nemo_control::LOGIN_MSG_LOCAL_PASSWORD_DISABLED)
+            .await;
+        sleep(1.).await;
     }
 
     /// Apply a ticket's permissions exactly as if the server had attached them at the
@@ -2626,6 +2672,15 @@ impl Connection {
                 return false;
             }
 
+            // "Disable local password" with nothing that could admit this login: refuse it
+            // before a connection manager or a Linux headless desktop is started for it.
+            // Refuse needs the "password" approve mode, where click_only is false whatever
+            // the logon-screen exception says, so `false` here decides it exactly.
+            if self.nemo_login_route(false) == crate::nemo_control::LoginRoute::Refuse {
+                self.refuse_local_password_disabled(&lr.my_id).await;
+                return false;
+            }
+
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
             if !should_use_terminal_os_login_scope(self.terminal, &lr.os_login.username) {
                 self.try_start_cm_ipc();
@@ -2692,8 +2747,53 @@ impl Connection {
                 crate::get_builtin_option(keys::OPTION_ALLOW_LOGON_SCREEN_PASSWORD) == "Y"
                     && is_logon();
 
-            if (password::approve_mode() == ApproveMode::Click && !allow_logon_screen_password)
+            // Machine policies "LDAP login is sufficient" / "disable local password"
+            // (nemo_control::login_route); with both off the route is always Normal and
+            // the code below runs as before. A Refuse was normally caught above already;
+            // checked again because the policy may have changed in between.
+            let route = self.nemo_login_route(
+                password::approve_mode() == ApproveMode::Click && !allow_logon_screen_password,
+            );
+            if route == crate::nemo_control::LoginRoute::Refuse {
+                self.refuse_local_password_disabled(&lr.my_id).await;
+                return false;
+            }
+            if route == crate::nemo_control::LoginRoute::Admit {
+                // The server-signed ticket of a signed-in user who may control THIS machine
+                // replaces the password ("LDAP login is sufficient", or the local password is
+                // disabled). Same path as a correct password: blocklist and 2FA are still
+                // checked in send_logon_response_and_keep_alive; failure counters untouched
+                // (a ticket is bound to this connection's challenge, nothing to guess).
+                let user = self
+                    .nemo_grant
+                    .as_ref()
+                    .map(|g| g.user.clone())
+                    .unwrap_or_default();
+                log::info!(
+                    "session from {} admitted on the management ticket of user '{}' (no password)",
+                    lr.my_id,
+                    user
+                );
+                self.post_conn_audit(json!({
+                    "action": "admitted-by-ticket",
+                    "user": user,
+                    "path": self.path,
+                }));
+                if err_msg.is_empty() {
+                    #[cfg(target_os = "linux")]
+                    self.linux_headless_handle.wait_desktop_cm_ready().await;
+                    if !self.send_logon_response_and_keep_alive().await {
+                        return false;
+                    }
+                    self.try_start_cm(lr.my_id, lr.my_name, self.authorized);
+                } else {
+                    self.send_login_error(err_msg).await;
+                }
+            } else if (password::approve_mode() == ApproveMode::Click && !allow_logon_screen_password)
                 || password::approve_mode() == ApproveMode::Both && !password::has_valid_password()
+                // "Disable local password": no password path at all -- the local user decides
+                // (a typed password is not looked at, so it is not counted as a failure).
+                || route == crate::nemo_control::LoginRoute::AskLocalUser
             {
                 #[cfg(not(target_os = "ios"))]
                 if should_use_terminal_os_login_scope(self.terminal, &lr.os_login.username) {
