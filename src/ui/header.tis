@@ -50,6 +50,16 @@ var svg_recording_on = <svg t="1663505598640" class="icon" viewBox="0 0 1024 102
 
 var cur_window_state = view.windowState;
 function check_state_change() {
+    // Linux: Sciter's view.windowState forgets full screen on every GTK state event (the
+    // window manager confirming it, focus in / out; remote.rs linux_window). The page then
+    // took a full-screen window for a normal one: header left in place, no auto-hide, and
+    // the button's next click asked for full screen again. Put it back from GTK's own
+    // state -- except while full screen is being left on purpose. (Setting it again only
+    // re-sends a request the window manager has already granted.)
+    var ns = nativeWindowState();
+    if (ns != View.WINDOW_FULL_SCREEN) fs_leave_ticks = 0;
+    else if (fs_leave_ticks > 0) --fs_leave_ticks;
+    else if (view.windowState != View.WINDOW_FULL_SCREEN) view.windowState = View.WINDOW_FULL_SCREEN;
     if (view.windowState != cur_window_state) {
         stateChanged();
     }
@@ -57,7 +67,8 @@ function check_state_change() {
 }
 
 if (is_linux) {
-    check_state_change();
+    // by timer: the first poll may call stateChanged, which is defined further down
+    self.timer(30ms, check_state_change);
 } else {
     view << event statechange {
         stateChanged();
@@ -87,11 +98,50 @@ function stateChanged() {
         $(header).style.set {
             display: "none",
         };
+    } else if (!headerAutoHide()) {
+        // Out of full screen, by the button or by the window manager: a plain bar in the
+        // layout again. It may have been over the picture (remote.tis revealHeaderOverlay)
+        // or hidden -- left full screen while hidden, it never came back.
+        setHeaderVisible(true);
     }
 }
 
 var header;
 var old_window_state = View.WINDOW_SHOWN;
+
+// The header's fullscreen button. Linux: through GTK, and GTK's own state decides the
+// direction (remote.tis nativeWindowState): Sciter's view.windowState loses full screen
+// on GTK state events -- a click into an inactive window brings focus events after the
+// old 150 ms re-assert, so the first click did not seem to work and a second was needed
+// (lab, Ubuntu 26.04 GNOME, two monitors, 2026-11-17) -- and its WINDOW_SHOWN never left
+// full screen there. A maximized window stays maximized underneath and comes back so.
+// Elsewhere nativeWindowState() is 0 and Sciter's path below runs unchanged.
+function toggleFullScreen() {
+    var ns = nativeWindowState();
+    stdout.println("fullscreen button: window state " + view.windowState + ", GTK " + ns);
+    if (ns > 0) {
+        if (ns == View.WINDOW_FULL_SCREEN) {
+            nativeFullScreen(false, old_window_state == View.WINDOW_MAXIMIZED);
+        } else {
+            old_window_state = ns;
+            nativeFullScreen(true);
+        }
+        return;
+    }
+    if (view.windowState == View.WINDOW_FULL_SCREEN) {
+        if (old_window_state == View.WINDOW_MAXIMIZED) {
+            view.windowState = View.WINDOW_SHOWN;
+        }
+        view.windowState = old_window_state;
+    } else {
+        old_window_state = view.windowState;
+        if (view.windowState == View.WINDOW_MAXIMIZED) {
+            view.windowState = View.WINDOW_SHOWN;
+        }
+        view.windowState = View.WINDOW_FULL_SCREEN;
+        if (is_linux) { self.timer(150ms, function() { view.windowState = View.WINDOW_FULL_SCREEN; }); }
+    }
+}
 
 var is_edit_os_password;
 class EditOsPassword: Reactor.Component {
@@ -361,19 +411,7 @@ class Header: Reactor.Component {
     }
 
     event click $(#fullscreen) (_, el) {
-        if (view.windowState == View.WINDOW_FULL_SCREEN) {
-            if (old_window_state == View.WINDOW_MAXIMIZED) {
-                view.windowState = View.WINDOW_SHOWN;
-            }
-            view.windowState = old_window_state;
-        } else {
-            old_window_state = view.windowState;
-            if (view.windowState == View.WINDOW_MAXIMIZED) {
-                view.windowState = View.WINDOW_SHOWN;
-            }
-            view.windowState = View.WINDOW_FULL_SCREEN;
-            if (is_linux) { self.timer(150ms, function() { view.windowState = View.WINDOW_FULL_SCREEN; }); }
-        }
+        toggleFullScreen();
     }
     
     event click $(#chat) {

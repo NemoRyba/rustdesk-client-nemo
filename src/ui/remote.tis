@@ -46,6 +46,33 @@ function isRemoteLinux() {
     return get_peer_platform() == "Linux";
 }
 
+// ----------------------------------------------------------------------------
+// Full screen on Linux goes through GTK (remote.rs linux_window): there Sciter's
+// view.windowState forgets full screen on every GTK state event -- the window manager
+// confirming it, focus in / out -- and WINDOW_SHOWN cannot leave it. nativeWindowState()
+// is GTK's own state (View.WINDOW_* numbering), 0 elsewhere: callers then keep Sciter's
+// path, unchanged. header.tis check_state_change puts view.windowState back from it.
+// ----------------------------------------------------------------------------
+var fs_leave_ticks = 0;   // polls (30 ms) during which full screen is being left on purpose
+function nativeWindowState() {
+    if (!is_linux) return 0;
+    try { return handler.native_window_state(); } catch (e) { return 0; }
+}
+function nativeFullScreen(on, maximized = false) {
+    if (!is_linux) return false;
+    var ok = false;
+    try { ok = handler.native_fullscreen(on, maximized); } catch (e) {}
+    // until GTK reports it, check_state_change must not put full screen back
+    if (ok && !on) fs_leave_ticks = 50;
+    return ok;
+}
+// View.WINDOW_SHOWN from any state, for the display modes that place the window
+// themselves. On Linux full screen is left through GTK first, back to a plain window.
+function showWindowNormal() {
+    if (nativeWindowState() == View.WINDOW_FULL_SCREEN) nativeFullScreen(false, false);
+    if (view.windowState != View.WINDOW_SHOWN) view.windowState = View.WINDOW_SHOWN;
+}
+
 function adaptDisplay() {
     var w = display_width;
     var h = display_height;
@@ -289,7 +316,7 @@ function restoreWindowPlacement() {
     if (!window_restore) return;
     var r = window_restore;
     window_restore = null;
-    if (view.windowState != View.WINDOW_SHOWN) view.windowState = View.WINDOW_SHOWN;
+    showWindowNormal();
     view.move(r.rect[0], r.rect[1], r.rect[2], r.rect[3]);
     if (r.state == View.WINDOW_MAXIMIZED || r.state == View.WINDOW_FULL_SCREEN)
         view.windowState = r.state;
@@ -337,7 +364,7 @@ function enterSpan() {
                             mon: { x: mons[k].x - x0, y: mons[k].y - y0, w: mons[k].w, h: mons[k].h } });
     }
     span_first_width = mons[0].w;
-    if (view.windowState != View.WINDOW_SHOWN) view.windowState = View.WINDOW_SHOWN;
+    showWindowNormal();
     setHeaderVisible(false);
     placeWindowAt(x0, y0, x1 - x0, y1 - y0);
     enterViewAll();
@@ -359,7 +386,7 @@ function enterDisplayWindows() {
     pi.current_display = first;
     enterViewAll([first]);
     var m0 = mons[0];
-    if (view.windowState != View.WINDOW_SHOWN) view.windowState = View.WINDOW_SHOWN;
+    showWindowNormal();
     // Onto the first monitor's WORK AREA first, then maximized (not full screen): a
     // maximized window fills the monitor it is on minus the local taskbar, wherever the
     // taskbar sits (bottom, side, top), and keeps its title bar, so it can be restored,
