@@ -159,6 +159,47 @@ fn nemo_sign_poll(id: &str) -> (String, String) {
 struct HttpResponse {
     status_code: u16,
     body: String,
+    /// Lower-case header name -> value (common::http_request_sync).
+    #[serde(default)]
+    headers: HashMap<String, String>,
+}
+
+/// This computer's clock minus the server's, from the response's HTTP Date header
+/// (whole seconds; positive = this computer is ahead). None without a usable header.
+fn clock_skew_secs(headers: &HashMap<String, String>, now: u64) -> Option<i64> {
+    let date = headers.get("date")?;
+    let server = chrono::DateTime::parse_from_rfc2822(date.trim()).ok()?.timestamp();
+    Some(now as i64 - server)
+}
+
+/// The clock part of "nemo-policy-problem", or None while the clock is usable. The
+/// server refuses a signed poll more than 60 s ahead of its clock or 300 s behind it
+/// (sealed_login_guard: "sealed credential expired"), so past exactly those limits no
+/// policy can arrive until the clock is fixed -- say so, in minutes. Pure.
+fn clock_problem(skew_secs: i64) -> Option<String> {
+    let minutes = |secs: u64| (secs + 59) / 60;
+    if skew_secs > 60 {
+        Some(format!("stale|{}", minutes(skew_secs as u64)))
+    } else if skew_secs < -300 {
+        Some(format!("future|{}", minutes(skew_secs.unsigned_abs())))
+    } else {
+        None
+    }
+}
+
+/// Set or clear the clock warning from one poll response (any status: a refused poll
+/// still carries the server's Date). A clock warning left from earlier is cleared once
+/// the clock is right again, whatever else happens to this poll.
+fn note_clock_from_response(headers: &HashMap<String, String>) {
+    match clock_skew_secs(headers, epoch_now()).and_then(clock_problem) {
+        Some(problem) => set_policy_problem(&problem),
+        None => {
+            let current = Config::get_option(OPTION_NEMO_POLICY_PROBLEM);
+            if current.starts_with("stale|") || current.starts_with("future|") {
+                set_policy_problem("");
+            }
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -740,6 +781,7 @@ fn sync_policy() -> ResultType<()> {
         headers,
     )?;
     let http: HttpResponse = serde_json::from_str(&raw)?;
+    note_clock_from_response(&http.headers);
     if http.status_code != 200 {
         let server_msg = http_error_message(&http.body);
         // Layer 1: the server refuses (403) a poll without a valid, PINNED device
@@ -1481,6 +1523,23 @@ mod applied_policy_tests {
         let mut keys: Vec<&str> = saved.keys().map(String::as_str).collect();
         keys.sort();
         assert_eq!(keys, ["custom-rendezvous-server", "enable-clipboard", "nemo-company-network-only"]);
+    }
+
+    #[test]
+    fn the_clock_is_judged_by_the_servers_date_header_with_the_servers_limits() {
+        let headers: HashMap<String, String> =
+            [("date".to_owned(), "Tue, 17 Nov 2026 14:51:13 GMT".to_owned())].into();
+        let server = 1_794_927_073u64; // 2026-11-17T14:51:13Z
+        assert_eq!(clock_skew_secs(&headers, server + 3900), Some(3900));
+        assert_eq!(clock_skew_secs(&headers, server - 30), Some(-30));
+        assert_eq!(clock_skew_secs(&HashMap::new(), server), None);
+        // The server refuses a signed poll > 60 s ahead or > 300 s behind its clock.
+        assert_eq!(clock_problem(60), None);
+        assert_eq!(clock_problem(61).as_deref(), Some("stale|2"));
+        assert_eq!(clock_problem(3900).as_deref(), Some("stale|65"));
+        assert_eq!(clock_problem(-300), None);
+        assert_eq!(clock_problem(-301).as_deref(), Some("future|6"));
+        assert_eq!(clock_problem(-3600).as_deref(), Some("future|60"));
     }
 
     #[test]
