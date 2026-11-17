@@ -71,6 +71,9 @@ const NEMO_MANAGEMENT_SETTINGS: &[&str] = &[
     // The version the server publishes (server-driven rollout): a newer one makes a
     // client with automatic updates check now rather than at its next daily check.
     OPTION_NEMO_UPDATE_VERSION,
+    // The server's allowed clock difference (server 1.1.19+): the clock warning and the
+    // policy-age window use the server's own limit.
+    OPTION_NEMO_CLOCK_TOLERANCE,
 ];
 
 /// Direct endpoints + the SPA knock. Kept as its own slice so the owning module
@@ -177,10 +180,32 @@ fn clock_skew_secs(headers: &HashMap<String, String>, now: u64) -> Option<i64> {
 /// (sealed_login_guard: "sealed credential expired"), so past exactly those limits no
 /// policy can arrive until the clock is fixed -- say so, in minutes. Pure.
 fn clock_problem(skew_secs: i64) -> Option<String> {
+    clock_problem_within(skew_secs, server_clock_tolerance())
+}
+
+/// The server's "Allowed clock difference" (seconds, both ways), pushed in every policy
+/// since server 1.1.19. None from an older server, whose limit was fixed: 60 s ahead /
+/// 300 s behind.
+pub const OPTION_NEMO_CLOCK_TOLERANCE: &str = "nemo-clock-tolerance-secs";
+
+fn server_clock_tolerance() -> Option<u64> {
+    Config::get_option(OPTION_NEMO_CLOCK_TOLERANCE)
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .filter(|s| *s > 0)
+}
+
+/// Pure: `tolerance` from the server (both ways), or None = the old fixed limits.
+fn clock_problem_within(skew_secs: i64, tolerance: Option<u64>) -> Option<String> {
     let minutes = |secs: u64| (secs + 59) / 60;
-    if skew_secs > 60 {
+    let (ahead, behind) = match tolerance {
+        Some(t) => (t as i64, t as i64),
+        None => (60, 300),
+    };
+    if skew_secs > ahead {
         Some(format!("stale|{}", minutes(skew_secs as u64)))
-    } else if skew_secs < -300 {
+    } else if skew_secs < -behind {
         Some(format!("future|{}", minutes(skew_secs.unsigned_abs())))
     } else {
         None
@@ -309,6 +334,25 @@ fn apply_session_revocation(terminate_sessions_before: u64) {
 }
 
 fn check_policy_freshness(issued_ts: u64, high_water: u64, now: u64) -> Result<(), String> {
+    check_policy_freshness_within(issued_ts, high_water, now, POLICY_MAX_AGE_SECS, POLICY_MAX_FUTURE_SECS)
+}
+
+/// The age window for a policy: the fixed 600 s, widened when the server allows a larger
+/// clock difference -- a client that far off still gets its poll accepted, so it must
+/// also accept the policy that comes back (+60 s for the round trip). Anti-rollback
+/// (high-water) is unaffected, so a wider window never lets an OLDER policy back in.
+fn policy_freshness_window() -> (u64, u64) {
+    let widened = server_clock_tolerance().map(|t| t.saturating_add(60)).unwrap_or(0);
+    (POLICY_MAX_AGE_SECS.max(widened), POLICY_MAX_FUTURE_SECS.max(widened))
+}
+
+fn check_policy_freshness_within(
+    issued_ts: u64,
+    high_water: u64,
+    now: u64,
+    max_age: u64,
+    max_future: u64,
+) -> Result<(), String> {
     // R6-12: there is no backward-compatibility exemption. issued_ts is inside the
     // SIGNED payload, so a MITM cannot forge one by stripping the stamp off a current
     // response — but the previous `issued_ts == 0` bypass didn't defend against that;
@@ -327,14 +371,14 @@ fn check_policy_freshness(issued_ts: u64, high_water: u64, now: u64) -> Result<(
     }
     // Absolute staleness: a captured fixed blob (issued_ts == high_water) ages out here,
     // so a MITM cannot pin the client to a stale-but-not-older policy indefinitely.
-    if now.saturating_sub(issued_ts) > POLICY_MAX_AGE_SECS {
+    if now.saturating_sub(issued_ts) > max_age {
         return Err(format!(
-            "policy issued_ts {issued_ts} is stale (> {POLICY_MAX_AGE_SECS}s old; replay refused)"
+            "policy issued_ts {issued_ts} is stale (> {max_age}s old; replay refused)"
         ));
     }
-    if issued_ts.saturating_sub(now) > POLICY_MAX_FUTURE_SECS {
+    if issued_ts.saturating_sub(now) > max_future {
         return Err(format!(
-            "policy issued_ts {issued_ts} is too far in the future (> {POLICY_MAX_FUTURE_SECS}s; refused)"
+            "policy issued_ts {issued_ts} is too far in the future (> {max_future}s; refused)"
         ));
     }
     Ok(())
@@ -413,6 +457,7 @@ pub const OPTION_NEMO_POLICY_PROBLEM: &str = "nemo-policy-problem";
 fn is_policy_only_key(key: &str) -> bool {
     key == OPTION_NEMO_OUTBOUND_ENABLED
         || key == OPTION_NEMO_OUTBOUND_TARGETS
+        || key == OPTION_NEMO_CLOCK_TOLERANCE
         || crate::nemo_control::NEMO_CONTROL_SETTINGS.contains(&key)
 }
 
@@ -889,7 +934,10 @@ fn sync_policy() -> ResultType<()> {
         .map(|d| d.as_secs())
         .unwrap_or(0);
     let high_water = policy_issued_ts_high_water();
-    if let Err(reason) = check_policy_freshness(payload.issued_ts, high_water, now) {
+    let (max_age, max_future) = policy_freshness_window();
+    if let Err(reason) =
+        check_policy_freshness_within(payload.issued_ts, high_water, now, max_age, max_future)
+    {
         note_policy_refused(freshness_refusal_code(&reason), payload.issued_ts);
         bail!("management policy rejected: {reason}");
     }
@@ -1540,6 +1588,24 @@ mod applied_policy_tests {
         assert_eq!(clock_problem(-300), None);
         assert_eq!(clock_problem(-301).as_deref(), Some("future|6"));
         assert_eq!(clock_problem(-3600).as_deref(), Some("future|60"));
+    }
+
+    #[test]
+    fn the_servers_configured_clock_tolerance_is_used_both_ways() {
+        // Old server (nothing pushed): fixed 60 s ahead / 300 s behind.
+        assert_eq!(clock_problem_within(120, None).as_deref(), Some("stale|2"));
+        assert_eq!(clock_problem_within(-200, None), None);
+        // Server allows 30 min both ways: 20 min off is fine, 31 is not.
+        assert_eq!(clock_problem_within(20 * 60, Some(1800)), None);
+        assert_eq!(clock_problem_within(-20 * 60, Some(1800)), None);
+        assert_eq!(clock_problem_within(31 * 60, Some(1800)).as_deref(), Some("stale|31"));
+        assert_eq!(clock_problem_within(-31 * 60, Some(1800)).as_deref(), Some("future|31"));
+        // A policy 20 min old (this clock 20 min fast) is accepted inside a 30 min window,
+        // refused by the fixed 10 min one; anti-rollback holds either way.
+        let now = 1_800_000_000;
+        assert!(check_policy_freshness_within(now - 1200, 0, now, 1860, 1860).is_ok());
+        assert!(check_policy_freshness(now - 1200, 0, now).is_err());
+        assert!(check_policy_freshness_within(now - 1200, now - 1000, now, 1860, 1860).is_err());
     }
 
     #[test]
