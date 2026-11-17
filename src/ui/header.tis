@@ -111,10 +111,12 @@ var old_window_state = View.WINDOW_SHOWN;
 
 // The header's fullscreen button. Linux: through GTK, and GTK's own state decides the
 // direction (remote.tis nativeWindowState): Sciter's view.windowState loses full screen
-// on GTK state events -- a click into an inactive window brings focus events after the
-// old 150 ms re-assert, so the first click did not seem to work and a second was needed
-// (lab, Ubuntu 26.04 GNOME, two monitors, 2026-11-17) -- and its WINDOW_SHOWN never left
-// full screen there. A maximized window stays maximized underneath and comes back so.
+// on GTK state events -- the focus events of a click into an inactive window can come
+// after the old 150 ms re-assert, and the page then acted on the wrong state (lab,
+// Ubuntu 26.04 GNOME, two monitors, 2026-11-17: the first click into an unfocused
+// window did nothing; fsClickFallback covers the other possible cause) -- and its
+// WINDOW_SHOWN never left full screen there. A maximized window stays maximized
+// underneath and comes back so. The log line tells the lab which states the click saw.
 // Elsewhere nativeWindowState() is 0 and Sciter's path below runs unchanged.
 function toggleFullScreen() {
     var ns = nativeWindowState();
@@ -141,6 +143,22 @@ function toggleFullScreen() {
         view.windowState = View.WINDOW_FULL_SCREEN;
         if (is_linux) { self.timer(150ms, function() { view.windowState = View.WINDOW_FULL_SCREEN; }); }
     }
+}
+
+// Linux: the first click into an inactive session window may also never become a Sciter
+// click (unconfirmed -- the lab saw the first click do nothing, and the lost state above
+// does not explain every case of it). The press does reach the page: libsciter-gtk's
+// button-press handler dispatches it with no active-window check. So a press and release
+// on the button with no click in between toggles from the release, a moment later, and
+// only if the click did not come after all (never twice).
+var fs_press = false;     // pressed on #fullscreen, the release not seen yet
+var fs_clicked = false;   // the click of the current press came
+function clearFsPress() { fs_press = false; }
+function fsClickFallback() {
+    if (fs_clicked) return;
+    fs_clicked = true;
+    stdout.println("fullscreen button: press and release without a click -- toggling from the release");
+    toggleFullScreen();
 }
 
 var is_edit_os_password;
@@ -410,7 +428,24 @@ class Header: Reactor.Component {
         </div>;
     }
 
+    // Linux: a press on the button whose click never comes still toggles, once (see
+    // fsClickFallback). Elsewhere only the click does, as before.
+    event mousedown $(#fullscreen) (evt) {
+        if (is_linux && evt.mainButton) {
+            fs_press = true;
+            fs_clicked = false;
+            self.timer(1500ms, clearFsPress);
+        }
+        return false;
+    }
+    event mouseup $(#fullscreen) (evt) {
+        if (!is_linux || !fs_press) return false;
+        fs_press = false;
+        self.timer(80ms, fsClickFallback);
+        return false;
+    }
     event click $(#fullscreen) (_, el) {
+        fs_clicked = true;
         toggleFullScreen();
     }
     

@@ -62,8 +62,9 @@ function nativeFullScreen(on, maximized = false) {
     if (!is_linux) return false;
     var ok = false;
     try { ok = handler.native_fullscreen(on, maximized); } catch (e) {}
-    // until GTK reports it, check_state_change must not put full screen back
-    if (ok && !on) fs_leave_ticks = 50;
+    // leaving: until GTK reports it, check_state_change must not put full screen back;
+    // entering: no leave still pending from a moment ago
+    if (ok) fs_leave_ticks = on ? 0 : 50;
     return ok;
 }
 // View.WINDOW_SHOWN from any state, for the display modes that place the window
@@ -306,9 +307,10 @@ function headerAutoHide() {
 // first where it covers the picture, so the pointer on it reaches its buttons; below it,
 // the picture's own mouse handlers still see the pointer and hide it again
 // (revealHeaderAt, handler.onMouse).
-// Not on macOS (its own header handling, adjustBorder), and not in a MAXIMIZED window:
-// there the page sits inside a frame border (adjustBorder: window-frame-width, the
-// invisible resize frame on Windows) that a header placed at 0,0 could start under.
+// Linux only for now: Windows has its own lab-tuned top-edge behaviour in full screen
+// (handler.onMouse) and has not been run with it; macOS has its own header handling
+// (adjustBorder). Not in a MAXIMIZED window either: there the page sits inside a frame
+// border (adjustBorder: window-frame-width) that a header placed at 0,0 could start under.
 var header_overlaid = false;    // the header is over the picture right now
 var header_overlay_ok = true;   // false once the tiles were seen to cover it (revealHeaderAt)
 var header_overlay_misses = 0;
@@ -324,7 +326,7 @@ function headerIntoLayout(h) {
 function revealHeaderOverlay(pad) {
     var h = $(header);
     if (!h) return;
-    if (!is_osx && header_overlay_ok && view.windowState != View.WINDOW_MAXIMIZED) {
+    if (is_linux && header_overlay_ok && view.windowState != View.WINDOW_MAXIMIZED) {
         h.style.set {
             position: "absolute",
             left: "0px",
