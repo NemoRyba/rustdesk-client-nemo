@@ -143,19 +143,28 @@ pub fn is_rdp_session_hold() -> bool {
 }
 
 pub fn try_close_session() {
-    // TBFDesk: try_lock, not lock. This runs when the last remote session ends
+    // TBFDesk: no plain lock() here. This runs when the last remote session ends
     // (AuthedConnID::drop, on the connection's tokio task). If that session was still
     // waiting for the portal, the portal thread holds this lock until the local user
     // answers the dialog (up to 3 minutes) and lock() would pin the tokio worker for
     // that long. A session being created is not ours to close; the connection's portal
     // thread releases it when it returns (connection.rs, release_unused_wayland_capture).
-    let mut rdp_info = match RDP_SESSION_INFO.try_lock() {
-        Ok(rdp_info) => rdp_info,
-        Err(std::sync::TryLockError::WouldBlock) => {
-            info!("Portal request in progress, not closing the screen-cast session now.");
-            return;
+    // Other holders (input via uinput.rs / input_service.rs) keep it for moments only,
+    // so wait a little for those instead of leaving the session open by accident.
+    let mut tries = 0;
+    let mut rdp_info = loop {
+        match RDP_SESSION_INFO.try_lock() {
+            Ok(rdp_info) => break rdp_info,
+            Err(std::sync::TryLockError::Poisoned(e)) => break e.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => {
+                tries += 1;
+                if portal_request_waiting().is_some() || tries >= 20 {
+                    info!("Screen-cast session busy (portal request in progress?), not closing it now.");
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
         }
-        Err(std::sync::TryLockError::Poisoned(e)) => e.into_inner(),
     };
     let mut close = false;
     if let Some(rdp_info) = &*rdp_info {
