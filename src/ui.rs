@@ -36,6 +36,28 @@ lazy_static::lazy_static! {
 
 struct UIHostHandler;
 
+/// Text onto the system clipboard for the Sciter windows ("Copy recent log", copying the
+/// ID / one-time password). The Clipboard is kept alive for the life of the process. On
+/// Windows and macOS the OS takes a copy and dropping it is harmless, but on X11/Wayland
+/// the clipboard is SERVED by its owner: arboard's serving thread stops when the last
+/// Clipboard is dropped, so a copy-then-drop puts nothing on the clipboard at all while
+/// reporting success. That is exactly what the first lab test of "Copy recent log"
+/// showed -- "copied" on screen, an empty clipboard underneath.
+fn nemo_set_clipboard_text(text: String) -> Result<(), String> {
+    lazy_static::lazy_static! {
+        static ref NEMO_CLIPBOARD: Mutex<Option<arboard::Clipboard>> = Mutex::new(None);
+    }
+    let mut guard = NEMO_CLIPBOARD.lock().unwrap();
+    if guard.is_none() {
+        *guard = Some(arboard::Clipboard::new().map_err(|err| err.to_string())?);
+    }
+    guard
+        .as_mut()
+        .map(|c| c.set_text(text))
+        .unwrap_or_else(|| Err(arboard::Error::ClipboardNotSupported))
+        .map_err(|err| err.to_string())
+}
+
 // H25 helpers live in ui_interface: the Flutter launch path uses the same ones.
 use crate::ui_interface::peer_password_from_args;
 
@@ -675,32 +697,25 @@ impl UI {
             Ok(v) => v,
             Err(dir) => return format!("ERR:{dir}"),
         };
-        // Keep the Clipboard alive for the life of the process. On Windows and macOS the
-        // OS takes a copy and dropping it is harmless, but on X11/Wayland the clipboard
-        // is SERVED by its owner: arboard's serving thread stops when the last Clipboard
-        // is dropped, so a copy-then-drop puts nothing on the clipboard at all while
-        // reporting success. That is exactly what the first lab test of this button
-        // showed -- "copied" on screen, an empty clipboard underneath.
-        lazy_static::lazy_static! {
-            static ref NEMO_CLIPBOARD: std::sync::Mutex<Option<arboard::Clipboard>> =
-                std::sync::Mutex::new(None);
-        }
-        let mut guard = NEMO_CLIPBOARD.lock().unwrap();
-        if guard.is_none() {
-            match arboard::Clipboard::new() {
-                Ok(c) => *guard = Some(c),
-                Err(err) => return format!("ERR:{err}"),
-            }
-        }
-        let result = guard
-            .as_mut()
-            .map(|c| c.set_text(text))
-            .unwrap_or_else(|| Err(arboard::Error::ClipboardNotSupported));
-        match result {
+        match nemo_set_clipboard_text(text) {
             Ok(()) => format!(
                 "OK:{}",
                 files.join("\n")
             ),
+            Err(err) => format!("ERR:{err}"),
+        }
+    }
+
+    // Main window: double-click on the ID / one-time password, or the copy icon next to the
+    // password. Puts exactly `text` on the clipboard and nothing else happens: copying
+    // never touches the one-time password (FT-04). Returns "OK" or "ERR:<reason>" so the
+    // window only says "Copied" when it really is.
+    fn nemo_copy_text(&self, text: String) -> String {
+        if text.trim().is_empty() {
+            return "ERR:empty".to_owned();
+        }
+        match nemo_set_clipboard_text(text) {
+            Ok(()) => "OK".to_owned(),
             Err(err) => format!("ERR:{err}"),
         }
     }
@@ -1175,6 +1190,7 @@ impl sciter::EventHandler for UI {
         fn nemo_exe_server_locked();
         fn nemo_open_log_folder();
         fn nemo_copy_recent_log();
+        fn nemo_copy_text(String);
         fn get_fingerprint();
         fn update_me(String);
         fn show_run_without_install();

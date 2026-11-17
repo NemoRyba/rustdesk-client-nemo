@@ -568,6 +568,42 @@ svg#refresh-password:hover {
     stroke:color(text);
 }
 
+/* FT-04: the copy / refresh icons next to the one-time password. The gap before each icon
+   is MARGIN on its wrapper (dead space). The shared `div.password svg` rule (common.css)
+   gives the svg itself padding-left: 1em, which made a strip flush against the field part
+   of the refresh icon's click target; it is taken off here, for these two icons only. */
+div.password div.eye-area > span.nemo-otp-btn {
+    display: inline-block;
+    margin-left: 0.6em;
+}
+div.password div.eye-area > span.nemo-otp-refresh {
+    margin-left: 1.2em;
+}
+div.password div.eye-area > span.nemo-otp-btn > svg {
+    padding-left: 0;
+    cursor: pointer;
+}
+
+svg#copy-password {
+    display: inline-block;
+    stroke:#ddd;
+}
+
+svg#copy-password:hover {
+    stroke:color(text);
+}
+
+/* The short "Copied" note after the ID / one-time password label (1.5 s). Kept on one
+   line so nothing below it moves ("ID" + note is short enough as it is). */
+div.nemo-copy-head {
+    white-space: nowrap;
+}
+span.nemo-copied {
+    margin-left: 0.6em;
+    color: #2e9e5b;
+    font-weight: bold;
+}
+
 li:disabled, li:disabled:hover {
     color: color(lighter-text);
     background: color(menu);
