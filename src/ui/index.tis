@@ -2105,6 +2105,7 @@ class App: Reactor.Component
                                 <button .button #connect disabled={nemoOutboundEnabled() ? "false" : "true"}>{translate('Connect')}</button>
                             </div>
                             {nemoOutboundEnabled() ? "" : <div .nemo-outbound-off>{translate('Outgoing connections are disabled by TBF policy')}</div>}
+                            {nemoPolicyProblemText() ? <div .nemo-policy-problem>{nemoPolicyProblemText()}</div> : ""}
                         </div>
                         <MultipleSessions @{this.multipleSessions} />
                     </div>
@@ -2872,6 +2873,25 @@ function showSettings() {
 
 var nemo_direct_ids_seen = "";
 var nemo_outbound_seen = nemoOutboundEnabled();
+var nemo_policy_problem_seen = "";
+
+// The poller's "nemo-policy-problem" ("" = fine, else "code|detail") as one plain sentence.
+// Same wording in Flutter (nemoPolicyProblemText in common/nemo_policy.dart).
+function nemoPolicyProblemText() {
+    var p = handler.get_option("nemo-policy-problem") || "";
+    if (!p) return "";
+    var i = p.indexOf("|");
+    var code = i < 0 ? p : p.substr(0, i);
+    var detail = i < 0 ? "" : p.substr(i + 1);
+    var why;
+    if (code == "stale") why = translate("nemo_policy_clock_ahead").replace("{min}", detail);
+    else if (code == "future") why = translate("nemo_policy_clock_behind").replace("{min}", detail);
+    else if (code == "rollback") why = translate("nemo_policy_rollback");
+    else if (code == "signature") why = translate("nemo_policy_signature");
+    else if (code == "failed") why = translate("nemo_policy_failed") + " " + detail;
+    else why = "(" + code + ")";
+    return translate("nemo_policy_not_applied") + " " + why;
+}
 function checkConnectStatus() {
     handler.check_mouse_time(); // trigger connection status updater
     self.timer(1s, function() {
@@ -2892,6 +2912,12 @@ function checkConnectStatus() {
         var outbound = nemoOutboundEnabled();
         if (outbound != nemo_outbound_seen) {
             nemo_outbound_seen = outbound;
+            if (app) app.update();
+        }
+        // Why the server's policy is not applied here (wrong clock, server unreachable, ...).
+        var problem = handler.get_option("nemo-policy-problem") || "";
+        if (problem != nemo_policy_problem_seen) {
+            nemo_policy_problem_seen = problem;
             if (app) app.update();
         }
         var tmp = handler.get_option("stop-service") == "Y";

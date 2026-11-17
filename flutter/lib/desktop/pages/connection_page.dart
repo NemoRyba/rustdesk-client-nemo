@@ -15,6 +15,7 @@ import 'package:window_manager/window_manager.dart';
 import 'package:flutter_hbb/models/peer_model.dart';
 
 import '../../common.dart';
+import 'package:flutter_hbb/common/nemo_policy.dart' show nemoPolicyProblemText;
 import '../../common/formatter/id_formatter.dart';
 import '../../common/widgets/peer_tab_page.dart';
 import '../../common/widgets/autocomplete.dart';
@@ -541,6 +542,8 @@ class _ConnectionPageState extends State<ConnectionPage>
             ),
             // TBFDesk (A14): "Direct access possible — host:port" + knock line.
             NemoDirectHint(controller: _idController),
+            // Why the server's policy is not applied here, if it is not.
+            const NemoPolicyProblem(),
             Padding(
               padding: const EdgeInsets.only(top: 13.0),
               child: Row(mainAxisAlignment: MainAxisAlignment.end, children: [
@@ -644,6 +647,54 @@ class _ConnectionPageState extends State<ConnectionPage>
 }
 
 /// TBFDesk (A14): under the remote-ID box, whether the typed id is reachable without the
+/// Why the server's policy is not applied on this computer (wrong clock, server not
+/// reachable, ...), refreshed once a second; nothing when it is applied. Parity with the
+/// Sciter connect card (.nemo-policy-problem).
+class NemoPolicyProblem extends StatefulWidget {
+  const NemoPolicyProblem({Key? key}) : super(key: key);
+
+  @override
+  State<NemoPolicyProblem> createState() => _NemoPolicyProblemState();
+}
+
+class _NemoPolicyProblemState extends State<NemoPolicyProblem> {
+  Timer? _timer;
+  String _raw = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _timer = Timer.periodic(const Duration(seconds: 1), (_) => _refresh());
+    _refresh();
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  void _refresh() {
+    if (!mounted) return;
+    final raw = bind.mainGetOptionSync(key: 'nemo-policy-problem').trim();
+    if (raw != _raw) setState(() => _raw = raw);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final text = nemoPolicyProblemText(_raw);
+    if (text.isEmpty) return const SizedBox.shrink();
+    return Container(
+      margin: const EdgeInsets.only(top: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+      decoration: BoxDecoration(
+          color: const Color(0xFFFFF4D6), borderRadius: BorderRadius.circular(4)),
+      child: Text(text,
+          style: const TextStyle(fontSize: 11, color: Color(0xFF7A4A00))),
+    );
+  }
+}
+
 /// relay ("Direct access possible — host:port") and, when its port is knock-gated, the
 /// knock line. Refreshed on typing and once a second (the policy can deliver or withdraw
 /// an endpoint at any time).

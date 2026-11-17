@@ -210,6 +210,16 @@ span.clear-input:hover {
     margin-left: 1.6em;
 }
 
+/* Why the server's policy is not applied here (clock, server unreachable, ...). */
+.nemo-policy-problem {
+    margin: 8px 0 0 0;
+    padding: 6px 8px;
+    font-size: 11px;
+    color: #7a4a00;
+    background: #fff4d6;
+    border-radius: 4px;
+}
+
 /* Why Connect / Transfer file are disabled (outbound policy), instead of silent grey. */
 .nemo-outbound-off {
     margin: 8px 0 0 0;

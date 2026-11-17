@@ -330,20 +330,105 @@ fn epoch_now() -> u64 {
 }
 
 fn note_policy_applied(policy_ref: &str) {
-    let mut s = APPLIED_POLICY.lock().unwrap();
-    s.applied_ref = policy_ref.to_owned();
-    s.applied_at = epoch_now();
-    s.refused = None;
+    {
+        let mut s = APPLIED_POLICY.lock().unwrap();
+        s.applied_ref = policy_ref.to_owned();
+        s.applied_at = epoch_now();
+        s.refused = None;
+    }
+    set_policy_problem("");
 }
 
 /// `code` is one of the fixed reasons the server knows (nemo_management::POLICY_REFUSAL_CODES);
 /// nothing the server sent is echoed back.
 fn note_policy_refused(code: &'static str, issued_ts: u64) {
+    let now = epoch_now();
     APPLIED_POLICY.lock().unwrap().refused = Some(PolicyRefusal {
         code,
         issued_ts,
-        at: epoch_now(),
+        at: now,
     });
+    set_policy_problem(&policy_problem_for_refusal(code, issued_ts, now));
+}
+
+/// Why this machine is NOT running the server's current policy, for the window ("" = it
+/// is). Without it a refused policy was silent: the client kept the last one it accepted
+/// (by design -- a policy holds until a server replaces it), so e.g. a PC whose clock was an
+/// hour off kept "outgoing connections disabled" long after the admin allowed it, and the
+/// only trace was a log line. "code|detail": `stale|N` = this clock is N min ahead of the
+/// server, `future|N` = N min behind, `failed|<error>` = the server could not be polled.
+/// A plain, unmanaged option, so the window (which shows this process's options over IPC)
+/// sees it.
+pub const OPTION_NEMO_POLICY_PROBLEM: &str = "nemo-policy-problem";
+
+/// Keys only a server policy may set -- never a stored setting, and no UI offers them.
+/// They reach a window's option map from the policy (OVERWRITE), and a window saves its
+/// WHOLE map on any settings change. `Config::set_options` drops only the keys the policy
+/// holds at that very moment, so a save that landed while a policy was being swapped (or
+/// before the cached one was restored at startup) stored e.g. outbound=N as a plain
+/// setting. A policy only owns OVERWRITE, so nothing ever cleared that copy: the machine
+/// stayed "outgoing connections disabled" after the admin allowed it, while the dashboard
+/// showed the current policy applied (Ubuntu 26.04 field report, 2026-11-17).
+fn is_policy_only_key(key: &str) -> bool {
+    key == OPTION_NEMO_OUTBOUND_ENABLED
+        || key == OPTION_NEMO_OUTBOUND_TARGETS
+        || crate::nemo_control::NEMO_CONTROL_SETTINGS.contains(&key)
+}
+
+/// Drop policy-only keys from a settings map before it is stored. `Config::set_options`
+/// REPLACES the stored map, so this also removes a copy stored earlier.
+pub(crate) fn strip_policy_only_keys(options: &mut HashMap<String, String>) {
+    options.retain(|k, _| !is_policy_only_key(k));
+}
+
+/// Delete stray stored copies of policy-only keys: heals a machine that stored one, at
+/// startup and on every applied policy, without anyone editing a config file.
+fn scrub_stored_policy_only_keys() {
+    let stored: Vec<String> = hbb_common::config::Config2::get()
+        .options
+        .keys()
+        .filter(|k| is_policy_only_key(k))
+        .cloned()
+        .collect();
+    for k in stored {
+        log::warn!(
+            "Nemo management: removed a stored copy of {} -- only the server policy may set it",
+            k
+        );
+        Config::set_option(k, String::new());
+    }
+}
+
+fn set_policy_problem(value: &str) {
+    if Config::get_option(OPTION_NEMO_POLICY_PROBLEM) != value {
+        Config::set_option(OPTION_NEMO_POLICY_PROBLEM.to_owned(), value.to_owned());
+    }
+}
+
+/// Pure: the status text for a refusal. The policy's issue time is the SERVER's clock,
+/// so for the freshness refusals the gap is this computer's clock error.
+fn policy_problem_for_refusal(code: &str, issued_ts: u64, now: u64) -> String {
+    let minutes = |secs: u64| (secs + 59) / 60;
+    match code {
+        "stale" => format!("stale|{}", minutes(now.saturating_sub(issued_ts))),
+        "future" => format!("future|{}", minutes(issued_ts.saturating_sub(now))),
+        _ => code.to_owned(),
+    }
+}
+
+/// The poll itself failed (unreachable, refused by the server, ...). Shown only after
+/// several in a row, so one network hiccup does not flash a warning; never replaces a
+/// refusal reason recorded for the same attempt.
+fn note_poll_failed(consecutive: u32, err: &str) {
+    if consecutive < 3 {
+        return;
+    }
+    let current = Config::get_option(OPTION_NEMO_POLICY_PROBLEM);
+    if !current.is_empty() && !current.starts_with("failed|") {
+        return;
+    }
+    let short: String = err.replace(['\n', '|'], " ").chars().take(160).collect();
+    set_policy_problem(&format!("failed|{short}"));
 }
 
 /// Maps check_policy_freshness's refusal to its report code (unit-tested against it).
@@ -423,6 +508,7 @@ fn build_policy_report() -> String {
 pub(crate) fn restore_cached_policy() {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
+        scrub_stored_policy_only_keys();
         let p = previous_policy();
         let mut n = 0;
         for (key, value) in &p.options {
@@ -452,10 +538,16 @@ pub(crate) fn start() {
     ONCE.call_once(|| {
         std::thread::spawn(|| {
             std::thread::sleep(Duration::from_secs(POLL_INITIAL_DELAY_SECS));
+            let mut failures = 0u32;
             loop {
                 if management_enabled() {
-                    if let Err(err) = sync_policy() {
-                        log::warn!("Nemo management sync failed: {}", err);
+                    match sync_policy() {
+                        Ok(_) => failures = 0,
+                        Err(err) => {
+                            log::warn!("Nemo management sync failed: {}", err);
+                            failures = failures.saturating_add(1);
+                            note_poll_failed(failures, &err.to_string());
+                        }
                     }
                 }
                 std::thread::sleep(Duration::from_secs(POLL_INTERVAL_SECS));
@@ -913,6 +1005,7 @@ fn nemo_allow_unsigned_policy() -> bool {
 fn apply_policy(policy: ManagementPolicy) -> ResultType<()> {
     let previous = previous_policy();
     clear_policy_maps(&previous);
+    scrub_stored_policy_only_keys();
     // Persist STARTUP-CRITICAL connectivity options durably HERE — after the
     // previous policy's copy has been cleared from the in-memory OVERWRITE map and
     // BEFORE the loop below re-applies it — because is_option_can_save() refuses to
@@ -1368,6 +1461,40 @@ mod applied_policy_tests {
     use hbb_common::sodiumoxide::crypto::{hash::sha256, sign};
 
     static GUARD: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn a_window_save_never_stores_what_only_the_policy_may_set() {
+        let mut saved: HashMap<String, String> = [
+            ("nemo-outbound-enabled", "N"),
+            ("nemo-outbound-targets", "123"),
+            ("nemo-require-control-ticket", "Y"),
+            ("nemo-control-epoch", "7"),
+            // user settings stay, including the user-settable network mode
+            ("nemo-company-network-only", "Y"),
+            ("custom-rendezvous-server", "tbf.example"),
+            ("enable-clipboard", "N"),
+        ]
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+        strip_policy_only_keys(&mut saved);
+        let mut keys: Vec<&str> = saved.keys().map(String::as_str).collect();
+        keys.sort();
+        assert_eq!(keys, ["custom-rendezvous-server", "enable-clipboard", "nemo-company-network-only"]);
+    }
+
+    #[test]
+    fn a_wrong_clock_is_reported_in_minutes_the_right_way_round() {
+        let now = 1_800_000_000;
+        // This PC an hour ahead: the server's fresh policy looks an hour old.
+        assert_eq!(policy_problem_for_refusal("stale", now - 3600, now), "stale|60");
+        // This PC 61 minutes behind: the policy looks 61 minutes in the future.
+        assert_eq!(policy_problem_for_refusal("future", now + 61 * 60, now), "future|61");
+        // Partial minutes round up, so "11 min" is never shown as within tolerance.
+        assert_eq!(policy_problem_for_refusal("stale", now - 601, now), "stale|11");
+        assert_eq!(policy_problem_for_refusal("signature", 0, now), "signature");
+        assert_eq!(policy_problem_for_refusal("rollback", now - 5, now), "rollback");
+    }
 
     #[test]
     fn freshness_refusals_map_to_the_codes_the_server_knows() {

@@ -2,7 +2,39 @@
 // its helpers in src/ui/index.tis. client.rs enforces the same rules again in Rust; these
 // checks give the user the reason before a session window opens.
 
+import 'package:flutter_hbb/common.dart' show translate;
 import 'package:flutter_hbb/models/platform_model.dart';
+
+/// Why the server's policy is not applied on this computer ("" = it is), from the
+/// poller's "nemo-policy-problem" ("code|detail"). Same wording as Sciter's
+/// nemoPolicyProblemText (src/ui/index.tis).
+String nemoPolicyProblemText(String raw) {
+  if (raw.isEmpty) return '';
+  final i = raw.indexOf('|');
+  final code = i < 0 ? raw : raw.substring(0, i);
+  final detail = i < 0 ? '' : raw.substring(i + 1);
+  final String why;
+  switch (code) {
+    case 'stale':
+      why = translate('nemo_policy_clock_ahead').replaceAll('{min}', detail);
+      break;
+    case 'future':
+      why = translate('nemo_policy_clock_behind').replaceAll('{min}', detail);
+      break;
+    case 'rollback':
+      why = translate('nemo_policy_rollback');
+      break;
+    case 'signature':
+      why = translate('nemo_policy_signature');
+      break;
+    case 'failed':
+      why = '${translate('nemo_policy_failed')} $detail';
+      break;
+    default:
+      why = '($code)';
+  }
+  return '${translate('nemo_policy_not_applied')} $why';
+}
 
 const String kNemoCompanyNetworkOnly = 'nemo-company-network-only';
 const String kNemoOutboundEnabled = 'nemo-outbound-enabled';

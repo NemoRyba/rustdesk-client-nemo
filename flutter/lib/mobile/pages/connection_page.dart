@@ -8,7 +8,7 @@ import 'package:get/get.dart';
 import 'package:provider/provider.dart';
 // TBFDesk: the direct-access hint is shared with the desktop connection page.
 import 'package:flutter_hbb/desktop/pages/connection_page.dart'
-    show NemoDirectHint;
+    show NemoDirectHint, NemoPolicyProblem;
 import 'package:flutter_hbb/models/peer_model.dart';
 
 import '../../common.dart';
@@ -327,6 +327,8 @@ class _ConnectionPageState extends State<ConnectionPage> {
       w,
       // TBFDesk (A14): "Direct access possible — host:port" + knock line.
       NemoDirectHint(controller: _idController).marginOnly(left: 16, right: 16),
+      // Why the server's policy is not applied here, if it is not (parity with desktop).
+      const NemoPolicyProblem().marginOnly(left: 16, right: 16),
     ]);
     return Align(
         alignment: Alignment.topCenter,

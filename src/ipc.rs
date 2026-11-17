@@ -932,6 +932,14 @@ async fn handle(data: Data, stream: &mut Connection) {
                 if let Some(v) = value.get("privacy-mode-impl-key") {
                     crate::privacy_mode::switch(v);
                 }
+                // A window sends its WHOLE option map, which carries the policy's values;
+                // never let one be stored as a plain setting (see is_policy_only_key).
+                #[cfg(feature = "nemo-management-client")]
+                let value = {
+                    let mut value = value;
+                    crate::nemo_management_client::strip_policy_only_keys(&mut value);
+                    value
+                };
                 Config::set_options(value);
                 allow_err!(stream.send(&Data::Options(None)).await);
             }
