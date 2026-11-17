@@ -2,8 +2,11 @@
 // its helpers in src/ui/index.tis. client.rs enforces the same rules again in Rust; these
 // checks give the user the reason before a session window opens.
 
+import 'dart:async';
+
 import 'package:flutter_hbb/common.dart' show translate;
 import 'package:flutter_hbb/models/platform_model.dart';
+import 'package:get/get.dart';
 
 /// Why the server's policy is not applied on this computer ("" = it is), from the
 /// poller's "nemo-policy-problem" ("code|detail"). Same wording as Sciter's
@@ -50,6 +53,29 @@ Future<bool> nemoExeServerSettingsLocked() async => bind.mainNemoExeServerLocked
 bool nemoCompanyNetworkOnly() => _opt(kNemoCompanyNetworkOnly) == 'Y';
 
 bool nemoOutboundEnabled() => _opt(kNemoOutboundEnabled) != 'N';
+
+/// [nemoOutboundEnabled] for a connection page, re-read once a second: the policy flips
+/// under a running window (a new device is pushed "outbound off" until the admin allows
+/// it). Connect / Transfer file and the reason line all follow [enabled], so they grey and
+/// un-grey live -- Sciter does the same in checkConnectStatus (nemo_outbound_seen,
+/// src/ui/index.tis). Owned by the page's State; call [dispose] from its dispose().
+class NemoOutboundWatch {
+  final RxBool enabled = nemoOutboundEnabled().obs;
+  Timer? _timer;
+
+  NemoOutboundWatch() {
+    // Assign only on a change: nothing is redrawn while the value holds.
+    _timer = Timer.periodic(const Duration(seconds: 1), (_) {
+      final now = nemoOutboundEnabled();
+      if (now != enabled.value) enabled.value = now;
+    });
+  }
+
+  void dispose() {
+    _timer?.cancel();
+    _timer = null;
+  }
+}
 
 bool nemoOutboundTargetAllowed(String id) {
   final targets = _opt(kNemoOutboundTargets);

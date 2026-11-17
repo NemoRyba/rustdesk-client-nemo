@@ -15,7 +15,8 @@ import 'package:window_manager/window_manager.dart';
 import 'package:flutter_hbb/models/peer_model.dart';
 
 import '../../common.dart';
-import 'package:flutter_hbb/common/nemo_policy.dart' show nemoPolicyProblemText;
+import 'package:flutter_hbb/common/nemo_policy.dart'
+    show nemoPolicyProblemText, NemoOutboundWatch;
 import '../../common/formatter/id_formatter.dart';
 import '../../common/widgets/peer_tab_page.dart';
 import '../../common/widgets/autocomplete.dart';
@@ -244,6 +245,9 @@ class _ConnectionPageState extends State<ConnectionPage>
 
   final _menuOpen = false.obs;
 
+  // TBFDesk: the outbound policy, live -- greys Connect and the ⋮ entries and shows why.
+  final _nemoOutbound = NemoOutboundWatch();
+
   @override
   void initState() {
     super.initState();
@@ -266,6 +270,7 @@ class _ConnectionPageState extends State<ConnectionPage>
 
   @override
   void dispose() {
+    _nemoOutbound.dispose();
     _idController.dispose();
     windowManager.removeListener(this);
     _allPeersLoader.clear();
@@ -542,19 +547,21 @@ class _ConnectionPageState extends State<ConnectionPage>
             ),
             // TBFDesk (A14): "Direct access possible — host:port" + knock line.
             NemoDirectHint(controller: _idController),
-            // Why the server's policy is not applied here, if it is not.
-            const NemoPolicyProblem(),
             Padding(
               padding: const EdgeInsets.only(top: 13.0),
               child: Row(mainAxisAlignment: MainAxisAlignment.end, children: [
                 SizedBox(
                   height: 28.0,
-                  child: ElevatedButton(
-                    onPressed: () {
-                      onConnect();
-                    },
-                    child: Text(translate("Connect")),
-                  ),
+                  // Greyed while the outbound policy is off (Sciter: #connect disabled).
+                  // Enter in the ID box still reaches connect(), which says why.
+                  child: Obx(() => ElevatedButton(
+                        onPressed: _nemoOutbound.enabled.value
+                            ? () {
+                                onConnect();
+                              }
+                            : null,
+                        child: Text(translate("Connect")),
+                      )),
                 ),
                 const SizedBox(width: 8),
                 Container(
@@ -611,6 +618,10 @@ class _ConnectionPageState extends State<ConnectionPage>
                                                 horizontal:
                                                     kDesktopMenuPadding.left),
                                             dismissOnClicked: true,
+                                            // All three are outgoing sessions:
+                                            // greyed with Connect (Sciter:
+                                            // #file-transfer), live while open.
+                                            enabled: _nemoOutbound.enabled,
                                           ))
                                       .map((e) => e.build(
                                           context,
@@ -637,6 +648,10 @@ class _ConnectionPageState extends State<ConnectionPage>
                 ),
               ]),
             ),
+            // Why Connect / Transfer file are grey (Sciter: .nemo-outbound-off), then why
+            // the server's policy is not applied here, if it is not -- Sciter's order.
+            NemoOutboundOff(enabled: _nemoOutbound.enabled),
+            const NemoPolicyProblem(),
           ],
         ),
       ),
@@ -646,7 +661,37 @@ class _ConnectionPageState extends State<ConnectionPage>
   }
 }
 
-/// TBFDesk (A14): under the remote-ID box, whether the typed id is reachable without the
+/// Why Connect / Transfer file are greyed: "Outgoing connections are disabled by TBF
+/// policy", right-aligned under the buttons while [enabled] (a page's
+/// NemoOutboundWatch.enabled) is false; nothing otherwise. Same text, place and colour
+/// as Sciter's .nemo-outbound-off (src/ui/index.tis, index.css), and like it re-drawn
+/// as soon as the policy flips.
+class NemoOutboundOff extends StatelessWidget {
+  final RxBool enabled;
+
+  const NemoOutboundOff({Key? key, required this.enabled}) : super(key: key);
+
+  @override
+  Widget build(BuildContext context) {
+    return Obx(() {
+      if (enabled.value) return const SizedBox.shrink();
+      final dark = Theme.of(context).brightness == Brightness.dark;
+      return Container(
+        width: double.infinity,
+        margin: const EdgeInsets.only(top: 8),
+        child: Text(
+          translate('Outgoing connections are disabled by TBF policy'),
+          textAlign: TextAlign.right,
+          style: TextStyle(
+              fontSize: 11,
+              // Sciter's #b0412e; lifted on a dark background to stay readable.
+              color: dark ? const Color(0xFFE8806E) : const Color(0xFFB0412E)),
+        ),
+      );
+    });
+  }
+}
+
 /// Why the server's policy is not applied on this computer (wrong clock, server not
 /// reachable, ...), refreshed once a second; nothing when it is applied. Parity with the
 /// Sciter connect card (.nemo-policy-problem).
@@ -695,6 +740,7 @@ class _NemoPolicyProblemState extends State<NemoPolicyProblem> {
   }
 }
 
+/// TBFDesk (A14): under the remote-ID box, whether the typed id is reachable without the
 /// relay ("Direct access possible — host:port") and, when its port is knock-gated, the
 /// knock line. Refreshed on typing and once a second (the policy can deliver or withdraw
 /// an endpoint at any time).
