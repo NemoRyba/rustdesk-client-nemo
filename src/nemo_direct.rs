@@ -86,7 +86,8 @@ const DEFAULT_KNOCK_DELAY_MS: u64 = 300;
 const DEFAULT_KNOCK_USER: &str = "tbfdesk";
 const DEFAULT_KNOCK_SOURCE_IP: &str = "0.0.0.0";
 /// Deliberately tight. A dead port forward must not add noticeable latency to a
-/// connection that is about to succeed over the relay anyway.
+/// connection that is about to succeed over the relay anyway. "Connect directly", which
+/// has no relay to fall back to, gets a second, longer attempt (`attempt_budgets`).
 const DEFAULT_DIRECT_TIMEOUT_MS: u64 = 2500;
 /// fwknop refuses keys longer than this, so matching it keeps a misconfiguration a
 /// local error instead of a silently-ignored datagram.
@@ -373,6 +374,354 @@ pub fn direct_timeout() -> Duration {
         .filter(|ms| *ms > 0)
         .unwrap_or(DEFAULT_DIRECT_TIMEOUT_MS);
     Duration::from_millis(ms)
+}
+
+/// Floor for the second "Connect directly" attempt. A chosen value, not a measured one:
+/// the field case behind it needed about 1 s on a good attempt (1.05 s), so a 2.5 s
+/// budget left little room for a single lost packet during setup or a slow knock gate.
+/// 6 s gives the retry that room and still ends the "Connecting" wait in under 10 s.
+const FORCED_RETRY_MIN_BUDGET_MS: u64 = 6000;
+/// Ceiling for the second attempt, so a large policy budget cannot hold the
+/// "Connecting" dialog open for minutes.
+const FORCED_RETRY_MAX_BUDGET_MS: u64 = 20_000;
+
+/// The budget of each attempt at a direct endpoint, in order.
+///
+/// An ordinary connection gets ONE attempt with the policy budget. When it fails, the
+/// session continues over hole punch / relay, and every extra second here is a second a
+/// broken port forward adds to that fallback ("deliberately tight", above).
+///
+/// "Connect directly" has no fallback: its failure is the answer the user reads. So a
+/// failure that a second try can plausibly fix (see [`DirectFailure::retryable`]) gets
+/// one more attempt, with twice the budget (at least 6 s) and a fresh knock, before it
+/// is reported. The field report behind this: five "Direct connection ... failed"
+/// dialogs in a row, and a little later the same endpoint connected in 1.05 s. Why those
+/// five failed is not known (the log could not say which phase failed); the retry covers
+/// the transient causes, and the per-phase reason now names the rest.
+pub fn attempt_budgets(budget: Duration, force_direct: bool) -> Vec<Duration> {
+    if !force_direct {
+        return vec![budget];
+    }
+    let retry = (budget * 2)
+        .clamp(
+            Duration::from_millis(FORCED_RETRY_MIN_BUDGET_MS),
+            Duration::from_millis(FORCED_RETRY_MAX_BUDGET_MS),
+        )
+        .max(budget);
+    vec![budget, retry]
+}
+
+/// Is knocking switched on for this client, whether or not it has a usable key?
+pub fn knock_enabled() -> bool {
+    Config::get_option(OPTION_KNOCK_ENABLED) == "Y"
+}
+
+/// What the knock did before one attempt. The knock is a UDP datagram with no answer,
+/// so "sent" is all this client can ever know; whether the daemon accepted it shows only
+/// in the TCP connect that follows.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum KnockState {
+    /// Knocking is off on this client.
+    Off,
+    /// One SPA datagram went out to this UDP port.
+    Sent(u16),
+    /// Knocking is on, but nothing went out, for this reason.
+    NotSent(String),
+}
+
+impl KnockState {
+    fn note(&self) -> String {
+        match self {
+            KnockState::Off => String::new(),
+            KnockState::Sent(port) => format!(" (after a knock to udp/{port})"),
+            KnockState::NotSent(why) => {
+                format!(" (knocking is on, but no knock was sent: {why})")
+            }
+        }
+    }
+}
+
+/// Why one attempt at a direct endpoint failed, by the phase it failed in.
+///
+/// Each one has a different fix: a dropped SYN points at the forward, a firewall or the
+/// knock gate; a refusal points at the router or a stopped service; a closed or foreign
+/// handshake points at where the forward lands; a key mismatch is a security finding.
+/// The dialog used to say "see the log" for all of them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DirectFailure {
+    /// No answer at all to the TCP connect within `ms`: something drops it silently.
+    ConnectTimeout { ms: u64 },
+    /// The TCP connect was refused: something answered with a reset.
+    Refused,
+    /// Any other TCP-level failure (unreachable network, a name with no address, ...).
+    ConnectError(String),
+    /// TCP came up after `tcp_ms`, but the TBFDesk handshake did not finish within `ms`.
+    HandshakeTimeout { tcp_ms: u64, ms: u64 },
+    /// Accepted, then closed or reset before the handshake finished.
+    Closed(String),
+    /// Something answered, but not with a TBFDesk handshake.
+    NotTbfdesk(String),
+    /// A TBFDesk peer answered, but this client holds no server key for the id it claims.
+    NoServerKey(String),
+    /// The peer could not prove it is the requested id (bad signature, or another id).
+    KeyMismatch(String),
+    /// Anything else, including a knock that left no time to connect.
+    Other(String),
+}
+
+impl DirectFailure {
+    /// One line for the log and the server report. Leads with the class, because the
+    /// server keeps only the first 200 characters.
+    pub fn summary(&self) -> String {
+        match self {
+            DirectFailure::ConnectTimeout { ms } => {
+                format!("connect timeout: no answer to the TCP connect within {ms} ms")
+            }
+            DirectFailure::Refused => "refused: the TCP connect was refused (nothing accepts \
+                                       connections on that port, or a router answers it itself)"
+                .to_owned(),
+            DirectFailure::ConnectError(e) => format!("connect error: {e}"),
+            DirectFailure::HandshakeTimeout { tcp_ms, ms } => format!(
+                "handshake timeout: TCP up after {tcp_ms} ms, but no TBFDesk handshake within \
+                 {ms} ms"
+            ),
+            DirectFailure::Closed(e) => format!("closed during the handshake: {e}"),
+            DirectFailure::NotTbfdesk(e) => format!("not TBFDesk: {e}"),
+            DirectFailure::NoServerKey(e) => format!("no server key: {e}"),
+            DirectFailure::KeyMismatch(e) => format!("key mismatch: {e}"),
+            DirectFailure::Other(e) => format!("failed: {e}"),
+        }
+    }
+
+    /// May a second "Connect directly" attempt plausibly succeed where this one failed?
+    ///
+    /// Timeouts: yes. A lost packet, a slow path or a gate that opened late are exactly
+    /// what a second try with a longer budget fixes. A refusal: only when a knock is
+    /// involved, because a knock-gated port can answer with a reset until the daemon has
+    /// opened it (lab: "connection refused" 0.3 s after the knock); a fresh knock and a
+    /// second connect may find it open. Everything else names something that waiting does
+    /// not change, and an identity failure must never be retried until it happens to pass.
+    pub fn retryable(&self, knock: &KnockState) -> bool {
+        match self {
+            DirectFailure::ConnectTimeout { .. } | DirectFailure::HandshakeTimeout { .. } => true,
+            DirectFailure::Refused => *knock != KnockState::Off,
+            _ => false,
+        }
+    }
+}
+
+/// One failed attempt: why, what the knock did, and how long the attempt took.
+#[derive(Clone, Debug)]
+pub struct DirectAttemptError {
+    pub failure: DirectFailure,
+    pub knock: KnockState,
+    pub elapsed_ms: u64,
+}
+
+impl DirectAttemptError {
+    pub fn summary(&self) -> String {
+        format!("{}{}", self.failure.summary(), self.knock.note())
+    }
+}
+
+/// Name a failed TCP connect from the text hbb_common's `FramedStream::new` (tcp.rs)
+/// builds: "<addr>: connection refused" and "<addr>: timed out after N ms" are its
+/// fixed words for those two cases (English on every OS), anything else is the OS error.
+pub fn classify_connect_error(text: &str, waited_ms: u64) -> DirectFailure {
+    let lower = text.to_lowercase();
+    if lower.contains("connection refused") {
+        DirectFailure::Refused
+    } else if lower.contains("timed out") {
+        DirectFailure::ConnectTimeout { ms: waited_ms }
+    } else {
+        DirectFailure::ConnectError(text.to_owned())
+    }
+}
+
+/// What `Client::secure_connection_direct` refused, for [`DirectHandshakeError`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HandshakeRefusal {
+    Closed,
+    NotTbfdesk,
+    NoServerKey,
+    KeyMismatch,
+}
+
+/// A refusal from `Client::secure_connection_direct`, typed so the direct path can name
+/// it without matching its wording. It displays exactly the text the plain message had,
+/// so the other callers of `secure_connection` log and show what they did before.
+#[derive(Debug)]
+pub struct DirectHandshakeError {
+    pub kind: HandshakeRefusal,
+    pub text: String,
+}
+
+impl std::fmt::Display for DirectHandshakeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.text)
+    }
+}
+
+impl std::error::Error for DirectHandshakeError {}
+
+pub fn handshake_refusal(kind: HandshakeRefusal, text: impl Into<String>) -> hbb_common::anyhow::Error {
+    hbb_common::anyhow::Error::new(DirectHandshakeError {
+        kind,
+        text: text.into(),
+    })
+}
+
+/// Name a failed direct handshake: a typed refusal from `secure_connection_direct`, a
+/// socket the peer closed or reset, or anything else as it was worded.
+pub fn classify_handshake_error(e: &hbb_common::anyhow::Error) -> DirectFailure {
+    let text = e.to_string();
+    if let Some(refusal) = e.downcast_ref::<DirectHandshakeError>() {
+        return match refusal.kind {
+            HandshakeRefusal::Closed => DirectFailure::Closed(text),
+            HandshakeRefusal::NotTbfdesk => DirectFailure::NotTbfdesk(text),
+            HandshakeRefusal::NoServerKey => DirectFailure::NoServerKey(text),
+            HandshakeRefusal::KeyMismatch => DirectFailure::KeyMismatch(text),
+        };
+    }
+    if let Some(io) = e.downcast_ref::<std::io::Error>() {
+        use std::io::ErrorKind::*;
+        if matches!(
+            io.kind(),
+            ConnectionReset | ConnectionAborted | UnexpectedEof | BrokenPipe
+        ) {
+            return DirectFailure::Closed(text);
+        }
+    }
+    DirectFailure::Other(text)
+}
+
+// The "Connect directly" failure texts, one per reason. Each is a translation key with
+// a single `{}` (lang.rs fills only the first placeholder): the peer id, the endpoint and
+// the attempt times go into it as "id (host:port, 2500 + 6000 ms)", which reads the same
+// in every language. German for every one is in de.rs; lang.rs tests that it is there.
+// All start with crate::client::FORCED_DIRECT_FAILED, which keeps them out of the
+// automatic retry (check_if_retry) -- that retry would end on the relay.
+const FD_TIMEOUT: &str = "Direct connection to {} failed: no answer to the TCP connection request. A port forward, firewall or router on the way drops it, or the computer is switched off. The relay was NOT used because you asked for a direct connection.";
+const FD_TIMEOUT_KNOCKED: &str = "Direct connection to {} failed: a knock was sent, but the TCP connection request got no answer. Either the knock was not accepted (wrong knock key, or this computer's clock is wrong), or a port forward or firewall drops the connection. The relay was NOT used because you asked for a direct connection.";
+const FD_REFUSED: &str = "Direct connection to {} failed: the connection was refused. Something at that address answered, but nothing accepts connections on that port: TBFDesk is not running on the computer, or the router answers the port itself instead of forwarding it. The relay was NOT used because you asked for a direct connection.";
+const FD_REFUSED_KNOCKED: &str = "Direct connection to {} failed: a knock was sent, but the connection was refused. Probably the knock was not accepted (wrong knock key, or this computer's clock is wrong) and the port stayed closed, or nothing accepts connections behind the port forward. The relay was NOT used because you asked for a direct connection.";
+const FD_KNOCK_NOT_SENT: &str = "Direct connection to {} failed: knocking is switched on, but this computer could not send the knock (no usable knock key, or sending failed), and the connection did not get through. The relay was NOT used because you asked for a direct connection.";
+const FD_HANDSHAKE_TIMEOUT: &str = "Direct connection to {} failed: the TCP connection was established, but the TBFDesk handshake did not finish in time. The path is very slow, or the port forward reaches something that is not TBFDesk. The relay was NOT used because you asked for a direct connection.";
+const FD_CLOSED: &str = "Direct connection to {} failed: the connection was accepted and then closed before the TBFDesk handshake. The port forward probably reaches a computer or port where TBFDesk is not answering, or the computer dropped the connection. The relay was NOT used because you asked for a direct connection.";
+const FD_NOT_TBFDESK: &str = "Direct connection to {} failed: the endpoint answered, but not as TBFDesk. The port forward reaches a different service, not the computer. The relay was NOT used because you asked for a direct connection.";
+const FD_NO_SERVER_KEY: &str = "Direct connection to {} failed: a TBFDesk computer answered, but this client holds no key from your server for it. Wait for the next policy update, or check in the dashboard that the port forward points at this computer. The relay was NOT used because you asked for a direct connection.";
+const FD_KEY_MISMATCH: &str = "Direct connection to {} failed: the computer at that address could not prove that it is this computer (its identity does not match the key your server published). Not retried: the port forward may reach a different computer, or someone is intercepting the connection. The relay was NOT used because you asked for a direct connection.";
+const FD_ERROR: &str = "Direct connection to {} failed with the error shown after the address. The relay was NOT used because you asked for a direct connection.";
+
+/// Every "Connect directly" failure text that [`DirectFailed::user_message`] can
+/// produce, for the translation test in lang.rs.
+pub const FORCED_DIRECT_REASON_KEYS: &[&str] = &[
+    FD_TIMEOUT,
+    FD_TIMEOUT_KNOCKED,
+    FD_REFUSED,
+    FD_REFUSED_KNOCKED,
+    FD_KNOCK_NOT_SENT,
+    FD_HANDSHAKE_TIMEOUT,
+    FD_CLOSED,
+    FD_NOT_TBFDESK,
+    FD_NO_SERVER_KEY,
+    FD_KEY_MISMATCH,
+    FD_ERROR,
+];
+
+fn reason_key(failure: &DirectFailure, knock: &KnockState) -> &'static str {
+    match (failure, knock) {
+        (DirectFailure::ConnectTimeout { .. } | DirectFailure::Refused, KnockState::NotSent(_)) => {
+            FD_KNOCK_NOT_SENT
+        }
+        (DirectFailure::ConnectTimeout { .. }, KnockState::Sent(_)) => FD_TIMEOUT_KNOCKED,
+        (DirectFailure::ConnectTimeout { .. }, KnockState::Off) => FD_TIMEOUT,
+        (DirectFailure::Refused, KnockState::Sent(_)) => FD_REFUSED_KNOCKED,
+        (DirectFailure::Refused, KnockState::Off) => FD_REFUSED,
+        (DirectFailure::HandshakeTimeout { .. }, _) => FD_HANDSHAKE_TIMEOUT,
+        (DirectFailure::Closed(_), _) => FD_CLOSED,
+        (DirectFailure::NotTbfdesk(_), _) => FD_NOT_TBFDESK,
+        (DirectFailure::NoServerKey(_), _) => FD_NO_SERVER_KEY,
+        (DirectFailure::KeyMismatch(_), _) => FD_KEY_MISMATCH,
+        (DirectFailure::ConnectError(_) | DirectFailure::Other(_), _) => FD_ERROR,
+    }
+}
+
+/// Every failed attempt at one endpoint, in order: what "Connect directly" shows and
+/// what the management server is told.
+#[derive(Clone, Debug)]
+pub struct DirectFailed {
+    pub endpoint: String,
+    pub attempts: Vec<DirectAttemptError>,
+}
+
+impl DirectFailed {
+    /// For the server report: the final reason first, so it survives the server's
+    /// 200-character cut, then what the earlier attempts ran into.
+    pub fn detail(&self) -> String {
+        let n = self.attempts.len();
+        let Some(last) = self.attempts.last() else {
+            return String::new();
+        };
+        if n == 1 {
+            return last.summary();
+        }
+        format!(
+            "{} [attempt {n} of {n}; before: {}]",
+            last.summary(),
+            self.attempts[..n - 1]
+                .iter()
+                .map(|a| a.summary())
+                .collect::<Vec<_>>()
+                .join("; ")
+        )
+    }
+
+    /// For a connection that succeeded after these failures (empty when it is the first
+    /// attempt that succeeded).
+    pub fn earlier(&self) -> String {
+        if self.attempts.is_empty() {
+            return String::new();
+        }
+        format!(
+            "after {} failed attempt(s): {}",
+            self.attempts.len(),
+            self.attempts
+                .iter()
+                .map(|a| a.summary())
+                .collect::<Vec<_>>()
+                .join("; ")
+        )
+    }
+
+    /// The text "Connect directly" fails with: the last attempt's reason, translated,
+    /// with the peer, the endpoint and every attempt's duration in its one placeholder.
+    pub fn user_message(&self, peer_id: &str) -> String {
+        let times = self
+            .attempts
+            .iter()
+            .map(|a| a.elapsed_ms.to_string())
+            .collect::<Vec<_>>()
+            .join(" + ");
+        let mut value = format!("{} ({}", peer_id, self.endpoint);
+        if !times.is_empty() {
+            value.push_str(&format!(", {times} ms"));
+        }
+        let key = match self.attempts.last() {
+            Some(last) => {
+                if let DirectFailure::ConnectError(e) | DirectFailure::Other(e) = &last.failure {
+                    value.push_str("; ");
+                    value.push_str(e);
+                }
+                reason_key(&last.failure, &last.knock)
+            }
+            None => FD_ERROR,
+        };
+        value.push(')');
+        // lang.rs takes the text between the first `{` and the next `}` as the value.
+        let value = value.replace('{', "(").replace('}', ")");
+        key.replacen("{}", &format!("{{{value}}}"), 1)
+    }
 }
 
 /// Everything needed to build and send one SPA packet.
@@ -683,6 +1032,145 @@ mod tests {
         assert!(due_for_report(&mut last, "91090423", "established", t0 + Duration::from_secs(2)));
         // After the window the same outcome is reported again.
         assert!(due_for_report(&mut last, "352069946", "established", t0 + REPORT_REPEAT_AFTER));
+    }
+
+    /// An ordinary connection keeps its one short attempt (its fallback is the relay);
+    /// "Connect directly" gets a second, longer one, bounded either way.
+    #[test]
+    fn only_connect_directly_gets_a_second_longer_attempt() {
+        let ms = Duration::from_millis;
+        assert_eq!(attempt_budgets(ms(2500), false), vec![ms(2500)]);
+        assert_eq!(attempt_budgets(ms(2500), true), vec![ms(2500), ms(6000)]);
+        assert_eq!(attempt_budgets(ms(5000), true), vec![ms(5000), ms(10_000)]);
+        assert_eq!(attempt_budgets(ms(15_000), true), vec![ms(15_000), ms(20_000)]);
+        // A budget above the ceiling is never shortened for the retry.
+        assert_eq!(attempt_budgets(ms(30_000), true), vec![ms(30_000), ms(30_000)]);
+    }
+
+    /// The connect classifier reads hbb_common's fixed words (tcp.rs, FramedStream::new
+    /// and connect_failure). If those change, this is where it shows.
+    #[test]
+    fn connect_failures_are_named_from_hbb_commons_words() {
+        assert_eq!(
+            classify_connect_error(
+                "Failed to connect to 85.126.226.2:21010 (85.126.226.2:21010: connection refused)",
+                2200
+            ),
+            DirectFailure::Refused
+        );
+        assert_eq!(
+            classify_connect_error(
+                "Failed to connect to 10.0.2.2:21218 (10.0.2.2:21218: timed out after 2200 ms)",
+                2200
+            ),
+            DirectFailure::ConnectTimeout { ms: 2200 }
+        );
+        let other = "Failed to connect to 10.0.2.2:21218 (10.0.2.2:21218: Network is unreachable (os error 101))";
+        assert_eq!(
+            classify_connect_error(other, 2200),
+            DirectFailure::ConnectError(other.to_owned())
+        );
+    }
+
+    /// The handshake classifier reads the typed refusal, not the wording, and the typed
+    /// refusal still displays the old text for the callers that only log it.
+    #[test]
+    fn handshake_refusals_keep_their_text_and_gain_a_kind() {
+        let e = handshake_refusal(HandshakeRefusal::KeyMismatch, "direct peer id 1 != requested 2");
+        assert_eq!(e.to_string(), "direct peer id 1 != requested 2");
+        assert_eq!(
+            classify_handshake_error(&e),
+            DirectFailure::KeyMismatch("direct peer id 1 != requested 2".to_owned())
+        );
+        let e = handshake_refusal(HandshakeRefusal::Closed, "closed");
+        assert_eq!(classify_handshake_error(&e), DirectFailure::Closed("closed".to_owned()));
+        let reset: hbb_common::anyhow::Error =
+            std::io::Error::from(std::io::ErrorKind::ConnectionReset).into();
+        assert!(matches!(classify_handshake_error(&reset), DirectFailure::Closed(_)));
+        let other = hbb_common::anyhow::anyhow!("something else");
+        assert_eq!(
+            classify_handshake_error(&other),
+            DirectFailure::Other("something else".to_owned())
+        );
+    }
+
+    /// Retry what waiting can fix; never an identity failure.
+    #[test]
+    fn only_failures_a_second_try_can_fix_are_retried() {
+        let off = KnockState::Off;
+        let sent = KnockState::Sent(62201);
+        assert!(DirectFailure::ConnectTimeout { ms: 1 }.retryable(&off));
+        assert!(DirectFailure::HandshakeTimeout { tcp_ms: 1, ms: 1 }.retryable(&off));
+        assert!(!DirectFailure::Refused.retryable(&off), "nothing listens: waiting does not help");
+        assert!(DirectFailure::Refused.retryable(&sent), "a knock-gated port may open late");
+        for f in [
+            DirectFailure::KeyMismatch(String::new()),
+            DirectFailure::NoServerKey(String::new()),
+            DirectFailure::NotTbfdesk(String::new()),
+            DirectFailure::Closed(String::new()),
+            DirectFailure::ConnectError(String::new()),
+            DirectFailure::Other(String::new()),
+        ] {
+            assert!(!f.retryable(&sent), "{f:?}");
+        }
+    }
+
+    /// The dialog text: the FORCED_DIRECT_FAILED prefix (keeps it out of the automatic
+    /// retry), one placeholder holding id, endpoint and attempt times, the reason of the
+    /// LAST attempt, and nothing that could end the placeholder early.
+    #[test]
+    fn the_dialog_names_the_reason_of_the_last_attempt() {
+        let attempt = |failure, knock, elapsed_ms| DirectAttemptError {
+            failure,
+            knock,
+            elapsed_ms,
+        };
+        let failed = DirectFailed {
+            endpoint: "85.126.226.2:21010".to_owned(),
+            attempts: vec![
+                attempt(DirectFailure::Refused, KnockState::Sent(62201), 300),
+                attempt(DirectFailure::ConnectTimeout { ms: 5700 }, KnockState::Sent(62201), 6000),
+            ],
+        };
+        let text = failed.user_message("360853086");
+        assert!(text.starts_with(crate::client::FORCED_DIRECT_FAILED));
+        assert_eq!(
+            text,
+            FD_TIMEOUT_KNOCKED.replacen("{}", "{360853086 (85.126.226.2:21010, 300 + 6000 ms)}", 1)
+        );
+        // The server report leads with the final reason and keeps the earlier one.
+        let detail = failed.detail();
+        assert!(detail.starts_with("connect timeout: no answer to the TCP connect within 5700 ms"), "{detail}");
+        assert!(detail.contains("before: refused"), "{detail}");
+
+        // The catch-all carries the error itself, braces made harmless.
+        let failed = DirectFailed {
+            endpoint: "h:1".to_owned(),
+            attempts: vec![attempt(
+                DirectFailure::ConnectError("weird {os} error".to_owned()),
+                KnockState::Off,
+                12,
+            )],
+        };
+        let text = failed.user_message("1");
+        assert_eq!(text, FD_ERROR.replacen("{}", "{1 (h:1, 12 ms; weird (os) error)}", 1));
+        assert_eq!(text.matches('{').count(), 1);
+
+        // Knocking on, but nothing went out: that is the reason, whatever the connect did.
+        for failure in [DirectFailure::Refused, DirectFailure::ConnectTimeout { ms: 1 }] {
+            let failed = DirectFailed {
+                endpoint: "h:1".to_owned(),
+                attempts: vec![attempt(failure, KnockState::NotSent("no key".to_owned()), 1)],
+            };
+            assert!(failed.user_message("1").contains("could not send the knock"));
+        }
+
+        // Every reason has its own text, and every text has exactly one placeholder.
+        for key in FORCED_DIRECT_REASON_KEYS {
+            assert!(key.starts_with("Direct connection to {} failed"), "{key}");
+            assert_eq!(key.matches("{}").count(), 1, "{key}");
+            assert_eq!(key.matches('{').count(), 1, "{key}");
+        }
     }
 
     // Base64 of the real fwknop 2.6.11 datagram captured with
