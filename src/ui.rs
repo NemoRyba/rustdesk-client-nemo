@@ -263,6 +263,11 @@ impl UI {
         is_local_permanent_password_set()
     }
 
+    // Settings -> "Clear Wayland screen selection" (as Flutter's Wayland card)
+    fn handle_wayland_screencast_restore_token(&self, key: String, value: String) -> String {
+        handle_wayland_screencast_restore_token(key, value)
+    }
+
     fn is_permanent_password_set(&self) -> bool {
         is_permanent_password_set()
     }
@@ -1088,6 +1093,7 @@ impl sciter::EventHandler for UI {
         fn update_temporary_password();
         fn set_permanent_password(String);
         fn is_local_permanent_password_set();
+        fn handle_wayland_screencast_restore_token(String, String);
         fn is_permanent_password_set();
         fn get_remote_id();
         fn set_remote_id(String);

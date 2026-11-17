@@ -1643,6 +1643,7 @@ var NEMO_SETTING_TIPS = {
     "use-both-passwords": "Accept either the one-time password or your fixed password.",
     "set-permanent-password": "Set or change the fixed password for incoming access.",
     "clear-permanent-password": "Remove the fixed password so only the one-time password works.",
+    "clear-wayland-selection": "Forget which screens incoming sessions may share; the next session asks again.",
     "tpl-6": "Make the one-time password 6 characters long.",
     "tpl-8": "Make the one-time password 8 characters long.",
     "tpl-10": "Make the one-time password 10 characters long.",
@@ -1661,6 +1662,32 @@ function nemoOpenSettingsDialog() {
     nemoSettingsDialog.open();
 }
 
+// Wayland (Linux): GNOME remembers which screens an incoming session may share (the
+// screencast restore token). Shown in Settings only while something is remembered, as
+// Flutter's "Wayland" card does; clearing it makes the next session ask again -- the
+// way to share both monitors after only one was picked (field report 2026-11-17).
+var nemo_wayland_token_key = "wayland-restore-token";
+function nemoWaylandSelectionRemembered() {
+    if (!is_linux) return false;
+    return handler.handle_wayland_screencast_restore_token(nemo_wayland_token_key, "get") != "";
+}
+function nemoClearWaylandSelection() {
+    msgbox("custom", translate("Clear Wayland screen selection"),
+        "<div .form>" + translate("confirm_clear_Wayland_screen_selection_tip") + "</div>", "",
+        function(res=null) {
+            if (!res) return;
+            var err = handler.handle_wayland_screencast_restore_token(nemo_wayland_token_key, "clear");
+            if (err) {
+                msgbox("custom-error", "Error", err);
+                return;
+            }
+            if (nemoSettingsDialog) {
+                nemoSettingsDialog.wayland_selection = nemoWaylandSelectionRemembered();
+                nemoSettingsDialog.update();
+            }
+        });
+}
+
 class NemoSettingsDialog: Reactor.Component {
     function this() {
         nemoSettingsDialog = this;
@@ -1671,6 +1698,8 @@ class NemoSettingsDialog: Reactor.Component {
         // (AudioInputs only renders its <menu> once show=true).
         if (audioInputMenu) audioInputMenu.update({ show: true });
         if (direct_server) direct_server.update();
+        // asked once per opening: it is an IPC round trip to the --server process
+        this.wayland_selection = nemoWaylandSelectionRemembered();
         this.update({ shown: true });
     }
 
@@ -1784,6 +1813,7 @@ class NemoSettingsDialog: Reactor.Component {
         // Per-user local option (RustDesk_local.toml), like upstream: a clipboard received in
         // one remote session is also offered to this machine's other remote sessions.
         gen.push(this.tRow("allow-sync-clipboard-between-sessions", translate('Sync clipboard between sessions'), handler.get_local_option("allow-sync-clipboard-between-sessions") == "Y", handler.is_option_fixed("allow-sync-clipboard-between-sessions"), "local"));
+        if (is_linux && this.wayland_selection) gen.push(this.aRow("clear-wayland-selection", translate('Clear Wayland screen selection')));
         if (!disable_installation) {
             // Auto update is DORMANT until the TBF update server exists
             // (OPEN-TODOS HIGH #1): the row is greyed and fully non-interactive
@@ -1945,6 +1975,7 @@ class NemoSettingsDialog: Reactor.Component {
         else if (act == "language") { if (!handler.is_option_fixed("lang")) me.popup(this.$(menu#dlg-lang)); }
         else if (act == "set-permanent-password") nemoSetPasswordDialog();
         else if (act == "clear-permanent-password") { handler.set_permanent_password(""); nemoRefreshPwUi(); this.update(); }
+        else if (act == "clear-wayland-selection") nemoClearWaylandSelection();
     }
 
     // Language / Audio Input / Enhancements popups, rendered INSIDE the dialog so

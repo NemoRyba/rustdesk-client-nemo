@@ -7,7 +7,7 @@ use std::sync::{
     Arc, Mutex,
 };
 use std::time::Duration;
-use tracing::{debug, error, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use dbus::{
     arg::{OwnedFd, PropMap, RefArg, Variant},
@@ -991,12 +991,19 @@ pub(crate) fn is_server_running() -> bool {
         return v == 1;
     }
 
+    // TBFDesk: the product name changed but the Linux binary did not
+    // (/usr/share/rustdesk/rustdesk --server), so look for the executable's own name as
+    // well as the app name. With the app name alone ("tbfdesk --server") this was never
+    // true on TBFDesk: every Wayland session took the remote-desktop-portal path, which
+    // asks for ONE screen only (no "multiple") and never remembers the choice (no
+    // restore token) -- "only one screen can be shared from Ubuntu" (field report and
+    // lab, Ubuntu 26.04, 2026-11-17: GNOME's dialog allowed one monitor only).
     let app_name = config::APP_NAME.read().unwrap().clone().to_lowercase();
-    let output = match Command::new(CMD_SH.as_str())
-        .arg("-c")
-        .arg(&format!("ps aux | grep {}", app_name))
-        .output()
-    {
+    let exe_name = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_lowercase()))
+        .unwrap_or_default();
+    let output = match Command::new(CMD_SH.as_str()).arg("-c").arg("ps aux").output() {
         Ok(output) => output,
         Err(_) => {
             return false;
@@ -1004,7 +1011,16 @@ pub(crate) fn is_server_running() -> bool {
     };
 
     let output_str = String::from_utf8_lossy(&output.stdout);
-    let is_running = output_str.contains(&format!("{} --server", app_name));
+    let is_running = [app_name.as_str(), exe_name.as_str()]
+        .iter()
+        .filter(|name| !name.is_empty())
+        .any(|name| output_str.contains(&format!("{} --server", name)));
+    info!(
+        "wayland: server process running: {} (looked for '{}' / '{}' --server)",
+        is_running,
+        app_name,
+        exe_name
+    );
     IS_SERVER_RUNNING.store(if is_running { 1 } else { 2 }, Ordering::SeqCst);
     is_running
 }

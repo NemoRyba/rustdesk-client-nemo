@@ -773,6 +773,40 @@ pub fn is_permanent_password_set() -> bool {
     }
 }
 
+/// Wayland: the screen selection the desktop remembers for incoming sessions (the
+/// screencast restore token, kept by the --server process). `value` "get" returns the
+/// token ("" = nothing remembered); "clear" returns "" on success, else the message to
+/// show. One implementation for both UIs (Flutter Settings "Wayland" card, Sciter
+/// Settings "Clear Wayland screen selection").
+pub fn handle_wayland_screencast_restore_token(key: String, value: String) -> String {
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (key, value);
+        return "".to_owned();
+    }
+    #[cfg(target_os = "linux")]
+    if value == "get" {
+        match crate::ipc::get_wayland_screencast_restore_token(key) {
+            Ok(v) => v,
+            Err(e) => {
+                log::error!("Failed to get wayland screencast restore token, {}", e);
+                "".to_owned()
+            }
+        }
+    } else if value == "clear" {
+        match crate::ipc::clear_wayland_screencast_restore_token(key.clone()) {
+            Ok(true) => {
+                set_local_option(key, "".to_owned());
+                "".to_owned()
+            }
+            Ok(false) => "Failed to clear, please try again.".to_owned(),
+            Err(e) => format!("Failed to clear, {}", e),
+        }
+    } else {
+        "".to_owned()
+    }
+}
+
 #[inline]
 pub fn is_local_permanent_password_set() -> bool {
     #[cfg(any(target_os = "android", target_os = "ios"))]
