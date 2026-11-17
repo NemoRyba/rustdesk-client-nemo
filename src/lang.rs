@@ -296,17 +296,57 @@ mod test {
     fn runtime_messages_with_a_placeholder_have_german() {
         use std::ops::Deref;
         let de = super::de::T.deref();
-        for text in [
+        let mut texts = vec![
             "user {usera} is not permitted to control this computer".to_owned(),
-            format!("{}{{91090423 (169.254.1.2:21218)}} failed. The relay was NOT used because you asked for a direct connection; see the log for the reason.", crate::client::FORCED_DIRECT_FAILED),
             format!("{}{{91090423}} failed: this server has published no direct endpoint for it. Set 'Reachable at' for it in the dashboard, or connect normally.", crate::client::FORCED_DIRECT_FAILED),
             format!("{}{{91090423 ('Use WebSocket' is on)}} failed: this client is set to use the relay only. Turn that off to test the direct path.", crate::client::FORCED_DIRECT_FAILED),
-        ] {
+        ];
+        // Every reason a failed "Connect directly" can name, filled in as the client fills it.
+        for key in crate::nemo_direct::FORCED_DIRECT_REASON_KEYS {
+            texts.push(key.replacen("{}", "{91090423 (169.254.1.2:21218, 2500 + 6000 ms)}", 1));
+        }
+        for text in texts {
             let (key, value) = super::extract_placeholder(&text);
             let german = de.get(key.as_str()).unwrap_or_else(|| panic!("no German for {key:?}"));
             assert!(german.contains("{}"), "German for {key:?} drops the value");
             assert!(value.is_some());
         }
+    }
+
+    /// The message a failed "Connect directly" really produces comes out in German with
+    /// the peer, the endpoint and the attempt times in it, and no braces left over.
+    #[test]
+    fn a_failed_direct_connection_names_its_reason_in_german() {
+        use crate::nemo_direct::{DirectAttemptError, DirectFailed, DirectFailure, KnockState};
+        let failed = DirectFailed {
+            endpoint: "85.126.226.2:21010".to_owned(),
+            attempts: vec![
+                DirectAttemptError {
+                    failure: DirectFailure::ConnectTimeout { ms: 2500 },
+                    knock: KnockState::Off,
+                    elapsed_ms: 2500,
+                },
+                DirectAttemptError {
+                    failure: DirectFailure::ConnectTimeout { ms: 6000 },
+                    knock: KnockState::Off,
+                    elapsed_ms: 6001,
+                },
+            ],
+        };
+        // What translate() does with it, without depending on this machine's "lang".
+        use std::ops::Deref;
+        let (key, value) = super::extract_placeholder(&failed.user_message("360853086"));
+        let shown = super::de::T
+            .deref()
+            .get(key.as_str())
+            .unwrap_or_else(|| panic!("no German for {key:?}"))
+            .replace("{}", &value.expect("a placeholder"));
+        assert!(
+            shown.starts_with("Direktverbindung zu 360853086 (85.126.226.2:21010, 2500 + 6001 ms) fehlgeschlagen: keine Antwort"),
+            "{shown}"
+        );
+        assert!(!shown.contains('{') && !shown.contains('}'), "{shown}");
+        assert!(!shown.contains("Protokoll"), "the reason is in the text, not in the log: {shown}");
     }
 
     #[test]
