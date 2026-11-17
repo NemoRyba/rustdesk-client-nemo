@@ -3077,6 +3077,17 @@ impl Connection {
             if self.port_forward_socket.is_some() {
                 return true;
             }
+            // TBFDesk: a Wayland login whose response is still held back for the portal
+            // (start_wayland_portal_wait). `authorized` is already true, but the session
+            // has not started: GNOME's "share your screen" dialog may be open and is the
+            // local user's to answer. Ignore everything except what is handled above
+            // (CloseReason, TestDelay, LoginRequest), as before the session is approved
+            // in approve mode -- otherwise mouse and key events from the controller would
+            // already be injected (uinput needs no portal) and could answer that dialog.
+            #[cfg(target_os = "linux")]
+            if self.wayland_portal_wait.is_some() {
+                return true;
+            }
             match msg.union {
                 #[allow(unused_mut)]
                 Some(message::Union::MouseEvent(mut me)) => {
