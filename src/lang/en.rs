@@ -357,5 +357,7 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("nemo_local_network_ask_again", "Ask again"),
         ("nemo_local_network_open_settings", "Open settings"),
         ("Use the ⋮ menu for a direct-only connection.", "Use the ⋮ menu for a direct-only connection."),
+        // Phone session menu (mobile/pages/remote_page.dart): ends this session, opens file transfer.
+        ("nemo_switch_to_file_transfer", "Switch to file transfer"),
     ].iter().cloned().collect();
 }

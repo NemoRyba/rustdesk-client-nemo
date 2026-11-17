@@ -82,6 +82,11 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   final TextEditingController _textController =
       TextEditingController(text: initText);
 
+  // TBFDesk (P3): completed at the very end of dispose(), once this page has closed
+  // its session on gFFI -- only then may gFFI start the next one (the file manager
+  // of "Switch to file transfer" reuses the same fixed session id).
+  final Completer<void> _nemoClosed = Completer<void>();
+
   _RemotePageState(String id) {
     initSharedStates(id);
     gFFI.chatModel.voiceCallStatus.value = VoiceCallStatus.notStarted;
@@ -129,26 +134,65 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     WidgetsBinding.instance.removeObserver(this);
     // https://github.com/flutter/flutter/issues/64935
     super.dispose();
-    gFFI.dialogManager.hideMobileActionsOverlay(store: false);
-    gFFI.inputModel.listenToMouse(false);
-    gFFI.imageModel.disposeImage();
-    gFFI.cursorModel.disposeImages();
-    await gFFI.invokeMethod("enable_soft_keyboard", true);
-    _mobileFocusNode.dispose();
-    _physicalFocusNode.dispose();
-    await gFFI.close();
-    _timer?.cancel();
-    _iosKeyboardWorkaroundTimer?.cancel();
-    gFFI.dialogManager.dismissAll();
-    await SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual,
-        overlays: SystemUiOverlay.values);
-    WakelockManager.disable(_uniqueKey);
-    await keyboardSubscription.cancel();
-    removeSharedStates(widget.id);
-    // `on_voice_call_closed` should be called when the connection is ended.
-    // The inner logic of `on_voice_call_closed` will check if the voice call is active.
-    // Only one client is considered here for now.
-    gFFI.chatModel.onVoiceCallClosed("End connetion");
+    try {
+      gFFI.dialogManager.hideMobileActionsOverlay(store: false);
+      gFFI.inputModel.listenToMouse(false);
+      gFFI.imageModel.disposeImage();
+      gFFI.cursorModel.disposeImages();
+      await gFFI.invokeMethod("enable_soft_keyboard", true);
+      _mobileFocusNode.dispose();
+      _physicalFocusNode.dispose();
+      await gFFI.close();
+      _timer?.cancel();
+      _iosKeyboardWorkaroundTimer?.cancel();
+      gFFI.dialogManager.dismissAll();
+      await SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual,
+          overlays: SystemUiOverlay.values);
+      WakelockManager.disable(_uniqueKey);
+      await keyboardSubscription.cancel();
+      removeSharedStates(widget.id);
+      // `on_voice_call_closed` should be called when the connection is ended.
+      // The inner logic of `on_voice_call_closed` will check if the voice call is active.
+      // Only one client is considered here for now.
+      gFFI.chatModel.onVoiceCallClosed("End connetion");
+    } finally {
+      if (!_nemoClosed.isCompleted) _nemoClosed.complete();
+    }
+  }
+
+  /// TBFDesk (P3) "Switch to file transfer". A phone runs one session at a time (gFFI,
+  /// one fixed session id), so this view is closed first; the file manager then opens
+  /// to the same computer with this session's connection token -- the password it
+  /// logged in with -- like desktop's "Transfer file" next to the running session
+  /// (toolbar.dart connectWithSessionToken).
+  /// The token is accepted again only where the computer still takes that password
+  /// (a permanent or address-book password): when this session ends, the computer
+  /// renews a one-time password and forgets the session (server/connection.rs, close
+  /// -> update_temporary_password + check_remove_session), so then -- and for 2FA and
+  /// "accept by click" -- it asks again.
+  Future<void> _nemoSwitchToFileTransfer() async {
+    final id = widget.id;
+    final forceRelay = widget.forceRelay ?? false;
+    // The token belongs to this session: read it before the session is closed.
+    final connToken = bind.sessionGetConnToken(sessionId: sessionId);
+    // Storage access first, while the session is still open: refused = stay here.
+    if (isAndroid && !await AndroidPermissionManager.check(kManageExternalStorage)) {
+      if (!await AndroidPermissionManager.request(kManageExternalStorage)) return;
+    }
+    // The end-of-session note, where the operator asks for one (as on close).
+    if (await showConnEndAuditDialogCloseCanceled(ffi: gFFI)) return;
+    final closed = _nemoClosed;
+    closeConnection(id: id);
+    try {
+      await closed.future.timeout(const Duration(seconds: 10));
+    } on TimeoutException {
+      debugPrint('switch to file transfer: the remote session did not close in time');
+      return;
+    }
+    final navContext = globalKey.currentContext;
+    if (navContext == null) return;
+    await connect(navContext, id,
+        isFileTransfer: true, forceRelay: forceRelay, connToken: connToken);
   }
 
   @override
@@ -687,7 +731,8 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     final x = 120.0;
     final y = size.height;
     final mobileActionMenus = _getMobileActionMenus();
-    final menus = toolbarControls(context, id, gFFI);
+    final menus = toolbarControls(context, id, gFFI,
+        onSwitchToFileTransfer: isWeb ? null : _nemoSwitchToFileTransfer);
 
     final List<PopupMenuEntry<int>> more = [
       ...mobileActionMenus

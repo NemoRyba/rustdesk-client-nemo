@@ -15,12 +15,16 @@ class FileManagerPage extends StatefulWidget {
       required this.id,
       this.password,
       this.isSharedPassword,
-      this.forceRelay})
+      this.forceRelay,
+      this.connToken})
       : super(key: key);
   final String id;
   final String? password;
   final bool? isSharedPassword;
   final bool? forceRelay;
+  // TBFDesk (P3): the connection token of the remote session this file transfer was
+  // switched from (remote_page.dart), so its password is used again.
+  final String? connToken;
 
   @override
   State<StatefulWidget> createState() => _FileManagerPageState();
@@ -80,7 +84,8 @@ class _FileManagerPageState extends State<FileManagerPage> {
         isFileTransfer: true,
         password: widget.password,
         isSharedPassword: widget.isSharedPassword,
-        forceRelay: widget.forceRelay);
+        forceRelay: widget.forceRelay,
+        connToken: widget.connToken);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       gFFI.dialogManager
           .showLoading(translate('Connecting...'), onCancel: closeConnection);

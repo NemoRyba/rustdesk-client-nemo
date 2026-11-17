@@ -999,6 +999,7 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("nemo_local_network_ask_again", "Erneut fragen"),
         ("nemo_local_network_open_settings", "Einstellungen öffnen"),
         ("Use the ⋮ menu for a direct-only connection.", "Über das ⋮-Menü ausschließlich direkt verbinden."),
+        ("nemo_switch_to_file_transfer", "Zur Dateiübertragung wechseln"),
         ("Terminal (command line only)", "Terminal (nur Befehlszeile)"),
         ("Terminal shell", "Terminal-Shell"),
         ("No permission of terminal", "Keine Berechtigung für das Terminal (auf dem Zielcomputer ist „Terminal zulassen“ aus)"),
