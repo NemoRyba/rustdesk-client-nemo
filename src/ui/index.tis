@@ -181,6 +181,20 @@ function nemoOutboundEnabled() {
     return handler.get_option(nemo_outbound_enabled_option) != "N";
 }
 
+// Machine policies on how THIS computer admits incoming sessions (nemo_control.rs). Only
+// a server policy sets them (always locked, never stored), so the UI only shows them:
+// the Password settings grey out what they override, and the one-time password is not
+// offered while it would be refused. Same keys and rules in Flutter (ServerModel
+// localPasswordDisabled / ldapLoginSufficient). Above every use: TIScript does not hoist.
+const nemo_ldap_login_sufficient_option = "nemo-ldap-login-sufficient";
+const nemo_disable_local_password_option = "nemo-disable-local-password";
+function nemoLocalPasswordDisabled() {
+    return handler.get_option(nemo_disable_local_password_option) == "Y";
+}
+function nemoLdapLoginSufficient() {
+    return handler.get_option(nemo_ldap_login_sufficient_option) == "Y";
+}
+
 // The poller's "nemo-policy-problem" ("" = fine, else "code|detail") as one plain sentence.
 // Same wording in Flutter (nemoPolicyProblemText in common/nemo_policy.dart).
 // MUST stay above `class App`: TIScript does not hoist functions, and App.render calls this
@@ -1659,6 +1673,8 @@ var NEMO_SETTING_TIPS = {
     "use-both-passwords": "Accept either the one-time password or your fixed password.",
     "set-permanent-password": "Set or change the fixed password for incoming access.",
     "clear-permanent-password": "Remove the fixed password so only the one-time password works.",
+    "nemo-disable-local-password": "Your administrator has disabled this computer's passwords: neither the one-time nor the permanent password is accepted. A session is admitted by a TBFDesk sign-in that may control this computer or, where the approval mode allows it, when you accept it here.",
+    "nemo-ldap-login-sufficient": "Your administrator lets users who are signed in to TBFDesk and may control this computer connect without its password. Everybody else still needs the password.",
     "clear-wayland-selection": "Forget which screens incoming sessions may share; the next session asks again.",
     "tpl-6": "Make the one-time password 6 characters long.",
     "tpl-8": "Make the one-time password 8 characters long.",
@@ -1736,6 +1752,15 @@ class NemoSettingsDialog: Reactor.Component {
 
     function aRow(action, label) {
         return <div class="nemo-set-row nemo-set-action" data-action={action} title={settingTip(action)}>
+            <span .nemo-set-label>{label}</span>
+            <span .nemo-set-arrow>{">"}</span>
+        </div>;
+    }
+
+    // An action row a policy has switched off: greyed and inert (no nemo-set-action
+    // class, so the click handler never matches it), like the dormant Auto update row.
+    function iRow(action, label) {
+        return <div class="nemo-set-row fixed" title={settingTip(action)}>
             <span .nemo-set-label>{label}</span>
             <span .nemo-set-arrow>{">"}</span>
         </div>;
@@ -1854,7 +1879,14 @@ class NemoSettingsDialog: Reactor.Component {
             var vm = handler.get_option('verification-method');
             if (vm != 'use-temporary-password' && vm != 'use-permanent-password') vm = 'use-both-passwords';
             var amode_fixed = handler.is_option_fixed('approve-mode');
-            var vm_fixed = handler.is_option_fixed('verification-method');
+            // Machine policy "disable local password": none of the password settings
+            // below has any effect, so they are shown greyed (managed), not hidden.
+            var pw_disabled = nemoLocalPasswordDisabled();
+            var vm_fixed = handler.is_option_fixed('verification-method') || pw_disabled;
+            // The machine policies first, as locked, ticked rows (never clickable: kind
+            // "policy" has no handler and data-fixed stops the click anyway).
+            if (pw_disabled) pw.push(this.tRow(nemo_disable_local_password_option, translate('Password login disabled by policy'), true, true, "policy"));
+            else if (nemoLdapLoginSufficient()) pw.push(this.tRow(nemo_ldap_login_sufficient_option, translate('Signed-in users connect without password (policy)'), true, true, "policy"));
             pw.push(this.tRow("approve-mode-password", translate('Accept sessions via password'), approve_mode == 'password', amode_fixed, "amode"));
             pw.push(this.tRow("approve-mode-click", translate('Accept sessions via click'), approve_mode == 'click', amode_fixed, "amode"));
             pw.push(this.tRow("approve-mode-both", translate('Accept sessions via both'), approve_mode != 'password' && approve_mode != 'click', amode_fixed, "amode"));
@@ -1863,12 +1895,17 @@ class NemoSettingsDialog: Reactor.Component {
                 pw.push(this.tRow("use-permanent-password", translate('Use permanent password'), vm == 'use-permanent-password', vm_fixed, "vmethod"));
                 pw.push(this.tRow("use-both-passwords", translate('Use both passwords'), vm == 'use-both-passwords', vm_fixed, "vmethod"));
                 if (!disable_change_permanent_password) {
-                    pw.push(this.aRow("set-permanent-password", translate('Set permanent password')));
-                    if (handler.is_local_permanent_password_set()) pw.push(this.aRow("clear-permanent-password", translate('Clear permanent password')));
+                    if (pw_disabled) {
+                        pw.push(this.iRow("set-permanent-password", translate('Set permanent password')));
+                        if (handler.is_local_permanent_password_set()) pw.push(this.iRow("clear-permanent-password", translate('Clear permanent password')));
+                    } else {
+                        pw.push(this.aRow("set-permanent-password", translate('Set permanent password')));
+                        if (handler.is_local_permanent_password_set()) pw.push(this.aRow("clear-permanent-password", translate('Clear permanent password')));
+                    }
                 }
                 var tpl = handler.get_option('temporary-password-length');
                 if (!tpl) tpl = "6";
-                var tpl_fixed = handler.is_option_fixed('temporary-password-length');
+                var tpl_fixed = handler.is_option_fixed('temporary-password-length') || pw_disabled;
                 pw.push(this.tRow("tpl-6", translate('One-time Password') + " (6)", tpl == "6", tpl_fixed, "tpl"));
                 pw.push(this.tRow("tpl-8", translate('One-time Password') + " (8)", tpl == "8", tpl_fixed, "tpl"));
                 pw.push(this.tRow("tpl-10", translate('One-time Password') + " (10)", tpl == "10", tpl_fixed, "tpl"));
@@ -2467,7 +2504,8 @@ function nemoCopyToClipboard(text, what) {
 }
 
 function nemoOtpHidden() {
-    return handler.get_option('approve-mode') == 'click' || handler.get_option('verification-method') == 'use-permanent-password';
+    // also when the policy disables local passwords: a one-time password that cannot work is not shown or copied
+    return handler.get_option('approve-mode') == 'click' || handler.get_option('verification-method') == 'use-permanent-password' || nemoLocalPasswordDisabled();
 }
 
 // Copies the one-time password as it is now, and shows that same value in the field.
@@ -2526,7 +2564,7 @@ class PasswordEyeArea : Reactor.Component {
         // Copy first (next to the field it acts on), refresh last with a wider gap. Each
         // gap is a margin -- dead space -- not part of an icon's click target (FT-04).
         return
-            <div .eye-area style="width: *">
+            <div .eye-area style="width: *" title={nemoLocalPasswordDisabled() ? translate('Password login disabled by policy') : ""}>
                 <input|text @{this.input} readonly value={value} />
                 {hide_one_time ? "" : <span .nemo-otp-btn .nemo-otp-copy title={translate('Copy to clipboard')}>{svg_copy_password}</span>}
                 {hide_one_time ? "" : <span .nemo-otp-btn .nemo-otp-refresh title={translate('Refresh Password')}>{svg_refresh_password}</span>}
@@ -3064,6 +3102,7 @@ function showSettings() {
 
 var nemo_direct_ids_seen = "";
 var nemo_outbound_seen = nemoOutboundEnabled();
+var nemo_pw_policy_seen = (nemoLocalPasswordDisabled() ? "D" : "") + (nemoLdapLoginSufficient() ? "L" : "");
 var nemo_policy_problem_seen = "";
 
 function checkConnectStatus() {
@@ -3087,6 +3126,14 @@ function checkConnectStatus() {
         if (outbound != nemo_outbound_seen) {
             nemo_outbound_seen = outbound;
             if (app) app.update();
+        }
+        // The machine password policies arrive with a poll too: re-render the one-time
+        // password box and an open Settings dialog when they change, not at next restart.
+        var pw_policy = (nemoLocalPasswordDisabled() ? "D" : "") + (nemoLdapLoginSufficient() ? "L" : "");
+        if (pw_policy != nemo_pw_policy_seen) {
+            nemo_pw_policy_seen = pw_policy;
+            if (passwordArea) passwordArea.update();
+            if (nemoSettingsDialog && nemoSettingsDialog.shown) nemoSettingsDialog.update();
         }
         // Why the server's policy is not applied here (wrong clock, server unreachable, ...).
         var problem = handler.get_option("nemo-policy-problem") || "";

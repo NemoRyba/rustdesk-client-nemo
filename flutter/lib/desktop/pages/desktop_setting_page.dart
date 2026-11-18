@@ -1234,8 +1234,17 @@ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
             translate('Use permanent password'),
             translate('Use both passwords'),
           ];
-          bool tmpEnabled = model.verificationMethod != kUsePermanentPassword;
-          bool permEnabled = model.verificationMethod != kUseTemporaryPassword;
+          // TBFDesk: machine policy "disable local password" -- none of the
+          // password settings below has an effect, so they are greyed (managed),
+          // not hidden (Sciter Settings -> Password, Android drop-down: same).
+          final pwDisabled = model.localPasswordDisabled;
+          bool tmpEnabled =
+              model.verificationMethod != kUsePermanentPassword && !pwDisabled;
+          bool permEnabled =
+              model.verificationMethod != kUseTemporaryPassword && !pwDisabled;
+          // TBFDesk: greyed when the policy fixes it (Sciter vm_fixed).
+          final isVerificationMethodFixed =
+              isOptionFixed(kOptionVerificationMethod) || pwDisabled;
           String currentValue =
               passwordValues[passwordKeys.indexOf(model.verificationMethod)];
           List<Widget> radios = passwordValues
@@ -1247,7 +1256,7 @@ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
                     value: value,
                     groupValue: currentValue,
                     label: value,
-                    onChanged: locked
+                    onChanged: locked || isVerificationMethodFixed
                         ? null
                         : ((value) async {
                             callback() async {
@@ -1274,7 +1283,9 @@ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
                   )))
               .toList();
 
-          var onChanged = tmpEnabled && !locked
+          // TBFDesk: greyed when the policy fixes it (Sciter tpl_fixed).
+          final isLengthFixed = isOptionFixed('temporary-password-length');
+          var onChanged = tmpEnabled && !locked && !isLengthFixed
               ? (value) {
                   if (value != null) {
                     () async {
@@ -1357,6 +1368,21 @@ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
               bind.mainGetCommonSync(key: 'local-permanent-password-set') ==
                   'true';
           return _Card(title: 'Password', children: [
+            // TBFDesk: the machine policies first, as a locked, ticked row.
+            if (pwDisabled)
+              _OptionCheckBox(context, 'Password login disabled by policy',
+                  kNemoOptionDisableLocalPassword,
+                  enabled: false,
+                  fakeValue: true,
+                  tip: _nemoTip(kNemoOptionDisableLocalPassword))
+            else if (model.ldapLoginSufficient)
+              _OptionCheckBox(
+                  context,
+                  'Signed-in users connect without password (policy)',
+                  kNemoOptionLdapLoginSufficient,
+                  enabled: false,
+                  fakeValue: true,
+                  tip: _nemoTip(kNemoOptionLdapLoginSufficient)),
             _nemoTipped(
                 _nemoTip(modeInitialKey == 'password'
                     ? 'approve-mode-password'
@@ -1380,7 +1406,7 @@ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
                       ...lengthRadios,
                     ],
                   ),
-                  enabled: tmpEnabled && !locked),
+                  enabled: tmpEnabled && !locked && !isLengthFixed),
             if (usePassword) numericOneTimePassword,
             if (usePassword) radios[1],
             if (usePassword && !isChangePermanentPasswordDisabled())
@@ -1398,7 +1424,7 @@ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
                         password: '');
                     await model.updatePasswordModel();
                     if (mounted) setState(() {});
-                  }, !locked)),
+                  }, !locked && !pwDisabled)),
             // if (usePassword)
             //   hide_cm(!locked).marginOnly(left: _kContentHSubMargin - 6),
             if (usePassword) radios[2],
@@ -3408,6 +3434,9 @@ const Map<String, String> _kNemoSettingTips = {
       'Set or change the fixed password for incoming access.',
   'clear-permanent-password':
       'Remove the fixed password so only the one-time password works.',
+  // Machine policies (Sciter NEMO_SETTING_TIPS has the same two option keys).
+  kNemoOptionDisableLocalPassword: kNemoTipDisableLocalPassword,
+  kNemoOptionLdapLoginSufficient: kNemoTipLdapLoginSufficient,
   'tpl-6': 'Make the one-time password 6 characters long.',
   'tpl-8': 'Make the one-time password 8 characters long.',
   'tpl-10': 'Make the one-time password 10 characters long.',

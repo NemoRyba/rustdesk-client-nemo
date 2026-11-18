@@ -978,6 +978,14 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("This computer only accepts sessions authorized by your TBFDesk server. Sign in to TBFDesk and connect again.", "Dieser Computer akzeptiert nur Sitzungen, die Ihr TBFDesk-Server autorisiert hat. Melden Sie sich bei TBFDesk an und verbinden Sie sich erneut."),
         ("user {} is not permitted to control this computer", "Benutzer „{}“ darf diesen Computer nicht steuern"),
         ("the connecting computer is not permitted to control this computer", "der verbindende Computer darf diesen Computer nicht steuern"),
+        // Machine policy "disable local password" (nemo_control::LOGIN_MSG_LOCAL_PASSWORD_DISABLED)
+        // and the managed rows of the Password settings (Sciter index.tis, Flutter desktop
+        // + Android) that show both machine policies.
+        ("Password login is disabled by policy on this computer. Sign in to TBFDesk with an account that may control it, and connect again.", "Die Anmeldung per Passwort ist auf diesem Computer durch eine Richtlinie deaktiviert. Melden Sie sich bei TBFDesk mit einem Konto an, das diesen Computer steuern darf, und verbinden Sie sich erneut."),
+        ("Password login disabled by policy", "Anmeldung per Passwort durch Richtlinie deaktiviert"),
+        ("Your administrator has disabled this computer's passwords: neither the one-time nor the permanent password is accepted. A session is admitted by a TBFDesk sign-in that may control this computer or, where the approval mode allows it, when you accept it here.", "Ihr Administrator hat die Passwörter dieses Computers deaktiviert: Weder das Einmalpasswort noch das permanente Passwort wird angenommen. Eine Sitzung wird über eine TBFDesk-Anmeldung zugelassen, die diesen Computer steuern darf, oder – wenn der Bestätigungsmodus es erlaubt – indem Sie sie hier bestätigen."),
+        ("Signed-in users connect without password (policy)", "Angemeldete Benutzer verbinden sich ohne Passwort (Richtlinie)"),
+        ("Your administrator lets users who are signed in to TBFDesk and may control this computer connect without its password. Everybody else still needs the password.", "Ihr Administrator erlaubt Benutzern, die bei TBFDesk angemeldet sind und diesen Computer steuern dürfen, sich ohne sein Passwort zu verbinden. Alle anderen benötigen weiterhin das Passwort."),
         ("the ticket was not issued by this management server", "die Autorisierung stammt nicht von diesem Verwaltungsserver"),
         ("the authorization has expired; the connecting computer must poll the server again", "die Autorisierung ist abgelaufen; der verbindende Computer muss sich erneut beim Server melden"),
         ("the authorization is dated in the future (check the clocks)", "die Autorisierung ist in die Zukunft datiert (Uhrzeit prüfen)"),

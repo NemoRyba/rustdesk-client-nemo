@@ -46,6 +46,23 @@ pub const OPTION_REQUIRE_CONTROL_TICKET: &str = "nemo-require-control-ticket";
 /// the controller's own "Lock after session end" toggle says. The target enforces it, so
 /// a controller cannot opt out.
 pub const OPTION_LOCK_AFTER_SESSION_END: &str = "nemo-lock-after-session-end";
+/// "Y" = a valid ticket for a SIGNED-IN user that names this machine stands in for the
+/// local password: the session is admitted without one. The password keeps working for
+/// everyone else. Only the password factor is replaced -- approve-mode "click" still asks
+/// the local user, and 2FA is still asked.
+pub const OPTION_LDAP_LOGIN_SUFFICIENT: &str = "nemo-ldap-login-sufficient";
+/// "Y" = this machine accepts none of its own passwords (one-time, permanent, preset,
+/// logon-screen, recent-session reconnect). What still admits a session: the ticket of a
+/// signed-in user who may control this machine (the password is gone, so this toggle on
+/// its own already makes the sign-in the credential), or -- where the approve mode offers
+/// the Accept button at all -- the person at the machine. Everything else is refused with
+/// LOGIN_MSG_LOCAL_PASSWORD_DISABLED.
+pub const OPTION_DISABLE_LOCAL_PASSWORD: &str = "nemo-disable-local-password";
+
+/// What a controller is told when this machine refuses it under "disable local password".
+/// A plain sentence: the controller translates it (lang/de.rs) and shows it as the login
+/// error, which also ends the attempt on controllers that predate the policy.
+pub const LOGIN_MSG_LOCAL_PASSWORD_DISABLED: &str = "Password login is disabled by policy on this computer. Sign in to TBFDesk with an account that may control it, and connect again.";
 
 /// Policy keys this module owns. They are always applied LOCKED, whatever the policy's
 /// allow_user_override says: a user must not be able to switch enforcement off on the
@@ -55,6 +72,8 @@ pub const NEMO_CONTROL_SETTINGS: &[&str] = &[
     OPTION_CONTROL_EPOCH,
     OPTION_REQUIRE_CONTROL_TICKET,
     OPTION_LOCK_AFTER_SESSION_END,
+    OPTION_LDAP_LOGIN_SUFFICIENT,
+    OPTION_DISABLE_LOCAL_PASSWORD,
 ];
 
 /// Tolerated clock difference between server and target, both ways.
@@ -255,6 +274,61 @@ pub fn lock_after_session_end() -> bool {
     Config::get_option(OPTION_LOCK_AFTER_SESSION_END) == "Y"
 }
 
+pub fn ldap_login_sufficient() -> bool {
+    Config::get_option(OPTION_LDAP_LOGIN_SUFFICIENT) == "Y"
+}
+
+pub fn local_password_disabled() -> bool {
+    Config::get_option(OPTION_DISABLE_LOCAL_PASSWORD) == "Y"
+}
+
+/// How a login on this target is decided before any password is looked at.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LoginRoute {
+    /// Admitted on the ticket alone: no password (2FA and the blocklist still apply).
+    Admit,
+    /// Put to the local user (Accept), as approve-mode "click" does. No password is
+    /// looked at, so a typed one is neither accepted nor counted as a failure.
+    AskLocalUser,
+    /// Refused: the local password is disabled and nothing else can admit this login.
+    Refuse,
+    /// The normal path, exactly as without these policies: approve mode, recent
+    /// session, password.
+    Normal,
+}
+
+/// The decision, kept pure so the whole matrix is unit-tested.
+/// - `ticket_user`: the user named by a VALID ticket presented on THIS login (None = no
+///   valid ticket; "" = a ticket without a signed-in user, which proves no person).
+/// - `click_only`: approve mode "click" (and not the logon-screen password exception):
+///   the local user must accept every session, a ticket included.
+/// - `click_offered`: the approve mode shows the local user an Accept button at all
+///   ("click" or "password or click"); with "password" it does not, so asking would be
+///   a dead end for the controller.
+///
+/// Both policies off -> always `Normal`: these switches can only change a machine that
+/// opted in, never weaken one that did not.
+pub fn login_route(
+    ticket_user: Option<&str>,
+    ldap_sufficient: bool,
+    local_password_disabled: bool,
+    click_only: bool,
+    click_offered: bool,
+) -> LoginRoute {
+    let signed_in = ticket_user.map(|u| !u.trim().is_empty()).unwrap_or(false);
+    if signed_in && (ldap_sufficient || local_password_disabled) && !click_only {
+        LoginRoute::Admit
+    } else if local_password_disabled {
+        if click_offered {
+            LoginRoute::AskLocalUser
+        } else {
+            LoginRoute::Refuse
+        }
+    } else {
+        LoginRoute::Normal
+    }
+}
+
 /// Combine two permission sets, the stricter one winning per feature: "off" from either
 /// side is off; otherwise "on" from either side is on; otherwise not decided.
 pub fn merge_strict(a: u64, b: u64) -> u64 {
@@ -289,6 +363,119 @@ pub fn log_grant(controller_id: &str, grant: &Option<Grant>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The approve modes as the target computes the two flags (connection.rs):
+    /// (click_only, click_offered).
+    const MODE_PASSWORD: (bool, bool) = (false, false);
+    const MODE_BOTH: (bool, bool) = (false, true);
+    const MODE_CLICK: (bool, bool) = (true, true);
+
+    #[test]
+    fn login_route_matrix() {
+        use LoginRoute::*;
+        let alice = Some("alice");
+        // (ticket user, ldap sufficient, local pw disabled, approve mode) -> route
+        let cases: &[(Option<&str>, bool, bool, (bool, bool), LoginRoute)] = &[
+            // LDAP sufficient: a signed-in user's valid ticket replaces the password...
+            (alice, true, false, MODE_BOTH, Admit),
+            (alice, true, false, MODE_PASSWORD, Admit),
+            // ...but not the local user's consent when the approve mode is click.
+            (alice, true, false, MODE_CLICK, Normal),
+            // ...and everybody else keeps the password (or click) as before.
+            (None, true, false, MODE_BOTH, Normal),
+            (None, true, false, MODE_PASSWORD, Normal),
+            // A ticket WITHOUT a signed-in user (sign-in optional) proves no person.
+            (Some(""), true, false, MODE_BOTH, Normal),
+            (Some("  "), true, false, MODE_PASSWORD, Normal),
+            // Local password disabled: the sign-in is the credential, with or without
+            // the "LDAP sufficient" switch...
+            (alice, false, true, MODE_BOTH, Admit),
+            (alice, true, true, MODE_PASSWORD, Admit),
+            (alice, false, true, MODE_PASSWORD, Admit),
+            // ...click still means the local user accepts every session...
+            (alice, true, true, MODE_CLICK, AskLocalUser),
+            (alice, false, true, MODE_CLICK, AskLocalUser),
+            // ...a session that is not signed in goes to the local user where the approve
+            // mode offers an Accept button...
+            (None, false, true, MODE_BOTH, AskLocalUser),
+            (None, true, true, MODE_CLICK, AskLocalUser),
+            (Some(""), false, true, MODE_BOTH, AskLocalUser),
+            // ...and is refused where it does not ("password only": nobody to ask).
+            (None, false, true, MODE_PASSWORD, Refuse),
+            (None, true, true, MODE_PASSWORD, Refuse),
+            (Some(""), true, true, MODE_PASSWORD, Refuse),
+            (Some("  "), false, true, MODE_PASSWORD, Refuse),
+        ];
+        for (user, ldap, nopw, (click_only, click_offered), want) in cases {
+            assert_eq!(
+                login_route(*user, *ldap, *nopw, *click_only, *click_offered),
+                *want,
+                "user={user:?} ldap={ldap} nopw={nopw} click_only={click_only} click_offered={click_offered}"
+            );
+        }
+    }
+
+    #[test]
+    fn both_policies_off_never_change_how_a_login_is_decided() {
+        // The never-weakens proof: with neither switch set, every input -- any ticket,
+        // any approve mode -- takes the normal path, i.e. today's code unchanged.
+        let users = [None, Some(""), Some("  "), Some("alice"), Some("admin")];
+        for user in users {
+            for click_only in [false, true] {
+                for click_offered in [false, true] {
+                    assert_eq!(
+                        login_route(user, false, false, click_only, click_offered),
+                        LoginRoute::Normal,
+                        "user={user:?} click_only={click_only} click_offered={click_offered}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn only_a_signed_in_ticket_admits_without_a_password() {
+        // Whatever the switches, Admit needs a named user: no ticket, or a ticket of a
+        // controller nobody signed in on, never skips the password / the local user.
+        for ldap in [false, true] {
+            for nopw in [false, true] {
+                for (click_only, click_offered) in [MODE_PASSWORD, MODE_BOTH, MODE_CLICK] {
+                    for user in [None, Some(""), Some(" \t ")] {
+                        assert_ne!(
+                            login_route(user, ldap, nopw, click_only, click_offered),
+                            LoginRoute::Admit,
+                            "user={user:?} ldap={ldap} nopw={nopw}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_disabled_local_password_never_takes_the_password_path() {
+        // With the local password disabled the normal (password) path is never chosen:
+        // the login is admitted on the ticket, put to the local user, or refused.
+        for ldap in [false, true] {
+            for (click_only, click_offered) in [MODE_PASSWORD, MODE_BOTH, MODE_CLICK] {
+                for user in [None, Some(""), Some("alice")] {
+                    assert_ne!(
+                        login_route(user, ldap, true, click_only, click_offered),
+                        LoginRoute::Normal,
+                        "user={user:?} ldap={ldap}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_machine_policy_keys_are_locked_policy_settings() {
+        // Applied LOCKED whatever allow_user_override says, and never stored as a plain
+        // setting (nemo_management_client keys both off this list).
+        assert!(NEMO_CONTROL_SETTINGS.contains(&OPTION_LDAP_LOGIN_SUFFICIENT));
+        assert!(NEMO_CONTROL_SETTINGS.contains(&OPTION_DISABLE_LOCAL_PASSWORD));
+    }
 
     fn issue(t: &Ticket, sk: &sign::SecretKey) -> String {
         let payload = serde_json::to_vec(t).unwrap();

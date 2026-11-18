@@ -37,6 +37,11 @@ class ServerModel with ChangeNotifier {
   String _temporaryPasswordLength = "";
   bool _allowNumericOneTimePassword = false;
   String _approveMode = "";
+  // TBFDesk: machine policies (kNemoOptionDisableLocalPassword /
+  // kNemoOptionLdapLoginSufficient), polled with the password state so the
+  // Settings and the one-time password follow a policy change live.
+  bool _localPasswordDisabled = false;
+  bool _ldapLoginSufficient = false;
   int _zeroClientLengthCounter = 0;
 
   late String _emptyIdShow;
@@ -81,6 +86,14 @@ class ServerModel with ChangeNotifier {
   }
 
   String get approveMode => _approveMode;
+
+  /// TBFDesk: "disable local password" policy -- this computer accepts none of its
+  /// own passwords (Sciter: nemoLocalPasswordDisabled in index.tis).
+  bool get localPasswordDisabled => _localPasswordDisabled;
+
+  /// TBFDesk: "LDAP login is sufficient" policy -- signed-in users who may control
+  /// this computer connect without its password (Sciter: nemoLdapLoginSufficient).
+  bool get ldapLoginSufficient => _ldapLoginSufficient;
 
   setVerificationMethod(String method) async {
     await bind.mainSetOption(key: kOptionVerificationMethod, value: method);
@@ -249,11 +262,26 @@ class ServerModel with ChangeNotifier {
       _approveMode = approveMode;
       update = true;
     }
+    final localPasswordDisabled =
+        (await bind.mainGetOption(key: kNemoOptionDisableLocalPassword)) == 'Y';
+    if (_localPasswordDisabled != localPasswordDisabled) {
+      _localPasswordDisabled = localPasswordDisabled;
+      update = true;
+    }
+    final ldapLoginSufficient =
+        (await bind.mainGetOption(key: kNemoOptionLdapLoginSufficient)) == 'Y';
+    if (_ldapLoginSufficient != ldapLoginSufficient) {
+      _ldapLoginSufficient = ldapLoginSufficient;
+      update = true;
+    }
     var stopped = await mainGetBoolOption(kOptionStopService);
     final oldPwdText = _serverPasswd.text;
+    // TBFDesk: a one-time password the policy refuses is not shown (Sciter parity:
+    // PasswordEyeArea shows "-").
     if (stopped ||
         verificationMethod == kUsePermanentPassword ||
-        _approveMode == 'click') {
+        _approveMode == 'click' ||
+        _localPasswordDisabled) {
       _serverPasswd.text = '-';
     } else {
       if (_serverPasswd.text != temporaryPassword &&

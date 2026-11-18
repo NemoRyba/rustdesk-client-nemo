@@ -349,6 +349,25 @@ mod test {
         assert!(!shown.contains("Protokoll"), "the reason is in the text, not in the log: {shown}");
     }
 
+    /// The "disable local password" refusal reaches the controller as the bare English
+    /// sentence and is translated THERE; the managed Password rows of both UIs use the
+    /// same keys. A missing entry shows German users English.
+    #[test]
+    fn the_local_password_policy_texts_have_german() {
+        use std::ops::Deref;
+        let de = super::de::T.deref();
+        for key in [
+            crate::nemo_control::LOGIN_MSG_LOCAL_PASSWORD_DISABLED,
+            "Password login disabled by policy",
+            "Your administrator has disabled this computer's passwords: neither the one-time nor the permanent password is accepted. A session is admitted by a TBFDesk sign-in that may control this computer or, where the approval mode allows it, when you accept it here.",
+            "Signed-in users connect without password (policy)",
+            "Your administrator lets users who are signed in to TBFDesk and may control this computer connect without its password. Everybody else still needs the password.",
+        ] {
+            let german = de.get(key).unwrap_or_else(|| panic!("no German for {key:?}"));
+            assert_ne!(*german, key, "German for {key:?} is the English text");
+        }
+    }
+
     #[test]
     fn test_extract_placeholders() {
         use super::extract_placeholder as f;

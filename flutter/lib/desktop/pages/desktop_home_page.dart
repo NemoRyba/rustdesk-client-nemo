@@ -440,8 +440,11 @@ class _DesktopHomePageState extends State<DesktopHomePage>
     RxBool refreshHover = false.obs;
     RxBool copyHover = false.obs;
     final textColor = Theme.of(context).textTheme.titleLarge?.color;
+    // TBFDesk: not while the "disable local password" policy would refuse it
+    // (Sciter PasswordEyeArea shows "-" then too).
     final showOneTime = model.approveMode != 'click' &&
-        model.verificationMethod != kUsePermanentPassword;
+        model.verificationMethod != kUsePermanentPassword &&
+        !model.localPasswordDisabled;
     // FT-04 / P7: double-click on the field or the copy icon (as Sciter and Android).
     // Copying only puts the text on the clipboard; it never changes the password.
     void copyOneTimePassword() {
@@ -450,6 +453,16 @@ class _DesktopHomePageState extends State<DesktopHomePage>
       Clipboard.setData(ClipboardData(text: text));
       showToast(translate("Copied"));
     }
+
+    final passwordField = TextFormField(
+      controller: model.serverPasswd,
+      readOnly: true,
+      decoration: InputDecoration(
+        border: InputBorder.none,
+        contentPadding: EdgeInsets.only(top: 14, bottom: 10),
+      ),
+      style: TextStyle(fontSize: 15),
+    ).workaroundFreezeLinuxMint();
     return Container(
       margin: EdgeInsets.only(left: 20.0, right: 16, top: 13, bottom: 13),
       child: Row(
@@ -478,16 +491,13 @@ class _DesktopHomePageState extends State<DesktopHomePage>
                       Expanded(
                         child: GestureDetector(
                           onDoubleTap: copyOneTimePassword,
-                          child: TextFormField(
-                            controller: model.serverPasswd,
-                            readOnly: true,
-                            decoration: InputDecoration(
-                              border: InputBorder.none,
-                              contentPadding:
-                                  EdgeInsets.only(top: 14, bottom: 10),
-                            ),
-                            style: TextStyle(fontSize: 15),
-                          ).workaroundFreezeLinuxMint(),
+                          // TBFDesk: say why it shows "-" (Sciter PasswordEyeArea title).
+                          child: model.localPasswordDisabled
+                              ? Tooltip(
+                                  message: translate(
+                                      'Password login disabled by policy'),
+                                  child: passwordField)
+                              : passwordField,
                         ),
                       ),
                       // Copy first (next to the field), refresh last with a wider gap,
