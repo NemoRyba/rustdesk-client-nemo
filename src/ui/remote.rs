@@ -1405,7 +1405,16 @@ impl SciterSession {
             .lc
             .write()
             .unwrap()
-            .initialize(id, conn_type, None, force_relay, None, None, None);
+            .initialize(
+                id,
+                conn_type,
+                None,
+                force_relay,
+                None,
+                None,
+                // a connection token handed over by the session window (Transfer file)
+                crate::common::take_conn_token_from_env(),
+            );
 
         Self(session)
     }
@@ -1800,8 +1809,17 @@ impl SciterSession {
 
     fn transfer_file(&mut self) {
         let id = self.get_id();
-        let args = vec!["--file-transfer", &id, &self.password];
-        if let Err(err) = crate::run_me(args) {
+        // P3 (operator decision 2026-11-18): the file-transfer window logs in with this
+        // session's connection token, as Flutter desktop does, so a typed password is not
+        // asked again -- handed over in the child's environment, not on its command line.
+        let result = match self.get_conn_token() {
+            Some(token) => crate::common::run_me_with_env(
+                vec!["--file-transfer", &id],
+                &[(crate::common::ENV_CONN_TOKEN, token.as_str())],
+            ),
+            None => crate::run_me(vec!["--file-transfer", &id, &self.password]),
+        };
+        if let Err(err) = result {
             log::error!("Failed to spawn file transfer: {}", err);
         }
     }

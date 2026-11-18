@@ -799,12 +799,37 @@ pub fn refresh_rendezvous_server() {
 }
 
 pub fn run_me<T: AsRef<std::ffi::OsStr>>(args: Vec<T>) -> std::io::Result<std::process::Child> {
+    run_me_with_env(args, &[])
+}
+
+/// The environment variable that hands a session's connection token to a child window
+/// (Sciter "Transfer file" from a session): the child logs in with it, without asking
+/// for the password again and without the password on a command line, which any local
+/// process can read. The child removes it from its own environment at once
+/// (`take_conn_token_from_env`). Same user only: /proc/<pid>/environ is private.
+pub const ENV_CONN_TOKEN: &str = "TBFDESK_CONN_TOKEN";
+
+/// Read and remove the connection token a parent window handed over (ENV_CONN_TOKEN).
+pub fn take_conn_token_from_env() -> Option<String> {
+    let token = std::env::var(ENV_CONN_TOKEN).ok().filter(|t| !t.is_empty());
+    std::env::remove_var(ENV_CONN_TOKEN);
+    token
+}
+
+/// `run_me` with extra environment variables for the child only.
+pub fn run_me_with_env<T: AsRef<std::ffi::OsStr>>(
+    args: Vec<T>,
+    envs: &[(&str, &str)],
+) -> std::io::Result<std::process::Child> {
     #[cfg(target_os = "linux")]
     if let Ok(appdir) = std::env::var("APPDIR") {
         let appimage_cmd = std::path::Path::new(&appdir).join("AppRun");
         if appimage_cmd.exists() {
             log::info!("path: {:?}", appimage_cmd);
-            return std::process::Command::new(appimage_cmd).args(&args).spawn();
+            return std::process::Command::new(appimage_cmd)
+                .args(&args)
+                .envs(envs.iter().copied())
+                .spawn();
         }
     }
     // Linux: current_exe() names the deleted file after a package upgrade under this
@@ -827,7 +852,7 @@ pub fn run_me<T: AsRef<std::ffi::OsStr>>(args: Vec<T>) -> std::io::Result<std::p
             force_foreground = true;
         }
     }
-    let result = cmd.args(&args).spawn();
+    let result = cmd.args(&args).envs(envs.iter().copied()).spawn();
     match result.as_ref() {
         Ok(_child) =>
         {
