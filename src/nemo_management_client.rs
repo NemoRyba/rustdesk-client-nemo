@@ -391,6 +391,16 @@ fn apply_session_revocation(terminate_sessions_before: u64) {
     if terminate_sessions_before == 0 {
         return;
     }
+    // Only the process that hosts the sessions may honour (and ack) a revocation. The
+    // window process polls too (start_server(false) starts this client), and on Linux it
+    // shares the config with the user's --server: when the window polled first it acked
+    // the revocation with no session to close, and the --server then saw it as already
+    // honoured -- Block / Cut never ended the session while a TBFDesk window was open
+    // (lab, 2026-11-18: acked 07:14:21, the blocked session still running minutes later).
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    if !crate::common::is_server_running() {
+        return;
+    }
     let acked = terminate_acked();
     if terminate_sessions_before <= acked {
         return; // already honoured this one
