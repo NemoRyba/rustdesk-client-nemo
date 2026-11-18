@@ -1191,6 +1191,20 @@ pub fn fill_displays(
     };
 
     let all_displays = get_displays();
+    // GNOME (50, lab 2026-11-18): a session restored from a remembered selection ("Remember
+    // this selection") reports EVERY stream at position (0, 0). Positions that collide are
+    // no positions: locate the streams as on KDE (size match, then the pointer probe) --
+    // otherwise sort_streams kept one of them and the second monitor vanished.
+    if all_displays.displays.len() > 1 {
+        let positions: Vec<(i32, i32)> = rdp_info.streams.iter().map(|s| s.position).collect();
+        if positions_collide(&positions) {
+            warn!(
+                "Wayland streams report colliding positions {:?}; locating them by size",
+                positions
+            );
+            HAS_POSITION_ATTR.store(false, Ordering::SeqCst);
+        }
+    }
     if !HAS_POSITION_ATTR.load(Ordering::SeqCst) {
         if all_displays.displays.len() > 1 {
             debug!("Multiple Wayland displays detected, adjusting stream positions accordingly.");
@@ -1640,6 +1654,41 @@ fn sort_streams(
             }
         }
     }
+    // Never drop a stream that matched no display (a wrong or missing position): it is
+    // still a screen the user chose to share. Both lists lost the same indices above, so
+    // what is left still lines up.
+    if !streams.is_empty() {
+        warn!(
+            "{} Wayland stream(s) matched no display position; kept at the end",
+            streams.len()
+        );
+        sorted_streams.extend(streams.drain(..));
+        sorted_shared_displays.extend(shared_displays.drain(..));
+    }
     *streams = sorted_streams;
     *shared_displays = sorted_shared_displays;
+}
+
+/// Two or more streams at the same position: the compositor gave no usable positions.
+fn positions_collide(positions: &[(i32, i32)]) -> bool {
+    let mut seen = std::collections::HashSet::new();
+    positions.iter().any(|p| !seen.insert(*p))
+}
+
+#[cfg(test)]
+mod nemo_position_tests {
+    use super::positions_collide;
+
+    #[test]
+    fn restored_gnome_sessions_with_all_streams_at_the_origin_collide() {
+        assert!(positions_collide(&[(0, 0), (0, 0)]));
+        assert!(positions_collide(&[(0, 0), (1280, 0), (0, 0)]));
+    }
+
+    #[test]
+    fn distinct_positions_and_single_streams_do_not_collide() {
+        assert!(!positions_collide(&[(0, 0), (1280, 0)]));
+        assert!(!positions_collide(&[(0, 0)]));
+        assert!(!positions_collide(&[]));
+    }
 }
