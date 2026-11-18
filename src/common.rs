@@ -807,6 +807,11 @@ pub fn run_me<T: AsRef<std::ffi::OsStr>>(args: Vec<T>) -> std::io::Result<std::p
             return std::process::Command::new(appimage_cmd).args(&args).spawn();
         }
     }
+    // Linux: current_exe() names the deleted file after a package upgrade under this
+    // running process (FT-11); exe_for_spawn() starts the binary installed in its place.
+    #[cfg(target_os = "linux")]
+    let cmd = crate::platform::linux::exe_for_spawn()?;
+    #[cfg(not(target_os = "linux"))]
     let cmd = std::env::current_exe()?;
     let mut cmd = std::process::Command::new(cmd);
     #[cfg(windows)]

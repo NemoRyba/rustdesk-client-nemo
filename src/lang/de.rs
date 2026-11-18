@@ -906,6 +906,7 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("nemo_reset_prefs_none", "Für diesen Computer ist noch nichts gespeichert."),
         ("Already connected", "Bereits verbunden"),
         ("nemo_already_connected_tip", "diese Verbindung ist bereits in einem eigenen Fenster geöffnet (siehe Taskleiste). Verbindungen zu anderen Computern gleichzeitig sind davon nicht betroffen."),
+        ("nemo_app_updated_restart_tip", "TBFDesk wurde aktualisiert oder entfernt, während dieses Fenster offen war, daher konnte das Verbindungsfenster nicht gestartet werden. Bitte TBFDesk ganz schließen und neu öffnen."),
         ("nemo_company_only_tip", "Sperrt IDs aus dem öffentlichen Netz wie id@public. ID-Server leeren und diese Option abwählen, um das öffentliche Netz wieder zu nutzen."),
         ("nemo_lang_de", "Deutsch (Deutschland)"),
         ("nemo_lang_de_at", "Deutsch (Österreich)"),

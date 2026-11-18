@@ -1101,7 +1101,8 @@ where
         Some(id_name) => id_name,
         None => get_active_user_id_name(),
     };
-    let cmd = std::env::current_exe()?;
+    // (not current_exe(): after an upgrade under a running service it names the deleted file)
+    let cmd = exe_for_spawn()?;
     if uid.is_empty() {
         bail!("No valid uid");
     }
@@ -2015,6 +2016,183 @@ pub fn run_cmds_privileged(cmds: &str) -> bool {
     crate::platform::gtk_sudo::run(vec![cmds]).is_ok()
 }
 
+/// What `/proc/self/exe` -- and so `std::env::current_exe()` -- reads once the file this
+/// process was started from has been unlinked.
+const DELETED_EXE_SUFFIX: &str = " (deleted)";
+
+/// Where the TBFDesk packages put the binary: the .deb, the Arch package and the Flutter
+/// bundle install /usr/share/rustdesk/rustdesk and link /usr/bin/rustdesk (and
+/// /usr/bin/tbfdesk) to it; the generic tarball installs /usr/bin/rustdesk itself. The
+/// links come last: the .deb's prerm removes /usr/bin/rustdesk and only postinst puts it
+/// back.
+const INSTALLED_EXES: [&str; 3] = [
+    "/usr/share/rustdesk/rustdesk",
+    "/usr/bin/rustdesk",
+    "/usr/bin/tbfdesk",
+];
+
+/// The binary to start a child process from, given what `/proc/self/exe` reads (`current`)
+/// and a test for "is a startable file". Order: `current` itself; `current` without the
+/// " (deleted)" mark (an upgrade renamed the new binary over the running one, the usual
+/// case for dpkg, pacman and `install`); for an installed client (under /usr) the package
+/// locations (the Flutter tarball installer swaps the whole /usr/share/rustdesk directory,
+/// so the running binary then reads "/usr/share/rustdesk.old/rustdesk (deleted)"). A
+/// binary run from anywhere else never falls back to another installation. None = nothing
+/// startable. Kept free of file system access so it can be unit tested.
+fn pick_exe_for_spawn(current: &Path, is_exe: impl Fn(&Path) -> bool) -> Option<PathBuf> {
+    if is_exe(current) {
+        return Some(current.to_path_buf());
+    }
+    let shown = current.to_string_lossy();
+    let original = match shown.strip_suffix(DELETED_EXE_SUFFIX) {
+        Some(p) => PathBuf::from(p),
+        None => current.to_path_buf(),
+    };
+    if original.as_path() != current && is_exe(original.as_path()) {
+        return Some(original);
+    }
+    if !original.starts_with("/usr") {
+        return None;
+    }
+    INSTALLED_EXES
+        .iter()
+        .map(|p| PathBuf::from(*p))
+        .find(|p| p.as_path() != current && is_exe(p.as_path()))
+}
+
+fn is_startable_file(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+/// The binary to start TBFDesk child processes from (session windows, file transfer, tray,
+/// connection manager, the sudo helper, console windows): normally `current_exe()`.
+///
+/// FT-11: upgrading the package while a TBFDesk window is open replaces the binary on disk;
+/// `/proc/self/exe` then names the unlinked file, "<path> (deleted)", and every spawn from
+/// the old window failed with "No such file or directory" -- Connect opened nothing until
+/// the window was closed and reopened. Now the binary installed in its place is started
+/// (logged). When nothing startable is found, `current_exe()` is returned unchanged and the
+/// spawn fails with the operating system's error, as before.
+pub fn exe_for_spawn() -> std::io::Result<PathBuf> {
+    let current = std::env::current_exe()?;
+    match pick_exe_for_spawn(&current, is_startable_file) {
+        Some(exe) => {
+            if exe != current {
+                log::warn!(
+                    "{} was replaced or removed (TBFDesk upgraded while running?); starting {} instead",
+                    current.display(),
+                    exe.display()
+                );
+            }
+            Ok(exe)
+        }
+        None => {
+            log::error!(
+                "{} was replaced or removed and nothing startable is in its place (an installed client also looks at {:?})",
+                current.display(),
+                INSTALLED_EXES
+            );
+            Ok(current)
+        }
+    }
+}
+
+/// True when the file this process was started from is gone or replaced (TBFDesk was
+/// upgraded or removed while this window stayed open). For the UI's message when a child
+/// process could not be started even so.
+pub fn exe_was_replaced() -> bool {
+    std::env::current_exe()
+        .map(|p| !is_startable_file(&p))
+        .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod exe_for_spawn_tests {
+    use super::pick_exe_for_spawn;
+    use std::path::{Path, PathBuf};
+
+    fn pick(current: &str, present: &[&str]) -> Option<PathBuf> {
+        pick_exe_for_spawn(Path::new(current), |p: &Path| {
+            present.iter().any(|x| Path::new(x) == p)
+        })
+    }
+
+    #[test]
+    fn the_running_binary_is_used_while_it_is_there() {
+        let exe = "/usr/share/rustdesk/rustdesk";
+        assert_eq!(pick(exe, &[exe]), Some(PathBuf::from(exe)));
+        let dev = "/home/u/rustdesk/target/release/rustdesk";
+        assert_eq!(pick(dev, &[dev]), Some(PathBuf::from(dev)));
+    }
+
+    #[test]
+    fn an_upgraded_binary_is_started_from_its_path() {
+        // dpkg / pacman renamed the new binary over the running one (FT-11)
+        assert_eq!(
+            pick(
+                "/usr/share/rustdesk/rustdesk (deleted)",
+                &["/usr/share/rustdesk/rustdesk", "/usr/bin/rustdesk"]
+            ),
+            Some(PathBuf::from("/usr/share/rustdesk/rustdesk"))
+        );
+        // the generic tarball installs /usr/bin/rustdesk itself
+        assert_eq!(
+            pick("/usr/bin/rustdesk (deleted)", &["/usr/bin/rustdesk"]),
+            Some(PathBuf::from("/usr/bin/rustdesk"))
+        );
+        // a rebuilt development binary
+        let dev = "/home/u/rustdesk/target/release/rustdesk";
+        assert_eq!(
+            pick(&format!("{dev} (deleted)"), &[dev]),
+            Some(PathBuf::from(dev))
+        );
+    }
+
+    #[test]
+    fn a_moved_installation_falls_back_to_the_package_location() {
+        // the Flutter tarball installer swaps the whole directory
+        assert_eq!(
+            pick(
+                "/usr/share/rustdesk.old/rustdesk (deleted)",
+                &["/usr/share/rustdesk/rustdesk"]
+            ),
+            Some(PathBuf::from("/usr/share/rustdesk/rustdesk"))
+        );
+        // tarball install replaced by the .deb: /usr/bin/rustdesk is now the link
+        assert_eq!(
+            pick("/usr/bin/rustdesk (deleted)", &["/usr/share/rustdesk/rustdesk"]),
+            Some(PathBuf::from("/usr/share/rustdesk/rustdesk"))
+        );
+        // the package directory not back yet: the links
+        assert_eq!(
+            pick("/usr/share/rustdesk/rustdesk (deleted)", &["/usr/bin/tbfdesk"]),
+            Some(PathBuf::from("/usr/bin/tbfdesk"))
+        );
+    }
+
+    #[test]
+    fn nothing_startable_or_not_installed_gives_none() {
+        // uninstalled while the window stayed open
+        assert_eq!(pick("/usr/share/rustdesk/rustdesk (deleted)", &[]), None);
+        // a binary outside /usr never switches to another installation
+        assert_eq!(
+            pick(
+                "/home/u/rustdesk/target/release/rustdesk (deleted)",
+                &["/usr/share/rustdesk/rustdesk", "/usr/bin/rustdesk"]
+            ),
+            None
+        );
+        // "/usrx" is not under /usr
+        assert_eq!(
+            pick("/usrx/rustdesk (deleted)", &["/usr/share/rustdesk/rustdesk"]),
+            None
+        );
+    }
+}
+
 /// Spawn the current executable after a delay.
 ///
 /// # Security
@@ -2025,7 +2203,7 @@ pub fn run_cmds_privileged(cmds: &str) -> bool {
 /// # Arguments
 /// * `secs` - Number of seconds to wait before spawning
 pub fn run_me_with(secs: u32) {
-    let exe = match std::env::current_exe() {
+    let exe = match exe_for_spawn() {
         Ok(path) => path,
         Err(e) => {
             log::error!("Failed to get current exe: {}", e);

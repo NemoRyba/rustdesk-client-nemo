@@ -594,11 +594,21 @@ pub fn open_window(id: &str, admin: bool, force_relay: bool) -> String {
             Ok(dir) if std::path::Path::new(&dir).join("AppRun").exists() => {
                 std::path::Path::new(&dir).join("AppRun")
             }
-            _ => match std::env::current_exe() {
+            // (not current_exe(): after an upgrade under this window it names the deleted
+            // file, and the terminal would open on "No such file or directory", FT-11)
+            _ => match crate::platform::linux::exe_for_spawn() {
                 Ok(p) => p,
                 Err(e) => return format!("{}: {}", tr("Failed"), e),
             },
         };
+        // Nothing startable in its place (TBFDesk removed while this window stayed open,
+        // exe_for_spawn then returns the deleted path): a terminal would still open and
+        // only show "No such file or directory", and Connect would look fine. Say it here,
+        // with the same text as new_remote's error box.
+        if !exe.is_file() {
+            log::error!("console session: {} is not startable", exe.display());
+            return tr("nemo_app_updated_restart_tip");
+        }
         for (term, exec_flag) in linux_terminals() {
             let mut cmd = std::process::Command::new(&term);
             if !exec_flag.is_empty() {

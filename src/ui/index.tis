@@ -237,10 +237,15 @@ function createNewConnect(id, type) {
         if (err) msgbox("custom-error", "Error", err);
         return;
     }
-    if (!handler.new_remote(id, type, force_relay)) {
+    var started = handler.new_remote(id, type, force_relay);
+    if (started == "already-open") {
         // Already open (the window was brought forward where possible). Sessions to
         // other computers are not affected.
         msgbox("custom-nocancel", "Already connected", formatId(id) + " — " + translate("nemo_already_connected_tip"));
+    } else if (started) {
+        // The session window could not be started (FT-11: e.g. TBFDesk was upgraded or
+        // removed while this window stayed open); it used to fail without a word.
+        msgbox("custom-error", "Error", started);
     }
 }
 

@@ -1354,12 +1354,22 @@ pub fn recent_sessions_updated() -> bool {
     }
 }
 
+/// `new_remote`'s answer when a session of this type to this peer is already open.
 #[cfg(not(any(target_os = "android", target_os = "ios", feature = "flutter")))]
-/// Returns false when a session of this type to this peer is already open: nothing is
-/// started, its window is brought forward where the platform allows it, and the caller
-/// says so (it used to return silently, and a second click looked broken). Sessions to
-/// other peers are unaffected.
-pub fn new_remote(id: String, remote_type: String, force_relay: bool) -> bool {
+pub const NEW_REMOTE_ALREADY_OPEN: &str = "already-open";
+
+#[cfg(not(any(target_os = "android", target_os = "ios", feature = "flutter")))]
+/// Starts the session window; returns "" when it was started.
+///
+/// [`NEW_REMOTE_ALREADY_OPEN`] when a session of this type to this peer is already open:
+/// nothing is started, its window is brought forward where the platform allows it, and the
+/// caller says so (it used to return silently, and a second click looked broken). Sessions
+/// to other peers are unaffected.
+///
+/// Otherwise the window could not be started, and the text is for an error box. FT-11: a
+/// failed spawn used to be logged only, so Connect looked dead. The texts are untranslated
+/// (the Sciter message box translates them).
+pub fn new_remote(id: String, remote_type: String, force_relay: bool) -> String {
     let mut lock = CHILDREN.lock().unwrap();
     let mut args = vec![format!("--{}", remote_type), id.clone()];
     if force_relay {
@@ -1379,19 +1389,33 @@ pub fn new_remote(id: String, remote_type: String, force_relay: bool) -> bool {
             } else {
                 #[cfg(windows)]
                 crate::platform::windows::raise_process_windows(c.id());
-                return false;
+                return NEW_REMOTE_ALREADY_OPEN.to_owned();
             }
         }
     }
     match crate::run_me(args) {
         Ok(child) => {
             lock.1.insert(key, child);
+            String::new()
         }
         Err(err) => {
             log::error!("Failed to spawn remote: {}", err);
+            spawn_failed_text(&err)
         }
     }
-    true
+}
+
+/// The error box text when a TBFDesk child process could not be started. Linux: when the
+/// program file of this window was replaced or removed (upgraded or uninstalled while the
+/// window stayed open) and no installed binary could be started instead, the user is told
+/// to restart TBFDesk; the raw "No such file or directory" said nothing (FT-11).
+#[cfg(not(any(target_os = "android", target_os = "ios", feature = "flutter")))]
+fn spawn_failed_text(err: &std::io::Error) -> String {
+    #[cfg(target_os = "linux")]
+    if crate::platform::linux::exe_was_replaced() {
+        return "nemo_app_updated_restart_tip".to_owned();
+    }
+    format!("Failed: {}", err)
 }
 
 // Make sure `SENDER` is inited here.
