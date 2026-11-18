@@ -276,7 +276,8 @@ pub struct Connection {
     /// credential step (password, recent session, management ticket). An Auth2fa message
     /// is only an answer to that question: without it the code alone would admit a session
     /// that never presented a password or ticket -- past "disable local password" and
-    /// "require management authorization". Cleared on every login request.
+    /// "require management authorization". Cleared on every login request and on every
+    /// switch-sides login (authorize_switch_sides).
     tfa_requested: bool,
     keyboard: bool,
     clipboard: bool,
@@ -288,8 +289,9 @@ pub struct Connection {
     privacy_mode: bool,
     control_permissions: Option<ControlPermissions>,
     /// The management grant of the CURRENT login (a valid control ticket), or None.
-    /// Reset on every login request; read by `nemo_login_route` (machine policies "LDAP
-    /// login is sufficient" / "disable local password").
+    /// Reset on every login request and switch-sides login (apply_management_authorization);
+    /// read by `nemo_login_route` (machine policies "LDAP login is sufficient" / "disable
+    /// local password").
     nemo_grant: Option<crate::nemo_control::Grant>,
     last_test_delay: Option<Instant>,
     network_delay: u32,
@@ -1653,6 +1655,10 @@ impl Connection {
                 .await;
             return false;
         }
+        // `from_switch`: the local user started this session by clicking Switch Sides. That
+        // is their own decision, like the Accept click (ipc::Data::Authorize takes
+        // require_2fa), so no 2FA is asked. The ticket, blocklist and "disable local
+        // password" were already checked (authorize_switch_sides).
         if self.require_2fa.is_some() && !self.is_recent_session(true) && !self.from_switch {
             self.require_2fa.as_ref().map(|totp| {
                 let bot = crate::auth_2fa::TelegramBot::get();
@@ -2683,6 +2689,59 @@ impl Connection {
         sleep(1.).await;
     }
 
+    /// TBFDesk (S-1): the login gates of a switch-sides connect-back whose one-time uuid
+    /// matched (see the `SwitchSidesResponse` arm). The uuid proves only that the person
+    /// at this machine started the switch, so it replaces only the password / Accept
+    /// step. The management authorization a LoginRequest passes still applies, in the
+    /// same order and with the same refusals (nemo_control::switch_sides_decision).
+    /// Before this, the connect-back skipped every one of them: the ticket, "require
+    /// management authorization" and "disable local password". It also skipped the admin's
+    /// per-user permissions, and the session-kind permissions on a crafted `lr.union`.
+    /// Returns false when the connection must be closed; the refusal has been sent.
+    #[cfg(feature = "flutter")]
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    async fn authorize_switch_sides(&mut self, lr: &LoginRequest) -> bool {
+        // A new login: no 2FA question of an earlier login on this connection carries over.
+        self.tfa_requested = false;
+        self.handle_login_request_without_validation(lr).await;
+        // The same call as the LoginRequest arm. It verifies the ticket and its device-key
+        // proof over THIS connection's challenge. A 1.4.14+ controller sends both in
+        // `SwitchSidesResponse.lr` (client.rs send_switch_login_request ->
+        // create_login_msg). It also refuses where a ticket is required and none is valid,
+        // refuses a ticket that does not list this machine, and applies the admin's
+        // permissions of a valid one.
+        if !self.apply_management_authorization(lr).await {
+            return false;
+        }
+        // click_only = true: clicking Switch Sides was this session's Accept. It does not
+        // change a Refuse, which is all the switch looks at.
+        match crate::nemo_control::switch_sides_decision(
+            lr.union.is_none(),
+            self.nemo_login_route(true),
+        ) {
+            crate::nemo_control::SwitchSides::Admit => true,
+            crate::nemo_control::SwitchSides::RefuseKind => {
+                log::warn!(
+                    "switch sides from {} refused: it asked for a session other than remote desktop",
+                    lr.my_id
+                );
+                self.post_conn_audit(json!({
+                    "action": "refused",
+                    "reason": "switch sides asked for a session other than remote desktop",
+                    "path": self.path,
+                }));
+                self.send_login_error(crate::nemo_control::LOGIN_MSG_SWITCH_SIDES_DESKTOP_ONLY)
+                    .await;
+                sleep(1.).await;
+                false
+            }
+            crate::nemo_control::SwitchSides::RefuseLocalPasswordDisabled => {
+                self.refuse_local_password_disabled(&lr.my_id).await;
+                false
+            }
+        }
+    }
+
     /// The permissions sent to the controller with `send_permission` (see `start`), as
     /// they stand now.
     fn nemo_sent_permissions(&self) -> [(Permission, bool); 8] {
@@ -3196,10 +3255,20 @@ impl Connection {
                 }
             }
         } else if let Some(message::Union::SwitchSidesResponse(_s)) = msg.union {
+            // Switch sides (Flutter desktop). The local user, controlling the peer, clicked
+            // "Switch Sides": ipc SwitchSidesRequest stored a one-time uuid for the peer's
+            // id (insert_switch_sides_uuid), and the uuid went to the peer in
+            // Misc.SwitchSidesRequest. The peer's server starts `--connect <this id>
+            // --switch_uuid <uuid>`. After this machine's Hash, that client sends
+            // SwitchSidesResponse { uuid, lr }, built like a LoginRequest without a password:
+            // ticket and device-key proof included.
+            // TBFDesk (S-1): the uuid stands only for the local user's consent. The login
+            // state is taken from `lr` only once the uuid matched, so an unsolicited
+            // response cannot rewrite a pending login, e.g. its id before Accept.
+            // authorize_switch_sides then runs the gates of a login.
             #[cfg(feature = "flutter")]
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
             if let Some(lr) = _s.lr.clone().take() {
-                self.handle_login_request_without_validation(&lr).await;
                 SWITCH_SIDES_UUID
                     .lock()
                     .unwrap()
@@ -3208,6 +3277,9 @@ impl Connection {
                 if let Ok(uuid) = uuid::Uuid::from_slice(_s.uuid.to_vec().as_ref()) {
                     if let Some((_instant, uuid_old)) = uuid_old {
                         if uuid == uuid_old {
+                            if !self.authorize_switch_sides(&lr).await {
+                                return false;
+                            }
                             self.from_switch = true;
                             if !self.send_logon_response_and_keep_alive().await {
                                 return false;
