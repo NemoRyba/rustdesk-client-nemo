@@ -133,6 +133,27 @@ mod linux_window {
         }
     }
 
+    /// The screen and the index of the monitor that holds most of the window now.
+    ///
+    /// SAFETY: `w` must be a live GtkWindow, used on the UI thread.
+    unsafe fn current_monitor(
+        w: *mut gtk_sys::GtkWindow,
+    ) -> Option<(*mut gdk_sys::GdkScreen, std::os::raw::c_int)> {
+        let gw = gtk_sys::gtk_widget_get_window(w as *mut gtk_sys::GtkWidget);
+        let display = gtk_sys::gtk_widget_get_display(w as *mut gtk_sys::GtkWidget);
+        let screen = gtk_sys::gtk_window_get_screen(w);
+        if gw.is_null() || display.is_null() || screen.is_null() {
+            return None;
+        }
+        let at = gdk_sys::gdk_display_get_monitor_at_window(display, gw);
+        if at.is_null() {
+            return None;
+        }
+        (0..gdk_sys::gdk_display_get_n_monitors(display))
+            .find(|i| gdk_sys::gdk_display_get_monitor(display, *i) == at)
+            .map(|i| (screen, i))
+    }
+
     /// The window's state in Sciter's numbering, from GDK's flags; 0 when GTK has no
     /// window for it (not realized yet).
     pub fn state(hwnd: HWINDOW) -> i32 {
@@ -176,7 +197,17 @@ mod linux_window {
                 if frame {
                     gtk_sys::gtk_window_set_decorated(w, 0);
                 }
-                gtk_sys::gtk_window_fullscreen(w);
+                // On the monitor the window is on NOW, by its real position. A plain
+                // fullscreen request lets the window manager pick, and right after a
+                // display-mode change (span over both monitors -> one window on monitor
+                // 2) mutter still had it on monitor 1 and filled that one instead (lab,
+                // Ubuntu 26.04, two monitors, 2026-11-18).
+                match current_monitor(w) {
+                    Some((screen, monitor)) => {
+                        gtk_sys::gtk_window_fullscreen_on_monitor(w, screen, monitor)
+                    }
+                    None => gtk_sys::gtk_window_fullscreen(w),
+                }
             } else {
                 gtk_sys::gtk_window_unfullscreen(w);
                 if frame {
