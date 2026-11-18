@@ -1655,10 +1655,12 @@ impl Connection {
                 .await;
             return false;
         }
-        // `from_switch`: the local user started this session by clicking Switch Sides. That
-        // is their own decision, like the Accept click (ipc::Data::Authorize takes
-        // require_2fa), so no 2FA is asked. The ticket, blocklist and "disable local
-        // password" were already checked (authorize_switch_sides).
+        // `from_switch`: no 2FA is asked, as in stock RustDesk. Either the local user started
+        // this session by clicking Switch Sides, which is their own decision like the
+        // Accept click (ipc::Data::Authorize takes require_2fa). Or it is the switch back of
+        // the controller this machine admitted, with whatever 2FA that login needed, in the
+        // session that started the first switch. Nobody here is asked then. The ticket, blocklist and "disable
+        // local password" were already checked (authorize_switch_sides).
         if self.require_2fa.is_some() && !self.is_recent_session(true) && !self.from_switch {
             self.require_2fa.as_ref().map(|totp| {
                 let bot = crate::auth_2fa::TelegramBot::get();
@@ -2690,10 +2692,11 @@ impl Connection {
     }
 
     /// TBFDesk (S-1): the login gates of a switch-sides connect-back whose one-time uuid
-    /// matched (see the `SwitchSidesResponse` arm). The uuid proves only that the person
-    /// at this machine started the switch, so it replaces only the password / Accept
-    /// step. The management authorization a LoginRequest passes still applies, in the
-    /// same order and with the same refusals (nemo_control::switch_sides_decision).
+    /// matched (see the `SwitchSidesResponse` arm). The uuid proves only that this machine
+    /// asked for the switch: its local user clicked Switch Sides, or (switch back) its own
+    /// client answered the controller it had admitted. So it replaces only the password /
+    /// Accept step. The management authorization a LoginRequest passes still applies, in
+    /// the same order and with the same refusals (nemo_control::switch_sides_decision).
     /// Before this, the connect-back skipped every one of them: the ticket, "require
     /// management authorization" and "disable local password". It also skipped the admin's
     /// per-user permissions, and the session-kind permissions on a crafted `lr.union`.
@@ -2713,8 +2716,8 @@ impl Connection {
         if !self.apply_management_authorization(lr).await {
             return false;
         }
-        // click_only = true: clicking Switch Sides was this session's Accept. It does not
-        // change a Refuse, which is all the switch looks at.
+        // click_only = true: the uuid stands where approve-mode click's Accept would.
+        // click_only never changes a Refuse, which is all the switch looks at.
         match crate::nemo_control::switch_sides_decision(
             lr.union.is_none(),
             self.nemo_login_route(true),
@@ -3255,17 +3258,19 @@ impl Connection {
                 }
             }
         } else if let Some(message::Union::SwitchSidesResponse(_s)) = msg.union {
-            // Switch sides (Flutter desktop). The local user, controlling the peer, clicked
-            // "Switch Sides": ipc SwitchSidesRequest stored a one-time uuid for the peer's
-            // id (insert_switch_sides_uuid), and the uuid went to the peer in
+            // Switch sides (Flutter desktop). This machine's client, controlling the peer,
+            // asked to switch: the local user clicked "Switch Sides", or (switch back) the
+            // client did it automatically when the peer pressed Switch Sides in its CM
+            // (model.dart `switch_back`). ipc SwitchSidesRequest stored a one-time uuid for
+            // the peer's id (insert_switch_sides_uuid), and the uuid went to the peer in
             // Misc.SwitchSidesRequest. The peer's server starts `--connect <this id>
             // --switch_uuid <uuid>`. After this machine's Hash, that client sends
             // SwitchSidesResponse { uuid, lr }, built like a LoginRequest without a password:
             // ticket and device-key proof included.
-            // TBFDesk (S-1): the uuid stands only for the local user's consent. The login
-            // state is taken from `lr` only once the uuid matched, so an unsolicited
-            // response cannot rewrite a pending login, e.g. its id before Accept.
-            // authorize_switch_sides then runs the gates of a login.
+            // TBFDesk (S-1): the uuid stands only for that request. The login state is taken
+            // from `lr` only once the uuid matched, so an unsolicited response cannot
+            // rewrite a pending login, e.g. its id before Accept. authorize_switch_sides then
+            // runs the gates of a login.
             #[cfg(feature = "flutter")]
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
             if let Some(lr) = _s.lr.clone().take() {

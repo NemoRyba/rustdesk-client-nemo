@@ -342,18 +342,28 @@ pub const LOGIN_MSG_SWITCH_SIDES_DESKTOP_ONLY: &str =
 
 /// How the target decides a switch-sides connect-back (Flutter desktop only).
 ///
-/// The person at THIS machine clicked "Switch Sides" in a session they were controlling.
-/// This machine handed the other side a one-time uuid; the other side now connects back
-/// with it (`SwitchSidesResponse` in server/connection.rs). The uuid is that person's
-/// consent, so it stands where the password or the Accept click would stand, and for
-/// nothing else. What decides a normal login still decides this one:
+/// This machine handed the other side a one-time uuid. The other side now connects back
+/// with it (`SwitchSidesResponse` in server/connection.rs). The uuid comes from one of two
+/// flows:
+/// - **Switch sides:** the person at THIS machine clicked "Switch Sides" in a session
+///   they were controlling. The uuid is their consent.
+/// - **Switch back:** this machine's own client asked for the uuid automatically
+///   (model.dart `switch_back` -> sessionSwitchSides). It was answering the peer, which
+///   pressed "Switch Sides" in its connection-manager window. The peer is the
+///   controller this machine admitted, with password or ticket (and 2FA where required),
+///   in the session that started the first switch. Nobody here clicks anything. The uuid
+///   is bound to that earlier admission, like a recent-session reconnect.
+///
+/// Either way the uuid stands where the password or the Accept click would stand, and
+/// for nothing else. What decides a normal login still decides this one:
 /// - the management authorization (`apply_management_authorization`): the ticket,
 ///   "require management authorization", a ticket that does not list this machine;
 /// - the blocklist (`send_logon_response_and_keep_alive`);
 /// - "disable local password", through the same `login_route` as a login.
 ///
 /// The caller runs the ticket check first and passes the resulting route. 2FA is not
-/// asked: the session is the local user's own decision, as with the Accept click.
+/// asked, as in stock RustDesk: the switch was the local user's own decision, or (switch
+/// back) the return of a controller already admitted.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SwitchSides {
     /// Admitted on the uuid, as before these checks existed.
@@ -371,10 +381,9 @@ pub enum SwitchSides {
 ///   (`lr.union` is empty), as a real controller's always does.
 /// - `route`: `login_route` for the ticket this connect-back presented.
 ///
-/// Admit, AskLocalUser and Normal all admit: the local user has already accepted (they
-/// started the switch), and the uuid replaces the password. Only Refuse refuses. A
-/// login with the same ticket is refused there too, so the uuid opens nothing a login
-/// could not.
+/// Admit, AskLocalUser and Normal all admit: the uuid replaces the password and the
+/// Accept step (see above for what it stands for). Only Refuse refuses. A login with the
+/// same ticket is refused there too, so the uuid opens nothing a login could not.
 pub fn switch_sides_decision(plain_desktop: bool, route: LoginRoute) -> SwitchSides {
     if !plain_desktop {
         SwitchSides::RefuseKind
@@ -593,8 +602,8 @@ mod tests {
             }
             let signed_in = user.map(|u| !u.trim().is_empty()).unwrap_or(false);
             let want = if signed_in {
-                // A signed-in user's ticket admits; the local user's click on Switch
-                // Sides is the Accept that click mode would ask for.
+                // A signed-in user's ticket admits; the uuid stands where click mode's
+                // Accept would.
                 SwitchSides::Admit
             } else {
                 SwitchSides::RefuseLocalPasswordDisabled
