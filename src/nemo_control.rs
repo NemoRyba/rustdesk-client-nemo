@@ -334,6 +334,70 @@ pub fn login_route(
     }
 }
 
+/// What the target tells a switch-sides connect-back that asks for anything but a
+/// remote-desktop session. A real controller never does (it connects back with plain
+/// `--connect`), so this is not translated.
+pub const LOGIN_MSG_SWITCH_SIDES_DESKTOP_ONLY: &str =
+    "Switch sides only opens a remote desktop session.";
+
+/// How the target decides a switch-sides connect-back (Flutter desktop only).
+///
+/// This machine handed the other side a one-time uuid. The other side now connects back
+/// with it (`SwitchSidesResponse` in server/connection.rs). The uuid comes from one of two
+/// flows:
+/// - **Switch sides:** the person at THIS machine clicked "Switch Sides" in a session
+///   they were controlling. The uuid is their consent.
+/// - **Switch back:** this machine's own client asked for the uuid automatically
+///   (model.dart `switch_back` -> sessionSwitchSides). It was answering the peer, which
+///   pressed "Switch Sides" in its connection-manager window. The peer is the
+///   controller this machine admitted, with password or ticket (and 2FA where required),
+///   in the session that started the first switch. Nobody here clicks anything. The uuid
+///   is bound to that earlier admission, like a recent-session reconnect.
+///
+/// Either way the uuid stands where the password or the Accept click would stand, and
+/// for nothing else. What decides a normal login still decides this one:
+/// - the management authorization (`apply_management_authorization`): the ticket,
+///   "require management authorization", a ticket that does not list this machine;
+/// - the blocklist (`send_logon_response_and_keep_alive`);
+/// - "disable local password", through the same `login_route` as a login.
+///
+/// The caller runs the ticket check first and passes the resulting route. 2FA is not
+/// asked, as in stock RustDesk: the switch was the local user's own decision, or (switch
+/// back) the return of a controller already admitted.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SwitchSides {
+    /// Admitted on the uuid, as before these checks existed.
+    Admit,
+    /// Refused: the connect-back asked for file transfer, a camera, a terminal or a
+    /// tunnel, in its own `lr` or in an earlier LoginRequest on the same connection.
+    /// Only the login arm checks those permissions, and a switch never needs one.
+    RefuseKind,
+    /// Refused: the local password is disabled, and the connect-back carries no ticket
+    /// of a signed-in user (`LoginRoute::Refuse`, LOGIN_MSG_LOCAL_PASSWORD_DISABLED).
+    RefuseLocalPasswordDisabled,
+}
+
+/// The decision, kept pure so it is unit-tested against `login_route`.
+/// - `plain_desktop`: nothing on this connection names another session kind: the
+///   connect-back's `lr.union` is empty, and no earlier LoginRequest on the connection
+///   set file transfer, camera, terminal or a tunnel (the login arm sets those before
+///   the password is checked). A real controller's connect-back is always plain: it
+///   sends no LoginRequest before its SwitchSidesResponse.
+/// - `route`: `login_route` for the ticket this connect-back presented.
+///
+/// Admit, AskLocalUser and Normal all admit: the uuid replaces the password and the
+/// Accept step (see above for what it stands for). Only Refuse refuses. A login with the
+/// same ticket is refused there too, so the uuid opens nothing a login could not.
+pub fn switch_sides_decision(plain_desktop: bool, route: LoginRoute) -> SwitchSides {
+    if !plain_desktop {
+        SwitchSides::RefuseKind
+    } else if route == LoginRoute::Refuse {
+        SwitchSides::RefuseLocalPasswordDisabled
+    } else {
+        SwitchSides::Admit
+    }
+}
+
 /// Combine two permission sets, the stricter one winning per feature: "off" from either
 /// side is off; otherwise "on" from either side is on; otherwise not decided.
 pub fn merge_strict(a: u64, b: u64) -> u64 {
@@ -489,6 +553,113 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    /// Every input `login_route` takes, with `click_only` forced the way the switch-sides
+    /// arm passes it (true). `click_offered` is no longer part of the decision; it is
+    /// still varied.
+    fn every_switch_route() -> Vec<(Option<&'static str>, bool, bool, bool, LoginRoute)> {
+        let mut v = Vec::new();
+        for user in [None, Some(""), Some("  "), Some("alice"), Some("admin")] {
+            for ldap in [false, true] {
+                for nopw in [false, true] {
+                    for click_offered in [false, true] {
+                        v.push((
+                            user,
+                            ldap,
+                            nopw,
+                            click_offered,
+                            login_route(user, ldap, nopw, true, click_offered),
+                        ));
+                    }
+                }
+            }
+        }
+        v
+    }
+
+    #[test]
+    fn a_switch_is_admitted_as_before_when_neither_policy_is_set() {
+        // The never-weakens proof for switch sides: with neither machine policy, a plain
+        // connect-back is admitted on its uuid whatever ticket it carries. That is the
+        // old behaviour; the ticket check runs before and refuses on its own terms only
+        // where tickets are required or the ticket denies this machine.
+        // "LDAP login is sufficient" alone never refuses a switch either.
+        for (user, ldap, nopw, click_offered, route) in every_switch_route() {
+            if nopw {
+                continue;
+            }
+            assert_eq!(
+                switch_sides_decision(true, route),
+                SwitchSides::Admit,
+                "user={user:?} ldap={ldap} click_offered={click_offered}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_disabled_local_password_refuses_a_switch_without_a_signed_in_ticket() {
+        for (user, ldap, nopw, click_offered, route) in every_switch_route() {
+            if !nopw {
+                continue;
+            }
+            let signed_in = user.map(|u| !u.trim().is_empty()).unwrap_or(false);
+            let want = if signed_in {
+                // A signed-in user's ticket admits; the uuid stands where click mode's
+                // Accept would.
+                SwitchSides::Admit
+            } else {
+                SwitchSides::RefuseLocalPasswordDisabled
+            };
+            assert_eq!(
+                switch_sides_decision(true, route),
+                want,
+                "user={user:?} ldap={ldap} click_offered={click_offered}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_switch_is_refused_exactly_where_a_login_is_refused() {
+        // Same as a login: the switch refuses iff login_route refuses, for every input
+        // and every approve mode a login could see (click_only false or true).
+        for user in [None, Some(""), Some("alice")] {
+            for ldap in [false, true] {
+                for nopw in [false, true] {
+                    for (click_only, click_offered) in [MODE_PASSWORD, MODE_BOTH, MODE_CLICK] {
+                        let login = login_route(user, ldap, nopw, click_only, click_offered);
+                        let switch = switch_sides_decision(
+                            true,
+                            login_route(user, ldap, nopw, true, click_offered),
+                        );
+                        assert_eq!(
+                            login == LoginRoute::Refuse,
+                            switch != SwitchSides::Admit,
+                            "user={user:?} ldap={ldap} nopw={nopw} click_only={click_only}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_switch_never_opens_anything_but_a_desktop_session() {
+        // File transfer, camera, terminal or tunnel in a connect-back are refused for every
+        // route, an admitting ticket included: their permissions are only checked in the
+        // LoginRequest arm.
+        for route in [
+            LoginRoute::Admit,
+            LoginRoute::AskLocalUser,
+            LoginRoute::Normal,
+            LoginRoute::Refuse,
+        ] {
+            assert_eq!(
+                switch_sides_decision(false, route),
+                SwitchSides::RefuseKind,
+                "{route:?}"
+            );
         }
     }
 
