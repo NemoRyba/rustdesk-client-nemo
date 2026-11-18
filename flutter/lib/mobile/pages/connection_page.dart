@@ -8,7 +8,8 @@ import 'package:get/get.dart';
 import 'package:provider/provider.dart';
 // TBFDesk: the direct-access hint is shared with the desktop connection page.
 import 'package:flutter_hbb/desktop/pages/connection_page.dart'
-    show NemoDirectHint, NemoPolicyProblem;
+    show NemoDirectHint, NemoOutboundOff, NemoPolicyProblem;
+import 'package:flutter_hbb/common/nemo_policy.dart' show NemoOutboundWatch;
 import 'package:flutter_hbb/models/peer_model.dart';
 
 import '../../common.dart';
@@ -51,6 +52,9 @@ class _ConnectionPageState extends State<ConnectionPage> {
 
   // https://github.com/flutter/flutter/issues/157244
   Iterable<Peer> _autocompleteOpts = [];
+
+  // TBFDesk: the outbound policy, live -- greys the connect arrow and shows why.
+  final _nemoOutbound = NemoOutboundWatch();
 
   _ConnectionPageState() {
     if (!isWeb) _uniLinksSubscription = listenUniLinks();
@@ -309,11 +313,20 @@ class _ConnectionPageState extends State<ConnectionPage> {
               SizedBox(
                 width: 60,
                 height: 60,
-                child: IconButton(
-                  icon: const Icon(Icons.arrow_forward,
-                      color: MyTheme.darkGray, size: 45),
-                  onPressed: onConnect,
-                ),
+                // Greyed while the outbound policy is off (desktop: Connect; Sciter:
+                // #connect disabled). The keyboard's submit still reaches connect(),
+                // which says why.
+                child: Obx(() {
+                  final outbound = _nemoOutbound.enabled.value;
+                  return IconButton(
+                    icon: Icon(Icons.arrow_forward,
+                        color: outbound
+                            ? MyTheme.darkGray
+                            : MyTheme.darkGray.withOpacity(0.35),
+                        size: 45),
+                    onPressed: outbound ? onConnect : null,
+                  );
+                }),
               ),
             ],
           ),
@@ -327,7 +340,10 @@ class _ConnectionPageState extends State<ConnectionPage> {
       w,
       // TBFDesk (A14): "Direct access possible — host:port" + knock line.
       NemoDirectHint(controller: _idController).marginOnly(left: 16, right: 16),
-      // Why the server's policy is not applied here, if it is not (parity with desktop).
+      // Why the arrow is grey (outbound policy off), then why the server's policy is not
+      // applied here, if it is not -- the desktop / Sciter order and wording.
+      NemoOutboundOff(enabled: _nemoOutbound.enabled)
+          .marginOnly(left: 16, right: 16),
       const NemoPolicyProblem().marginOnly(left: 16, right: 16),
     ]);
     return Align(
@@ -337,6 +353,7 @@ class _ConnectionPageState extends State<ConnectionPage> {
 
   @override
   void dispose() {
+    _nemoOutbound.dispose();
     _uniLinksSubscription?.cancel();
     _idController.dispose();
     _idFocusNode.removeListener(onFocusChanged);
