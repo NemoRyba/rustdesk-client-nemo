@@ -46,6 +46,34 @@ function isRemoteLinux() {
     return get_peer_platform() == "Linux";
 }
 
+// ----------------------------------------------------------------------------
+// Full screen on Linux goes through GTK (remote.rs linux_window): there Sciter's
+// view.windowState forgets full screen on every GTK state event -- the window manager
+// confirming it, focus in / out -- and WINDOW_SHOWN cannot leave it. nativeWindowState()
+// is GTK's own state (View.WINDOW_* numbering), 0 elsewhere: callers then keep Sciter's
+// path, unchanged. header.tis check_state_change puts view.windowState back from it.
+// ----------------------------------------------------------------------------
+var fs_leave_ticks = 0;   // polls (30 ms) during which full screen is being left on purpose
+function nativeWindowState() {
+    if (!is_linux) return 0;
+    try { return handler.native_window_state(); } catch (e) { return 0; }
+}
+function nativeFullScreen(on, maximized = false) {
+    if (!is_linux) return false;
+    var ok = false;
+    try { ok = handler.native_fullscreen(on, maximized); } catch (e) {}
+    // leaving: until GTK reports it, check_state_change must not put full screen back;
+    // entering: no leave still pending from a moment ago
+    if (ok) fs_leave_ticks = on ? 0 : 50;
+    return ok;
+}
+// View.WINDOW_SHOWN from any state, for the display modes that place the window
+// themselves. On Linux full screen is left through GTK first, back to a plain window.
+function showWindowNormal() {
+    if (nativeWindowState() == View.WINDOW_FULL_SCREEN) nativeFullScreen(false, false);
+    if (view.windowState != View.WINDOW_SHOWN) view.windowState = View.WINDOW_SHOWN;
+}
+
 function adaptDisplay() {
     var w = display_width;
     var h = display_height;
@@ -272,10 +300,57 @@ function headerAutoHide() {
         || display_mode == "span" || display_mode == "windows";
 }
 
+// The auto-hidden header (full screen, span, window per display) comes down OVER the
+// picture, as Flutter's toolbar does, instead of taking its place in the layout: there
+// it pushed the page down by its own height every time it came and went, and the
+// picture jumped (lab, Ubuntu 26.04, 2026-11-17; PARITY-GAPS P11). Positioned, it is hit
+// first where it covers the picture, so the pointer on it reaches its buttons; below it,
+// the picture's own mouse handlers still see the pointer and hide it again
+// (revealHeaderAt, handler.onMouse).
+// Linux only for now: Windows has its own lab-tuned top-edge behaviour in full screen
+// (handler.onMouse) and has not been run with it; macOS has its own header handling
+// (adjustBorder). Not in a MAXIMIZED window either: there the page sits inside a frame
+// border (adjustBorder: window-frame-width) that a header placed at 0,0 could start under.
+var header_overlaid = false;    // the header is over the picture right now
+var header_overlay_ok = true;   // false once the tiles were seen to cover it (revealHeaderAt)
+var header_overlay_misses = 0;
+function headerIntoLayout(h) {
+    h.style#position = undefined;
+    h.style#left = undefined;
+    h.style#top = undefined;
+    h.style#width = undefined;
+    h.style["z-index"] = undefined;
+    header_overlaid = false;
+}
+// `pad`: the top padding the callers always gave it (2 * workarea_offset [+ extra]).
+function revealHeaderOverlay(pad) {
+    var h = $(header);
+    if (!h) return;
+    if (is_linux && header_overlay_ok && view.windowState != View.WINDOW_MAXIMIZED) {
+        h.style.set {
+            position: "absolute",
+            left: "0px",
+            top: "0px",
+            width: "100%",
+            "z-index": "10",
+        };
+        header_overlaid = true;
+        header_overlay_misses = 0;
+    } else if (header_overlaid) {
+        headerIntoLayout(h);
+    }
+    h.style.set { display: "block", padding: pad + "px 0 0 0" };
+}
+
+// The header as a plain bar, in the layout (v), or hidden. A header that came down over
+// the picture (revealHeaderOverlay) goes back into the layout here.
 function setHeaderVisible(v) {
     var h = $(header);
     if (!h) return;
-    if (v) h.style.set { display: "block", padding: "0" };
+    if (v) {
+        if (header_overlaid) headerIntoLayout(h);
+        h.style.set { display: "block", padding: "0" };
+    }
     else h.style.set { display: "none" };
 }
 
@@ -289,7 +364,7 @@ function restoreWindowPlacement() {
     if (!window_restore) return;
     var r = window_restore;
     window_restore = null;
-    if (view.windowState != View.WINDOW_SHOWN) view.windowState = View.WINDOW_SHOWN;
+    showWindowNormal();
     view.move(r.rect[0], r.rect[1], r.rect[2], r.rect[3]);
     if (r.state == View.WINDOW_MAXIMIZED || r.state == View.WINDOW_FULL_SCREEN)
         view.windowState = r.state;
@@ -337,7 +412,7 @@ function enterSpan() {
                             mon: { x: mons[k].x - x0, y: mons[k].y - y0, w: mons[k].w, h: mons[k].h } });
     }
     span_first_width = mons[0].w;
-    if (view.windowState != View.WINDOW_SHOWN) view.windowState = View.WINDOW_SHOWN;
+    showWindowNormal();
     setHeaderVisible(false);
     placeWindowAt(x0, y0, x1 - x0, y1 - y0);
     enterViewAll();
@@ -359,7 +434,7 @@ function enterDisplayWindows() {
     pi.current_display = first;
     enterViewAll([first]);
     var m0 = mons[0];
-    if (view.windowState != View.WINDOW_SHOWN) view.windowState = View.WINDOW_SHOWN;
+    showWindowNormal();
     // Onto the first monitor's WORK AREA first, then maximized (not full screen): a
     // maximized window fills the monitor it is on minus the local taskbar, wherever the
     // taskbar sits (bottom, side, top), and keeps its title bar, so it can be restored,
@@ -621,7 +696,7 @@ function handleTileMouse(evt, dispIndex) {
     // main surface reveals it when the pointer rests on the top edge (handler.onMouse),
     // but tiles sit on top of that surface and swallow the pointer -- without this the
     // toolbar, and with it the way back out of these modes, was unreachable.
-    if (mask == 0 && headerAutoHide()) revealHeaderAt(evt.yView, evt.xView);
+    if (mask == 0 && headerAutoHide()) revealHeaderAt(evt.yView, evt.xView, evt.buttons != 0);
     if (mask == 0 && entered) holdKeyboardGrab();
     if (!keyboard_enabled) return false;
     var rx = 0;
@@ -667,7 +742,7 @@ function enterViewAll(shown = null) {
     // own (handleTileMouse); this covers the background, or span / window-per-display
     // would leave no way back to the toolbar (found on Windows, 3 screens on 2 monitors).
     view_all_wrapper.onMouse = function(evt) {
-        if (evt.type == Event.MOUSE_MOVE && headerAutoHide()) revealHeaderAt(evt.yView, evt.xView);
+        if (evt.type == Event.MOUSE_MOVE && headerAutoHide()) revealHeaderAt(evt.yView, evt.xView, evt.buttons != 0);
         return false;
     };
     var tiles = view_all_wrapper.$$(video.remote-tile);
@@ -717,7 +792,8 @@ function holdKeyboardGrab() {
 var reveal_pending = false;
 // Show the header while the pointer rests on the window's top edge, hide it once the
 // pointer moves away -- the same gesture full screen has always used.
-function revealHeaderAt(y, x = -1) {
+// `pressed`: a mouse button is down (a drag inside the remote picture).
+function revealHeaderAt(y, x = -1, pressed = false) {
     var h = $(header);
     if (!h) return;
     // A few pixels, not exactly the top row: outside full screen the window has a 1px
@@ -727,6 +803,21 @@ function revealHeaderAt(y, x = -1) {
     // the user can reach is already y=8..12: with the 4 px edge the header, once hidden,
     // never came back -- no toolbar, no full screen, no way out (lab 2026-11-10, Win11).
     var edge = view.windowState == View.WINDOW_MAXIMIZED ? 16 : 4;
+    // Self-check of the overlay (revealHeaderOverlay): over the tiles, the header keeps
+    // the pointer to itself in its rows, so the tiles never report it there. If they do,
+    // the tiles are painted over it and its buttons cannot be reached -- from now on it
+    // comes down in the layout, as it always did.
+    // (the upper half of its rows only, and / scaleFactor: never a row below it)
+    // Not while a button is down: a drag that started on a tile keeps reporting to that
+    // tile wherever the pointer goes -- e.g. a remote window dragged to the top edge to
+    // snap it, which also reveals the header -- and would switch the overlay off for good.
+    if (!pressed && header_overlaid && h.style#display == "block" && y >= 0 && y < h.box(#height, #border) / scaleFactor / 2) {
+        if (++header_overlay_misses >= 3) {
+            header_overlay_ok = false;
+            headerIntoLayout(h);
+            stdout.println("header overlay: covered by the tiles, revealed in the layout from now on");
+        }
+    }
     if (y <= edge) {
         if (reveal_pending || h.style#display == "block") return;
         reveal_pending = true;
@@ -735,7 +826,7 @@ function revealHeaderAt(y, x = -1) {
             reveal_pending = false;
             if (headerAutoHide()) {
                 if (display_mode == "span" && x >= 0) span_toolbar_mon = spanMonitorAt(x);
-                h.style.set { display: "block", padding: (2 * workarea_offset) + "px 0 0 0" };
+                revealHeaderOverlay(2 * workarea_offset);
                 updateWindowToolbarPosition();
             }
         });
@@ -754,8 +845,12 @@ function nemoDisplayWindowAction(action) {
     } else if (action == "toolbar") {
         if (view.windowState == View.WINDOW_MINIMIZED) view.windowState = View.WINDOW_MAXIMIZED;
         try { view.activate(true); } catch (e) {}
-        var h = $(header);
-        if (h) { h.style.set { display: "block", padding: (2 * workarea_offset) + "px 0 0 0" }; updateWindowToolbarPosition(); }
+        if ($(header)) {
+            // over the picture while the header auto-hides, a plain bar otherwise
+            if (headerAutoHide()) revealHeaderOverlay(2 * workarea_offset);
+            else setHeaderVisible(true);
+            updateWindowToolbarPosition();
+        }
     }
 }
 
@@ -862,11 +957,9 @@ function handler.onMouse(evt)
                     // workaround for stupid Sciter, without this, click
                     // event not triggered on top part of buttons on toolbar
                     if (is_osx) extra = 10; 
+                    // over the picture, not pushing it down (revealHeaderOverlay)
                     if (view.windowState == View.WINDOW_FULL_SCREEN) {
-                        $(header).style.set {
-                          display: "block",
-                          padding: (2 * workarea_offset + extra) + "px 0 0 0",
-                        };
+                        revealHeaderOverlay(2 * workarea_offset + extra);
                     }
                     wait_window_toolbar = false;
                 });

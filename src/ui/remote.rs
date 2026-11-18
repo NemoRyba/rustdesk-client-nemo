@@ -89,6 +89,110 @@ thread_local! {
     static SESSION_ELEMENT: std::cell::RefCell<Option<Element>> = Default::default();
 }
 
+/// Linux: a Sciter window's state as GTK has it, and full screen through GTK itself.
+///
+/// libsciter-gtk cannot be trusted with full screen (read from its code, 2026-11-17):
+/// * `view.windowState` returns a cached value (`gtk::view::get_window_state`), and the
+///   library's "window-state-event" handler rewrites that cache from the GDK flags as
+///   hidden / minimized / maximized / shown only -- FULLSCREEN has no case there. Every
+///   state event a full-screen window receives (the window manager confirming it, focus
+///   in or out) therefore makes the page read "shown" or "maximized". header.tis's 150 ms
+///   re-assert only covered the events that came within those 150 ms; the focus events
+///   of a click into an inactive window come later, so the page lost track of the full
+///   screen it had just asked for (lab, Ubuntu 26.04 GNOME, two monitors).
+/// * Its WINDOW_SHOWN only unmaximizes / presents / shows; libsciter-gtk never calls
+///   gtk_window_unfullscreen, so a page cannot leave full screen through Sciter at all.
+///
+/// The pages ask GTK here instead (remote.tis nativeWindowState / nativeFullScreen, the
+/// display window's own bar). All of it runs on the UI thread, from script calls.
+#[cfg(target_os = "linux")]
+mod linux_window {
+    use gtk::ffi as gtk_sys;
+    use gtk::gdk::ffi as gdk_sys;
+    use sciter::types::HWINDOW;
+
+    // Sciter's numbering (View.WINDOW_* in the pages).
+    const SHOWN: i32 = 1;
+    const MINIMIZED: i32 = 2;
+    const MAXIMIZED: i32 = 3;
+    const HIDDEN: i32 = 4;
+    const FULL_SCREEN: i32 = 5;
+
+    /// The toplevel GtkWindow of a Sciter window handle (on Linux a GtkWidget of it).
+    ///
+    /// SAFETY: `hwnd` must be the handle of a live Sciter window, used on the UI thread.
+    unsafe fn toplevel(hwnd: HWINDOW) -> Option<*mut gtk_sys::GtkWindow> {
+        if hwnd.is_null() {
+            return None;
+        }
+        let top = gtk_sys::gtk_widget_get_toplevel(hwnd as *mut gtk_sys::GtkWidget);
+        if top.is_null() {
+            None
+        } else {
+            Some(top as *mut gtk_sys::GtkWindow)
+        }
+    }
+
+    /// The window's state in Sciter's numbering, from GDK's flags; 0 when GTK has no
+    /// window for it (not realized yet).
+    pub fn state(hwnd: HWINDOW) -> i32 {
+        // SAFETY: see `toplevel`; gdk_window_get_state only reads the GdkWindow's flags.
+        unsafe {
+            let Some(top) = toplevel(hwnd) else {
+                return 0;
+            };
+            let gw = gtk_sys::gtk_widget_get_window(top as *mut gtk_sys::GtkWidget);
+            if gw.is_null() {
+                return 0;
+            }
+            let s = gdk_sys::gdk_window_get_state(gw);
+            if (s & gdk_sys::GDK_WINDOW_STATE_WITHDRAWN) != 0 {
+                HIDDEN
+            } else if (s & gdk_sys::GDK_WINDOW_STATE_ICONIFIED) != 0 {
+                MINIMIZED
+            } else if (s & gdk_sys::GDK_WINDOW_STATE_FULLSCREEN) != 0 {
+                // a maximized window keeps that flag while it is full screen
+                FULL_SCREEN
+            } else if (s & gdk_sys::GDK_WINDOW_STATE_MAXIMIZED) != 0 {
+                MAXIMIZED
+            } else {
+                SHOWN
+            }
+        }
+    }
+
+    /// Full screen on / off through GTK. `frame`: the window has a GTK / window-manager
+    /// frame (window-frame="default") -- it is taken away for full screen and given back
+    /// afterwards, so no title bar can stay over the picture whatever the window manager
+    /// does with frames. `maximized`: the state to return to when leaving (maximized, or
+    /// a plain shown window). Returns false when there is no GTK window.
+    pub fn set_fullscreen(hwnd: HWINDOW, on: bool, frame: bool, maximized: bool) -> bool {
+        // SAFETY: see `toplevel`; plain GtkWindow requests on the UI thread.
+        unsafe {
+            let Some(w) = toplevel(hwnd) else {
+                return false;
+            };
+            if on {
+                if frame {
+                    gtk_sys::gtk_window_set_decorated(w, 0);
+                }
+                gtk_sys::gtk_window_fullscreen(w);
+            } else {
+                gtk_sys::gtk_window_unfullscreen(w);
+                if frame {
+                    gtk_sys::gtk_window_set_decorated(w, 1);
+                }
+                if maximized {
+                    gtk_sys::gtk_window_maximize(w);
+                } else {
+                    gtk_sys::gtk_window_unmaximize(w);
+                }
+            }
+        }
+        true
+    }
+}
+
 /// The behavior on the single <video> of a display window. It binds the surface into
 /// VIDEO.tiles under its display index and forwards input to the real session.
 struct DisplayWindowBehavior {
@@ -140,28 +244,51 @@ impl DisplayWindowBehavior {
         self.session.refresh_video(self.display as i32);
     }
 
-    /// Out of full screen, maximized again. On Linux Sciter's windowState = SHOWN does not
-    /// take a window out of full screen (lab: still _NET_WM_STATE_FULLSCREEN), so GTK is
-    /// asked directly; elsewhere the page's own state change does it.
-    fn leave_fullscreen(&mut self) {
+    /// This window's own handle, while it is still the current window of its display
+    /// (alive: it is in DISPLAY_WINDOWS, which is only touched on the UI thread).
+    #[cfg(target_os = "linux")]
+    fn own_hwnd(&self) -> Option<sciter::types::HWINDOW> {
+        DISPLAY_WINDOWS.with(|w| {
+            w.borrow()
+                .get(&self.display)
+                .filter(|(id, _)| *id == self.id)
+                .map(|(_, win)| win.get_hwnd())
+        })
+    }
+
+    /// The window's state as GTK has it (View.WINDOW_* numbering); 0 off Linux, where
+    /// the page uses view.windowState as before (linux_window explains why not there).
+    fn native_window_state(&mut self) -> i32 {
         #[cfg(target_os = "linux")]
         {
-            let hwnd = DISPLAY_WINDOWS.with(|w| w.borrow().get(&self.display).map(|(_, win)| win.get_hwnd()));
-            if let Some(h) = hwnd {
-                if !h.is_null() {
-                    // SAFETY: Sciter's HWINDOW on Linux is the toplevel GtkWindow of this
-                    // display window, alive while it is in DISPLAY_WINDOWS (UI thread).
-                    unsafe {
-                        // the handle can be a child widget: act on its toplevel window
-                        let top = gtk::ffi::gtk_widget_get_toplevel(h as *mut gtk::ffi::GtkWidget);
-                        let w = top as *mut gtk::ffi::GtkWindow;
-                        gtk::ffi::gtk_window_unfullscreen(w);
-                        gtk::ffi::gtk_window_maximize(w);
-                    }
-                    log::info!("display window {}: leave full screen (GTK)", self.display + 1);
-                }
+            if let Some(h) = self.own_hwnd() {
+                return linux_window::state(h);
             }
         }
+        0
+    }
+
+    /// Full screen on / off for this window (the bar's button). Linux: through GTK, with
+    /// the title bar taken away while full screen -- it stayed over the picture on GNOME
+    /// (lab 2026-11-17) -- and back to maximized with its title bar afterwards. Sciter's
+    /// windowState = SHOWN never left full screen there (lab: still
+    /// _NET_WM_STATE_FULLSCREEN). False off Linux: the page's own state change does it.
+    fn native_fullscreen(&mut self, on: bool) -> bool {
+        #[cfg(target_os = "linux")]
+        {
+            if let Some(h) = self.own_hwnd() {
+                let ok = linux_window::set_fullscreen(h, on, true, true);
+                log::info!(
+                    "display window {}: {} full screen (GTK){}",
+                    self.display + 1,
+                    if on { "enter" } else { "leave" },
+                    if ok { "" } else { " -- no GTK window" }
+                );
+                return ok;
+            }
+        }
+        let _ = on;
+        false
     }
 
     /// Hand an action to the session's main window (remote.tis nemoDisplayWindowAction):
@@ -281,7 +408,8 @@ impl sciter::EventHandler for DisplayWindowBehavior {
         fn lock_screen();
         fn main_action(String);
         fn refresh();
-        fn leave_fullscreen();
+        fn native_window_state();
+        fn native_fullscreen(bool);
     }
 }
 
@@ -452,23 +580,45 @@ function showBar(y) {{
         if (y > 40 + barEdge() && b.style#display != "none") b.style.set {{ display: "none" }};
     }}
 }}
-// as header.tis does for the session window: a maximized window goes through "shown",
-// and Linux window managers need the full-screen request repeated
+// Full screen. Linux: through GTK, and GTK's own state decides the direction
+// (remote.rs native_fullscreen): Sciter's view.windowState forgets full screen on GTK
+// state events and its WINDOW_SHOWN cannot leave it, and the title bar stayed over the
+// picture on GNOME (lab 2026-11-17) -- it is taken away while full screen. Elsewhere
+// native_window_state() is 0 and Sciter's path below runs as before: a maximized window
+// goes through "shown", as header.tis does for the session window.
+var fs_unframed = false;   // Linux: full screen asked for, title bar taken away
 event click $(#b-full) {{
     $(#bar).style.set {{ display: "none" }};
+    var ns = handler.native_window_state();
+    if (ns > 0) {{
+        fs_unframed = ns != View.WINDOW_FULL_SCREEN;
+        handler.native_fullscreen(fs_unframed);
+        return true;
+    }}
     if (view.windowState == View.WINDOW_FULL_SCREEN) {{
         view.windowState = View.WINDOW_SHOWN;
-        handler.leave_fullscreen();
-        // maximize only once the window manager has left full screen (Linux)
         $(#tk).timer(200ms, function() {{ view.windowState = View.WINDOW_MAXIMIZED; }});
     }} else {{
         if (view.windowState == View.WINDOW_MAXIMIZED) view.windowState = View.WINDOW_SHOWN;
         view.windowState = View.WINDOW_FULL_SCREEN;
         $(#tk).timer(150ms, function() {{ view.windowState = View.WINDOW_FULL_SCREEN; }});
     }}
+    return true;
+}}
+// Linux: the title bar is given back once the window is no longer full screen without
+// this bar's button (the window manager refused or ended it): maximized with its title
+// bar again, as the button's way out does. Checked a while after the last size change.
+function frameSync() {{
+    if (fs_unframed && handler.native_window_state() != View.WINDOW_FULL_SCREEN) {{
+        fs_unframed = false;
+        handler.native_fullscreen(false);
+    }}
 }}
 // every size change (maximize, full screen, restore, resize): a new frame for the new surface
-view.on("size", function() {{ handler.timer(400ms, function() {{ handler.refresh(); }}); }});
+view.on("size", function() {{
+    handler.timer(400ms, function() {{ handler.refresh(); }});
+    if (fs_unframed) $(#tk).timer(1500ms, frameSync);
+}});
 event click $(#b-cad) {{ handler.ctrl_alt_del(); }}
 event click $(#b-lock) {{ handler.lock_screen(); }}
 event click $(#b-all) {{ handler.main_action("all"); }}
@@ -1056,6 +1206,8 @@ impl sciter::EventHandler for SciterSession {
         fn is_port_forward();
         fn is_rdp();
         fn begin_move_drag();
+        fn native_window_state();
+        fn native_fullscreen(bool, bool);
         fn login(String, String, String, bool);
         fn send2fa(String, bool);
         fn get_enable_trusted_devices();
@@ -1187,6 +1339,41 @@ impl SciterSession {
             return true;
         }
         #[allow(unreachable_code)]
+        false
+    }
+
+    /// The session window's state as GTK has it (View.WINDOW_* numbering); 0 off Linux
+    /// or before the window exists, and the page then uses view.windowState. On Linux
+    /// that one forgets full screen (see `linux_window`), and remote.tis / header.tis
+    /// read this instead whenever full screen matters.
+    fn native_window_state(&self) -> i32 {
+        #[cfg(target_os = "linux")]
+        {
+            if let Some(h) = SESSION_HWND.with(|h| h.get()) {
+                return linux_window::state(h);
+            }
+        }
+        0
+    }
+
+    /// Linux: full screen on / off through GTK (the header's fullscreen button, and the
+    /// display modes leaving full screen). `maximized`: what to return to when leaving.
+    /// The session window draws its own header (window-frame="extended"): no GTK frame
+    /// to take away. False off Linux, where the page uses Sciter's windowState.
+    fn native_fullscreen(&self, on: bool, maximized: bool) -> bool {
+        #[cfg(target_os = "linux")]
+        {
+            if let Some(h) = SESSION_HWND.with(|h| h.get()) {
+                let ok = linux_window::set_fullscreen(h, on, false, maximized);
+                log::info!(
+                    "session window: {} full screen (GTK){}",
+                    if on { "enter" } else { "leave" },
+                    if ok { "" } else { " -- no GTK window" }
+                );
+                return ok;
+            }
+        }
+        let _ = (on, maximized);
         false
     }
 

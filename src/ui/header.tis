@@ -56,6 +56,16 @@ var svg_recording_on = <svg t="1663505598640" class="icon" viewBox="0 0 1024 102
 
 var cur_window_state = view.windowState;
 function check_state_change() {
+    // Linux: Sciter's view.windowState forgets full screen on every GTK state event (the
+    // window manager confirming it, focus in / out; remote.rs linux_window). The page then
+    // took a full-screen window for a normal one: header left in place, no auto-hide, and
+    // the button's next click asked for full screen again. Put it back from GTK's own
+    // state -- except while full screen is being left on purpose. (Setting it again only
+    // re-sends a request the window manager has already granted.)
+    var ns = nativeWindowState();
+    if (ns != View.WINDOW_FULL_SCREEN) fs_leave_ticks = 0;
+    else if (fs_leave_ticks > 0) --fs_leave_ticks;
+    else if (view.windowState != View.WINDOW_FULL_SCREEN) view.windowState = View.WINDOW_FULL_SCREEN;
     if (view.windowState != cur_window_state) {
         stateChanged();
     }
@@ -63,7 +73,8 @@ function check_state_change() {
 }
 
 if (is_linux) {
-    check_state_change();
+    // by timer: the first poll may call stateChanged, which is defined further down
+    self.timer(30ms, check_state_change);
 } else {
     view << event statechange {
         stateChanged();
@@ -104,11 +115,71 @@ function stateChanged() {
         $(header).style.set {
             display: "none",
         };
+    } else if (!headerAutoHide()) {
+        // Out of full screen, by the button or by the window manager: a plain bar in the
+        // layout again. It may have been over the picture (remote.tis revealHeaderOverlay)
+        // or hidden -- left full screen while hidden, it never came back.
+        setHeaderVisible(true);
     }
 }
 
 var header;
 var old_window_state = View.WINDOW_SHOWN;
+
+// The header's fullscreen button. Linux: through GTK, and GTK's own state decides the
+// direction (remote.tis nativeWindowState): Sciter's view.windowState loses full screen
+// on GTK state events -- the focus events of a click into an inactive window can come
+// after the old 150 ms re-assert, and the page then acted on the wrong state (lab,
+// Ubuntu 26.04 GNOME, two monitors, 2026-11-17: the first click into an unfocused
+// window did nothing; fsClickFallback covers the other possible cause) -- and its
+// WINDOW_SHOWN never left full screen there. A maximized window stays maximized
+// underneath and comes back so. The log line tells the lab which states the click saw.
+// Elsewhere nativeWindowState() is 0 and Sciter's path below runs unchanged.
+function toggleFullScreen() {
+    var ns = nativeWindowState();
+    stdout.println("fullscreen button: window state " + view.windowState + ", GTK " + ns);
+    if (ns > 0) {
+        if (ns == View.WINDOW_FULL_SCREEN) {
+            nativeFullScreen(false, old_window_state == View.WINDOW_MAXIMIZED);
+        } else {
+            old_window_state = ns;
+            nativeFullScreen(true);
+        }
+        return;
+    }
+    if (view.windowState == View.WINDOW_FULL_SCREEN) {
+        if (old_window_state == View.WINDOW_MAXIMIZED) {
+            view.windowState = View.WINDOW_SHOWN;
+        }
+        view.windowState = old_window_state;
+    } else {
+        old_window_state = view.windowState;
+        if (view.windowState == View.WINDOW_MAXIMIZED) {
+            view.windowState = View.WINDOW_SHOWN;
+        }
+        view.windowState = View.WINDOW_FULL_SCREEN;
+        if (is_linux) { self.timer(150ms, function() { view.windowState = View.WINDOW_FULL_SCREEN; }); }
+    }
+}
+
+// Linux: the first click into an inactive session window may also never become a Sciter
+// click (unconfirmed -- the lab saw the first click do nothing, and the lost state above
+// does not explain every case of it). The press does reach the page: libsciter-gtk's
+// button-press handler dispatches it with no active-window check. So a press and release
+// on the button with no click in between toggles from the release, a moment later, and
+// only if the click did not come after all (never twice).
+var fs_press = false;     // pressed on #fullscreen, the release not seen yet
+var fs_clicked = false;   // the click of the current press came
+function clearFsPress() { fs_press = false; }
+function fsClickFallback() {
+    // fs_press: a NEW press is already down (fast double click: release -> next press
+    // within these 80 ms). Its own release decides; without this the first press's timer
+    // fired after the new mousedown had cleared fs_clicked and toggled a third time.
+    if (fs_clicked || fs_press) return;
+    fs_clicked = true;
+    stdout.println("fullscreen button: press and release without a click -- toggling from the release");
+    toggleFullScreen();
+}
 
 var is_edit_os_password;
 class EditOsPassword: Reactor.Component {
@@ -379,20 +450,25 @@ class Header: Reactor.Component {
         </div>;
     }
 
-    event click $(#fullscreen) (_, el) {
-        if (view.windowState == View.WINDOW_FULL_SCREEN) {
-            if (old_window_state == View.WINDOW_MAXIMIZED) {
-                view.windowState = View.WINDOW_SHOWN;
-            }
-            view.windowState = old_window_state;
-        } else {
-            old_window_state = view.windowState;
-            if (view.windowState == View.WINDOW_MAXIMIZED) {
-                view.windowState = View.WINDOW_SHOWN;
-            }
-            view.windowState = View.WINDOW_FULL_SCREEN;
-            if (is_linux) { self.timer(150ms, function() { view.windowState = View.WINDOW_FULL_SCREEN; }); }
+    // Linux: a press on the button whose click never comes still toggles, once (see
+    // fsClickFallback). Elsewhere only the click does, as before.
+    event mousedown $(#fullscreen) (evt) {
+        if (is_linux && evt.mainButton) {
+            fs_press = true;
+            fs_clicked = false;
+            self.timer(1500ms, clearFsPress);
         }
+        return false;
+    }
+    event mouseup $(#fullscreen) (evt) {
+        if (!is_linux || !fs_press) return false;
+        fs_press = false;
+        self.timer(80ms, fsClickFallback);
+        return false;
+    }
+    event click $(#fullscreen) (_, el) {
+        fs_clicked = true;
+        toggleFullScreen();
     }
     
     event click $(#chat) {
