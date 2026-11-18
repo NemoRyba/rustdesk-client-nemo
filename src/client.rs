@@ -426,9 +426,10 @@ impl Client {
         // there and skip the rendezvous. Relay costs ~36% of the link on the lab WAN
         // path, which is the whole reason this exists.
         //
-        // Strictly additive — no endpoint for the id, a knock we could not send, a
-        // refused connect, or a handshake we cannot anchor all return None and fall
-        // through to the unchanged hole-punch / relay path below. Skipped for
+        // Strictly additive — no endpoint for the id (None), a knock we could not send, a
+        // refused connect, or a handshake we cannot anchor (Some(Err), with the reason)
+        // all fall through to the unchanged hole-punch / relay path below, unless the
+        // user asked for "Connect directly" (force_direct, below). Skipped for
         // `other_server` sessions (whose endpoints are not ours to know) and when the
         // user asked for relay explicitly.
         // "Connect directly" (per-peer nemo-force-direct, set by the peer menu): the
@@ -464,15 +465,15 @@ impl Client {
             }
         }
         if other_server.is_empty() && !interface.is_force_relay() {
-            if let Some(conn) = Self::try_nemo_direct(peer, key).await {
-                return Ok((conn, (0, "".to_owned()), false));
-            }
-            // Falling back now would answer the wrong question -- a session that quietly
-            // went over the relay looks like a success and proves nothing about the
-            // forward -- so fail with the reason instead.
-            if force_direct {
-                let endpoint = crate::nemo_direct::endpoint_label(peer);
-                if endpoint.is_empty() {
+            match Self::try_nemo_direct(peer, key, force_direct).await {
+                Some(Ok(conn)) => return Ok((conn, (0, "".to_owned()), false)),
+                // Falling back now would answer the wrong question -- a session that
+                // quietly went over the relay looks like a success and proves nothing
+                // about the forward -- so fail, and say why in the dialog itself: which
+                // phase failed and how long each attempt took. "See the log" sent the
+                // operator hunting for a file while the dialog had the answer to hand.
+                Some(Err(failed)) if force_direct => bail!(failed.user_message(peer)),
+                None if force_direct => {
                     bail!(
                         "{}{{{}}} failed: this server has published no direct endpoint for \
                          it. Set 'Reachable at' for it in the dashboard, or connect \
@@ -481,13 +482,7 @@ impl Client {
                         peer
                     );
                 }
-                bail!(
-                    "{}{{{} ({})}} failed. The relay was NOT used because you asked for a \
-                     direct connection; see the log for the reason.",
-                    FORCED_DIRECT_FAILED,
-                    peer,
-                    endpoint
-                );
+                _ => {}
             }
         }
         if crate::nemo_public_network_blocked()
@@ -575,20 +570,29 @@ impl Client {
 
     /// Try the direct endpoint the management server published for `peer_id`.
     ///
-    /// `None` means "use the rendezvous", and it is the normal answer whenever anything
-    /// is missing or fails. Nothing in here may surface as a connection error: the whole
-    /// point of distributing endpoints is to make the fast path available when it works,
-    /// never to make a reachable peer unreachable when it does not.
+    /// `None`: no endpoint is known for it; the caller goes to the rendezvous as before.
+    /// `Some(Err)`: it was tried and failed, with the reason for every attempt. On an
+    /// ordinary connection that still just means "use the rendezvous" -- nothing in here
+    /// may make a reachable peer unreachable, the whole point of distributing endpoints is
+    /// to make the fast path available when it works. Only "Connect directly"
+    /// (`force_direct`) turns it into the error the user sees, and only there does a
+    /// failure that a second try may fix get one (`nemo_direct::attempt_budgets`).
     async fn try_nemo_direct(
         peer_id: &str,
         key: &str,
-    ) -> Option<(
-        Stream,
-        bool,
-        Option<Vec<u8>>,
-        Option<KcpStream>,
-        &'static str,
-    )> {
+        force_direct: bool,
+    ) -> Option<
+        Result<
+            (
+                Stream,
+                bool,
+                Option<Vec<u8>>,
+                Option<KcpStream>,
+                &'static str,
+            ),
+            crate::nemo_direct::DirectFailed,
+        >,
+    > {
         let Some(endpoint) = crate::nemo_direct::endpoint_for(peer_id) else {
             log::info!(
                 "TBFDesk direct: no direct endpoint for {}: {}. Using hole punch / relay.",
@@ -597,89 +601,173 @@ impl Client {
             );
             return None;
         };
-        let budget = crate::nemo_direct::direct_timeout();
-        let budget_ms = budget.as_millis() as u64;
-        log::info!(
-            "TBFDesk direct: trying {} for {} (budget {}ms)",
-            endpoint.target(),
-            peer_id,
-            budget_ms
-        );
+        let target = endpoint.target();
+        let budgets =
+            crate::nemo_direct::attempt_budgets(crate::nemo_direct::direct_timeout(), force_direct);
         let start = Instant::now();
-        match timeout(
-            budget_ms,
-            Self::nemo_direct_inner(peer_id, key, &endpoint, budget_ms),
-        )
-        .await
-        {
-            Ok(Ok((conn, pk))) => {
+        let mut failed = crate::nemo_direct::DirectFailed {
+            endpoint: target.clone(),
+            attempts: Vec::new(),
+        };
+        for (i, budget) in budgets.iter().copied().enumerate() {
+            let n = i + 1;
+            let budget_ms = budget.as_millis() as u64;
+            if n == 1 {
                 log::info!(
-                    "TBFDesk direct: established with {} in {:?}, no relay",
-                    endpoint.target(),
-                    start.elapsed()
-                );
-                crate::nemo_direct::report_attempt(
+                    "TBFDesk direct: trying {} for {} (budget {}ms)",
+                    target,
                     peer_id,
-                    &endpoint.target(),
-                    "established",
-                    Some(start.elapsed().as_millis()),
-                    "",
-                );
-                Some((conn, true, pk, None, "TCP"))
-            }
-            Ok(Err(e)) => {
-                log::info!(
-                    "TBFDesk direct: {} unusable ({}); falling back to hole punch / relay",
-                    endpoint.target(),
-                    e
-                );
-                crate::nemo_direct::report_attempt(
-                    peer_id,
-                    &endpoint.target(),
-                    "failed",
-                    Some(start.elapsed().as_millis()),
-                    &e.to_string(),
-                );
-                None
-            }
-            Err(_) => {
-                log::info!(
-                    "TBFDesk direct: {} did not complete within {}ms; falling back to hole punch / relay",
-                    endpoint.target(),
                     budget_ms
                 );
-                crate::nemo_direct::report_attempt(
+            } else {
+                log::info!(
+                    "TBFDesk direct: trying {} for {} again, attempt {}/{} (budget {}ms, fresh knock if knocking is on)",
+                    target,
                     peer_id,
-                    &endpoint.target(),
-                    "failed",
-                    Some(start.elapsed().as_millis()),
-                    &format!("did not complete within {budget_ms} ms"),
+                    n,
+                    budgets.len(),
+                    budget_ms
                 );
-                None
+            }
+            match Self::nemo_direct_attempt(peer_id, key, &endpoint, budget).await {
+                Ok((conn, pk)) => {
+                    let earlier = failed.earlier();
+                    log::info!(
+                        "TBFDesk direct: established with {} in {:?}, no relay{}",
+                        target,
+                        start.elapsed(),
+                        if earlier.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" (attempt {}, {})", n, earlier)
+                        }
+                    );
+                    crate::nemo_direct::report_attempt(
+                        peer_id,
+                        &target,
+                        "established",
+                        Some(start.elapsed().as_millis()),
+                        &earlier,
+                    );
+                    return Some(Ok((conn, true, pk, None, "TCP")));
+                }
+                Err(e) => {
+                    let retry = n < budgets.len() && e.failure.retryable(&e.knock);
+                    log::info!(
+                        "TBFDesk direct: {} attempt {}/{} failed after {} ms: {}; {}",
+                        target,
+                        n,
+                        budgets.len(),
+                        e.elapsed_ms,
+                        e.summary(),
+                        if retry {
+                            "trying once more with a longer budget"
+                        } else if force_direct {
+                            "NOT using the relay, because a direct connection was requested"
+                        } else {
+                            "falling back to hole punch / relay"
+                        }
+                    );
+                    failed.attempts.push(e);
+                    if !retry {
+                        break;
+                    }
+                }
             }
         }
+        crate::nemo_direct::report_attempt(
+            peer_id,
+            &target,
+            "failed",
+            Some(start.elapsed().as_millis()),
+            &failed.detail(),
+        );
+        Some(Err(failed))
     }
 
-    async fn nemo_direct_inner(
+    /// One attempt at a published direct endpoint: knock, TCP connect, handshake. Each
+    /// phase gets what is left of `budget`, so a failure names the phase it happened in.
+    ///
+    /// The whole attempt used to run under one timer of the full budget, with the TCP
+    /// connect inside it given that same full budget. With a knock, its delay always ran
+    /// first, so the outer timer always won, and every slow failure read "did not
+    /// complete within 2500ms": a dropped SYN and a stalled handshake looked the same
+    /// (lab log 2026-10-19, OpenWrt knock gate). The handshake read waited READ_TIMEOUT,
+    /// far beyond the budget, so it could never name itself either.
+    async fn nemo_direct_attempt(
         peer_id: &str,
         key: &str,
         endpoint: &crate::nemo_direct::DirectEndpoint,
-        budget_ms: u64,
-    ) -> ResultType<(Stream, Option<Vec<u8>>)> {
-        if let Some(cfg) = crate::nemo_direct::knock_config_for(peer_id) {
-            let cfg = crate::nemo_direct::KnockConfig {
-                // A per-endpoint knock port wins: a fleet behind several edges needs one
-                // SPA port per site, wherever that site's router forwards it.
-                port: endpoint.knock_port.unwrap_or(cfg.port),
-                ..cfg
-            };
-            // A knock that could not go out is not fatal — the forward may not be gated
-            // at all, in which case the connect below simply succeeds.
-            if let Err(e) = crate::nemo_direct::knock(&endpoint.host, endpoint.port, &cfg).await {
-                log::warn!("TBFDesk knock to {} failed: {}", endpoint.host, e);
+        budget: Duration,
+    ) -> Result<(Stream, Option<Vec<u8>>), crate::nemo_direct::DirectAttemptError> {
+        use crate::nemo_direct::{DirectAttemptError, DirectFailure, KnockState};
+        let start = Instant::now();
+        let budget_ms = budget.as_millis() as u64;
+        let ms_left = || budget.saturating_sub(start.elapsed()).as_millis() as u64;
+        // A knock that could not go out is not fatal: the forward may not be gated at
+        // all, in which case the connect below simply succeeds. Only a name lookup can
+        // make the knock slow, so it shares the budget like the rest.
+        let knock = match crate::nemo_direct::knock_config_for(peer_id) {
+            Some(cfg) => {
+                let cfg = crate::nemo_direct::KnockConfig {
+                    // A per-endpoint knock port wins: a fleet behind several edges needs
+                    // one SPA port per site, wherever that site's router forwards it.
+                    port: endpoint.knock_port.unwrap_or(cfg.port),
+                    ..cfg
+                };
+                let sent = timeout(
+                    budget_ms,
+                    crate::nemo_direct::knock(&endpoint.host, endpoint.port, &cfg),
+                )
+                .await;
+                match sent {
+                    Ok(Ok(())) => KnockState::Sent(cfg.port),
+                    Ok(Err(e)) => {
+                        log::warn!("TBFDesk knock to {} failed: {}", endpoint.host, e);
+                        KnockState::NotSent(e.to_string())
+                    }
+                    Err(_) => KnockState::NotSent(format!(
+                        "the knock and its delay did not finish within {budget_ms} ms"
+                    )),
+                }
             }
+            // knock_config_for has already logged which key is missing or unusable.
+            None if crate::nemo_direct::knock_enabled() => {
+                KnockState::NotSent("no usable knock key for this peer".to_owned())
+            }
+            None => KnockState::Off,
+        };
+        let fail = |failure: DirectFailure| DirectAttemptError {
+            failure,
+            knock: knock.clone(),
+            elapsed_ms: start.elapsed().as_millis() as u64,
+        };
+        let connect_ms = ms_left();
+        if connect_ms == 0 {
+            return Err(fail(DirectFailure::Other(format!(
+                "the knock used up the whole {budget_ms} ms budget before the TCP connect; \
+                 nemo-direct-timeout-ms must be well above nemo-knock-delay-ms"
+            ))));
         }
-        let mut conn = connect_tcp_local(endpoint.target(), None, budget_ms).await?;
+        let tcp_start = Instant::now();
+        // Timed here as well: connect_tcp_local times the connect itself, not a name
+        // lookup in front of it.
+        let connected = timeout(
+            connect_ms,
+            connect_tcp_local(endpoint.target(), None, connect_ms),
+        )
+        .await;
+        let mut conn = match connected {
+            Ok(Ok(conn)) => conn,
+            Ok(Err(e)) => {
+                return Err(fail(crate::nemo_direct::classify_connect_error(
+                    &e.to_string(),
+                    connect_ms,
+                )))
+            }
+            Err(_) => return Err(fail(DirectFailure::ConnectTimeout { ms: connect_ms })),
+        };
+        let tcp_ms = tcp_start.elapsed().as_millis() as u64;
         // `signed_id_pk` is deliberately empty. There is no rendezvous broker on this
         // path, so secure_connection falls through to secure_connection_direct, which
         // verifies the peer's self-signed SignedId against the Ed25519 key the server
@@ -687,8 +775,31 @@ impl Client {
         // anchored, no TOFU window, and it fails closed while
         // nemo-require-encrypted-session is on (it defaults on), so a direct endpoint
         // can never buy an attacker a plaintext session.
-        let pk = Self::secure_connection(peer_id, Vec::new(), key, &mut conn).await?;
-        Ok((conn, pk))
+        let handshake_ms = ms_left().max(1);
+        let handshake_start = Instant::now();
+        let secured = timeout(
+            handshake_ms,
+            Self::secure_connection(peer_id, Vec::new(), key, &mut conn),
+        )
+        .await;
+        match secured {
+            Ok(Ok(pk)) => Ok((conn, pk)),
+            // secure_connection's own 18 s timers win over ours once the budget leaves
+            // more than that for the handshake (a large policy budget, or the up-to-20 s
+            // retry). Their "deadline has elapsed" is a stalled handshake as well, and is
+            // retried like one, not shown as the catch-all.
+            Ok(Err(e)) if crate::nemo_direct::is_timer_expiry(&e) => {
+                Err(fail(DirectFailure::HandshakeTimeout {
+                    tcp_ms,
+                    ms: handshake_start.elapsed().as_millis() as u64,
+                }))
+            }
+            Ok(Err(e)) => Err(fail(crate::nemo_direct::classify_handshake_error(&e))),
+            Err(_) => Err(fail(DirectFailure::HandshakeTimeout {
+                tcp_ms,
+                ms: handshake_ms,
+            })),
+        }
     }
 
     async fn _start_inner(
@@ -1226,23 +1337,33 @@ impl Client {
         // unavailable" (the caller's generic message) sends the operator looking at key
         // distribution when the forward simply lands on the wrong thing. Found in the
         // lab: an endpoint pointing at hbbs logged exactly that.
+        // The refusals are typed (nemo_direct::handshake_refusal) so the direct path can
+        // tell the user which one it was; they display exactly as before.
+        use crate::nemo_direct::{handshake_refusal, HandshakeRefusal};
         let bytes = match timeout(READ_TIMEOUT, conn.next()).await? {
             Some(res) => res?,
-            None => bail!(
-                "the endpoint accepted the connection and closed it without a TBFDesk \
-                 handshake (a forward to a host or port where nothing serves it?)"
-            ),
+            None => {
+                return Err(handshake_refusal(
+                    HandshakeRefusal::Closed,
+                    "the endpoint accepted the connection and closed it without a TBFDesk \
+                     handshake (a forward to a host or port where nothing serves it?)",
+                ))
+            }
         };
         let si = match Message::parse_from_bytes(&bytes).ok().and_then(|m| m.union) {
             Some(message::Union::SignedId(si)) => si,
             // Not a secure handshake (peer sent no SignedId): let the caller decide.
             _ => {
                 if crate::common::nemo_require_encrypted_session() {
-                    bail!(
-                        "the endpoint answered, but not with a TBFDesk handshake ({} bytes) \
-                         - the forward reaches a different service, not the workstation",
-                        bytes.len()
-                    );
+                    return Err(handshake_refusal(
+                        HandshakeRefusal::NotTbfdesk,
+                        format!(
+                            "the endpoint answered, but not with a TBFDesk handshake ({} \
+                             bytes) - the forward reaches a different service, not the \
+                             workstation",
+                            bytes.len()
+                        ),
+                    ));
                 }
                 return Ok(None);
             }
@@ -1251,10 +1372,11 @@ impl Client {
             // No server-pushed key for the id this peer claims; caller fails closed
             // under policy (or falls back to plaintext when encryption isn't required).
             if crate::common::nemo_require_encrypted_session() {
-                bail!(
+                return Err(handshake_refusal(
+                    HandshakeRefusal::NoServerKey,
                     "a TBFDesk peer answered, but this client holds no server key for the id \
-                     it claims (nemo-peer-keys); has this client received its policy?"
-                );
+                     it claims (nemo-peer-keys); has this client received its policy?",
+                ));
             }
             return Ok(None);
         };
@@ -1262,7 +1384,10 @@ impl Client {
             Ok(v) => v,
             Err(_) => {
                 if crate::common::nemo_require_encrypted_session() {
-                    bail!("Encrypted session required by TBF policy: direct peer signature invalid (possible MITM)");
+                    return Err(handshake_refusal(
+                        HandshakeRefusal::KeyMismatch,
+                        "Encrypted session required by TBF policy: direct peer signature invalid (possible MITM)",
+                    ));
                 }
                 log::warn!("direct-IP peer key mismatch for claimed id; falling back to non-secure");
                 return Ok(None);
@@ -1276,7 +1401,10 @@ impl Client {
         // the brokered path's `id == peer_id` check.
         if id != peer_id {
             if crate::common::nemo_require_encrypted_session() {
-                bail!("Encrypted session required by TBF policy: direct peer id {id} != requested {peer_id} (possible redirect/MITM)");
+                return Err(handshake_refusal(
+                    HandshakeRefusal::KeyMismatch,
+                    format!("Encrypted session required by TBF policy: direct peer id {id} != requested {peer_id} (possible redirect/MITM)"),
+                ));
             }
             log::warn!("direct-IP peer proved id {id} but {peer_id} was requested; refusing anchored session");
             return Ok(None);
@@ -4808,6 +4936,19 @@ async fn udp_nat_connect(
 #[cfg(test)]
 mod nemo_h33_tests {
     use super::{check_if_retry, nemo_source_marker_with, FORCED_DIRECT_FAILED};
+    use crate::nemo_direct::{DirectAttemptError, DirectFailed, DirectFailure, KnockState};
+
+    fn direct_failure_text(failure: DirectFailure, knock: KnockState) -> String {
+        DirectFailed {
+            endpoint: "85.126.226.2:21104".to_owned(),
+            attempts: vec![DirectAttemptError {
+                failure,
+                knock,
+                elapsed_ms: 2500,
+            }],
+        }
+        .user_message("91041040")
+    }
 
     /// H33: the session token is a bearer credential -- anyone holding it can act as
     /// that user against the management API. It used to be appended to the rendezvous
@@ -4844,6 +4985,19 @@ mod nemo_h33_tests {
             format!("{FORCED_DIRECT_FAILED}91090423 failed: this server has published no direct endpoint for it."),
             // Ids and ports that contain "104" must not slip through the errno rule.
             format!("{FORCED_DIRECT_FAILED}91041040 failed (85.126.226.2:21104). The relay was NOT used."),
+            // The texts the direct attempt really fails with, one per reason, including a
+            // raw OS error ("10054"/"104"/"reset") inside the catch-all.
+            direct_failure_text(DirectFailure::ConnectTimeout { ms: 2500 }, KnockState::Off),
+            direct_failure_text(DirectFailure::ConnectTimeout { ms: 2500 }, KnockState::Sent(62201)),
+            direct_failure_text(DirectFailure::Refused, KnockState::Off),
+            direct_failure_text(DirectFailure::Refused, KnockState::NotSent("x".into())),
+            direct_failure_text(DirectFailure::HandshakeTimeout { tcp_ms: 40, ms: 2400 }, KnockState::Off),
+            direct_failure_text(DirectFailure::Closed("os error 10054".into()), KnockState::Off),
+            direct_failure_text(DirectFailure::KeyMismatch("MITM".into()), KnockState::Off),
+            direct_failure_text(
+                DirectFailure::ConnectError("connection reset (os error 104)".into()),
+                KnockState::Off,
+            ),
         ] {
             for retry_for_relay in [false, true] {
                 assert!(
