@@ -369,7 +369,8 @@ pub enum SwitchSides {
     /// Admitted on the uuid, as before these checks existed.
     Admit,
     /// Refused: the connect-back asked for file transfer, a camera, a terminal or a
-    /// tunnel. Only the login arm checks those permissions, and a switch never needs one.
+    /// tunnel, in its own `lr` or in an earlier LoginRequest on the same connection.
+    /// Only the login arm checks those permissions, and a switch never needs one.
     RefuseKind,
     /// Refused: the local password is disabled, and the connect-back carries no ticket
     /// of a signed-in user (`LoginRoute::Refuse`, LOGIN_MSG_LOCAL_PASSWORD_DISABLED).
@@ -377,8 +378,11 @@ pub enum SwitchSides {
 }
 
 /// The decision, kept pure so it is unit-tested against `login_route`.
-/// - `plain_desktop`: the connect-back's LoginRequest names no other session kind
-///   (`lr.union` is empty), as a real controller's always does.
+/// - `plain_desktop`: nothing on this connection names another session kind: the
+///   connect-back's `lr.union` is empty, and no earlier LoginRequest on the connection
+///   set file transfer, camera, terminal or a tunnel (the login arm sets those before
+///   the password is checked). A real controller's connect-back is always plain: it
+///   sends no LoginRequest before its SwitchSidesResponse.
 /// - `route`: `login_route` for the ticket this connect-back presented.
 ///
 /// Admit, AskLocalUser and Normal all admit: the uuid replaces the password and the

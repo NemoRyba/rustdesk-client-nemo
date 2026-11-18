@@ -2716,12 +2716,24 @@ impl Connection {
         if !self.apply_management_authorization(lr).await {
             return false;
         }
+        // Plain desktop: neither this response's `lr` nor an earlier LoginRequest on this
+        // connection names another session kind. The LoginRequest arm sets file_transfer,
+        // view_camera, terminal and port_forward_address BEFORE the password is checked,
+        // and a wrong password keeps the connection open. send_logon_response_and_keep_alive
+        // takes the session kind from those fields, not from `lr.union`. Without them here,
+        // a crafted peer holding the uuid could send LoginRequest{FileTransfer} (terminal,
+        // camera) with a bad password, then this response, and get that session on the
+        // uuid. A real controller sends no LoginRequest on this connection: client.rs
+        // handle_hash returns right after send_switch_login_request.
+        let plain_desktop = lr.union.is_none()
+            && self.file_transfer.is_none()
+            && !self.view_camera
+            && !self.terminal
+            && self.port_forward_address.is_empty();
         // click_only = true: the uuid stands where approve-mode click's Accept would.
         // click_only never changes a Refuse, which is all the switch looks at.
-        match crate::nemo_control::switch_sides_decision(
-            lr.union.is_none(),
-            self.nemo_login_route(true),
-        ) {
+        let route = self.nemo_login_route(true);
+        match crate::nemo_control::switch_sides_decision(plain_desktop, route) {
             crate::nemo_control::SwitchSides::Admit => true,
             crate::nemo_control::SwitchSides::RefuseKind => {
                 log::warn!(
