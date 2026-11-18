@@ -1681,6 +1681,59 @@ pub fn close_voice_call(id: i32) {
     };
 }
 
+/// TBFDesk: the windowless connection manager (`--cm-no-ui`) of the Sciter build.
+///
+/// The Linux `--server` starts it when it runs as root, for a headless desktop, and
+/// when the CM window dies at start (`server/connection.rs` `start_ipc`); the
+/// Flutter build has its own
+/// (`flutter::connection_manager::start_cm_no_ui`). The Sciter build had none, so
+/// `--cm-no-ui` exited at once and nothing listened on `_cm`. It does the CM's work
+/// that needs no window: the file system side of file transfer, the `_pa` audio
+/// relay, chat and permission messages.
+#[cfg(not(feature = "flutter"))]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[derive(Clone)]
+struct WindowlessUiCM;
+
+#[cfg(not(feature = "flutter"))]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+impl InvokeUiCM for WindowlessUiCM {
+    fn add_connection(&self, client: &Client) {
+        log::info!("cm without window: connection #{} added", client.id);
+    }
+
+    fn remove_connection(&self, id: i32, close: bool) {
+        log::info!(
+            "cm without window: connection #{} removed (close: {})",
+            id,
+            close
+        );
+    }
+
+    fn new_message(&self, _id: i32, _text: String) {}
+
+    fn change_theme(&self, _dark: String) {}
+
+    fn change_language(&self) {}
+
+    fn show_elevation(&self, _show: bool) {}
+
+    fn update_voice_call_state(&self, _client: &Client) {}
+
+    fn file_transfer_log(&self, _action: &str, _log: &str) {}
+}
+
+/// Blocks while the `_cm` listener runs (like Flutter's `start_cm_no_ui`).
+#[cfg(not(feature = "flutter"))]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub fn start_cm_no_ui() {
+    #[cfg(target_os = "linux")]
+    std::thread::spawn(crate::ipc::start_pa);
+    start_ipc(ConnectionManager {
+        ui_handler: WindowlessUiCM,
+    });
+}
+
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub fn quit_cm() {
     // in case of std::process::exit not work
