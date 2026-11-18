@@ -361,5 +361,7 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("Use the ⋮ menu for a direct-only connection.", "Use the ⋮ menu for a direct-only connection."),
         // Wayland target: the portal's share dialog is open there (server/wayland.rs PORTAL_WAIT_TEXT).
         ("Waiting for the remote user to allow screen sharing...", "Waiting for the remote user to allow screen sharing. A dialog on their screen asks which screens to share."),
+        // Phone session menu (mobile/pages/remote_page.dart): ends this session, opens file transfer.
+        ("nemo_switch_to_file_transfer", "Switch to file transfer"),
     ].iter().cloned().collect();
 }

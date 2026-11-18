@@ -2591,8 +2591,21 @@ impl Connection {
         ) {
             Ok(Some(grant)) => {
                 crate::nemo_control::log_grant(&lr.my_id, &Some(grant.clone()));
+                let before = self.nemo_sent_permissions();
                 self.apply_control_grant(&grant);
                 self.nemo_grant = Some(grant.clone());
+                // The controller was told the permissions right after the connection
+                // opened, before this login carried the ticket. Tell it what the grant
+                // changed, or its toolbar keeps offering what this computer now refuses
+                // (file transfer, keyboard, ...) -- in a direct session the ticket is the
+                // only place the admin's permissions come from.
+                for ((permission, was), (_, now)) in
+                    before.into_iter().zip(self.nemo_sent_permissions())
+                {
+                    if was != now {
+                        self.send_permission(permission, now).await;
+                    }
+                }
                 self.post_conn_audit(json!({
                     "action": "authorized",
                     "user": grant.user,
@@ -2651,8 +2664,8 @@ impl Connection {
         )
     }
 
-    /// "Disable local password" and nothing else can admit this login: no ticket of a
-    /// signed-in user, and no Accept button to put it to. Say so instead of "wrong
+    /// "Disable local password" and no ticket of a signed-in user on this login: refused in
+    /// every approve mode (operator decision 2026-11-18). Say so instead of "wrong
     /// password" -- the password may well be right, it is just not taken here. The caller
     /// closes the connection.
     async fn refuse_local_password_disabled(&mut self, controller_id: &str) {
@@ -2668,6 +2681,21 @@ impl Connection {
         self.send_login_error(crate::nemo_control::LOGIN_MSG_LOCAL_PASSWORD_DISABLED)
             .await;
         sleep(1.).await;
+    }
+
+    /// The permissions sent to the controller with `send_permission` (see `start`), as
+    /// they stand now.
+    fn nemo_sent_permissions(&self) -> [(Permission, bool); 8] {
+        [
+            (Permission::Keyboard, self.keyboard),
+            (Permission::Clipboard, self.clipboard),
+            (Permission::Audio, self.audio),
+            (Permission::File, self.file),
+            (Permission::Restart, self.restart),
+            (Permission::Recording, self.recording),
+            (Permission::BlockInput, self.block_input),
+            (Permission::PrivacyMode, self.privacy_mode),
+        ]
     }
 
     /// Apply a ticket's permissions exactly as if the server had attached them at the

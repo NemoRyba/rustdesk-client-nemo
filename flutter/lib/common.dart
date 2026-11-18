@@ -2690,7 +2690,8 @@ connect(BuildContext context, String id,
                 id: id,
                 password: password,
                 isSharedPassword: isSharedPassword,
-                forceRelay: forceRelay),
+                forceRelay: forceRelay,
+                connToken: connToken),
           ),
         );
       }

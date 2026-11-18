@@ -39,6 +39,12 @@ var svg_mode_windows = <svg viewBox="0 0 640 512">
              M146 352H182V400H146Z M90 400H238V428H90Z M458 352H494V400H458Z M402 400H550V428H402Z
              M68 148H260V300H68Z M380 148H572V300H380Z"/>
 </svg>;
+// File transfer (header #nemo-transfer-file): a folder with an up and a down arrow, the
+// Flutter UI's assets/file_transfer.svg. The arrows are wound against the folder, so
+// they stay holes under the nonzero fill rule.
+var svg_transfer_file = <svg viewBox="0 0 1024 1024">
+    <path d="M891.64 184.73H620.41c-27.41 0-54.41-7.77-77.32-22.5L428.13 87.36C402.77 71 372.91 62 342.64 62H131.95C93.5 62 62 93.5 62 132.36v759.68C62 930.91 93.5 962 131.95 962h759.68c38.86 0 70.36-31.09 70.36-69.96V255.09c0.01-38.86-31.49-70.36-70.35-70.36zM480.5 753.77c0 16.77-13.5 30.68-30.68 30.68-16.77 0-30.68-13.91-30.68-30.68V523.04l-31.91 55.64c-8.59 14.32-27.41 19.64-42.14 11.04-14.32-8.59-19.64-27.41-11.05-41.73l89.18-154.64c6.96-12.27 21.27-18 34.77-14.32 13.09 3.27 22.5 15.55 22.5 29.45v345.29z m209.04-139.5l-89.18 154.64c-5.32 9.82-15.55 15.55-26.59 15.55-2.46 0-5.32-0.41-7.77-1.23-13.5-3.68-22.91-15.55-22.91-29.46V408.5c0-16.77 13.91-30.68 30.68-30.68 17.18 0 30.68 13.91 30.68 30.68v230.73l31.91-55.64c8.59-14.73 27.41-19.64 42.14-11.05 14.73 8.6 19.64 27.01 11.04 41.73z"/>
+</svg>;
 var svg_secure = <svg viewBox="0 0 347.97 347.97">
 <path fill="#3F7D46" d="m317.31 54.367c-59.376 0-104.86-16.964-143.33-54.367-38.461 37.403-83.947 54.367-143.32 54.367 0 97.405-20.155 236.94 143.32 293.6 163.48-56.666 143.33-196.2 143.33-293.6zm-155.2 171.41-47.749-47.756 21.379-21.378 26.37 26.376 50.121-50.122 21.378 21.378-71.499 71.502z"/>
 </svg>;
@@ -66,6 +72,17 @@ if (is_linux) {
 
 function get_id() {
     return handler.get_option('alias') || handler.get_id()
+}
+
+// TBFDesk (P3): may this session open a file transfer to its computer? Rule for the
+// toolbar button #nemo-transfer-file and the actions-menu entry #transfer-file, the same
+// as the Flutter UI's (toolbar.dart nemoSessionFileTransferAllowed): a remote-control
+// session, the remote computer allows file transfer for it (permission "file" -- its own
+// setting, or the TBF policy / control ticket; handler.setPermission in remote.tis keeps
+// file_enabled live and re-renders the header) and the session is not view-only.
+// Hidden otherwise, like the recording button. Defined above Header: render() uses it.
+function nemoFileTransferAllowed() {
+    return !is_file_transfer && !is_port_forward && file_enabled && !handler.get_toggle_option("view-only");
 }
 
 function stateChanged() {
@@ -173,6 +190,7 @@ class Header: Reactor.Component {
         self.timer(1ms, updatePrivacyMode);
         self.timer(1ms, toggleMenuState);
         var conn_label = this.direct_connection ? translate("Direct") : translate("Relay");
+        var file_transfer_allowed = nemoFileTransferAllowed();
         return <div style={style}>
             {is_osx || is_xfce ? "" : <span #fullscreen title={translate("Fullscreen")}>{svg_fullscreen}</span>}
             <div #screens>
@@ -184,6 +202,7 @@ class Header: Reactor.Component {
             {this.stream_type ? <span #conn-type class={this.direct_connection ? "direct" : "relay"} title={title_conn}>{conn_label}</span> : ""}
             {viewAllSupported() ? this.renderDisplayModes() : ""}
             <span #chat title={translate("Chat")}>{svg_chat}</span>
+            {file_transfer_allowed ? <span #nemo-transfer-file title={translate("Transfer file")}>{svg_transfer_file}</span> : ""}
             <span #action title={translate("Actions")}>{svg_action}</span>
             <span #display title={translate("Display")}>{svg_display}</span>
             <span #keyboard title={translate("Keyboard")}>{svg_keyboard}</span>
@@ -308,7 +327,7 @@ class Header: Reactor.Component {
         return <popup>
             <menu.context #action-options>
                 {keyboard_enabled ? <li #os-password>{translate('OS Password')}<EditOsPassword /></li> : ""}
-                <li #transfer-file>{translate('Transfer file')}</li> 
+                {nemoFileTransferAllowed() ? <li #transfer-file>{translate('Transfer file')}</li> : ""}
                 <li #tunnel>{translate('TCP tunneling')}</li> 
                 {handler.get_audit_server("conn") && <li #note>{translate('Note')}</li>}
                 <div .separator />
@@ -445,6 +464,11 @@ class Header: Reactor.Component {
     }
 
     event click $(#transfer-file) {
+        handler.transfer_file();
+    }
+
+    // TBFDesk (P3): the same as the actions-menu entry above.
+    event click $(#nemo-transfer-file) {
         handler.transfer_file();
     }
     
