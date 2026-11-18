@@ -356,7 +356,47 @@ pub struct Connection {
     #[cfg(not(target_os = "ios"))]
     terminal_user_token: Option<TerminalUserToken>,
     terminal_generic_service: Option<Box<GenericService>>,
+    // TBFDesk: a Wayland login waiting for the screen-cast portal on its own thread
+    // (start_wayland_portal_wait), and the sender that thread answers on.
+    #[cfg(target_os = "linux")]
+    wayland_portal_wait: Option<WaylandPortalWait>,
+    #[cfg(target_os = "linux")]
+    tx_wayland_portal: mpsc::UnboundedSender<ResultType<Vec<DisplayInfo>>>,
 }
+
+// TBFDesk: the login response of a Wayland remote session, held back until the
+// portal has answered. On Wayland, setting up capture asks xdg-desktop-portal for the
+// screens, and without a usable restore token GNOME shows its "share your screen" dialog
+// and the request waits -- up to 3 minutes -- for the local user. That used to run inline
+// here, on the connection's tokio task inside its select loop
+// (send_logon_response_and_keep_alive -> display_service::update_get_sync_displays_on_login
+// -> wayland::check_init -> Display::all -> pipewire::request_remote_desktop), so
+// for the whole dialog nothing was read, no heartbeat answered and no test-delay sent;
+// when the user clicked Share after ~30 s the loop's own 30 s check closed the session
+// with "Timeout" in the same second (and the controller's would have too).
+#[cfg(target_os = "linux")]
+struct WaylandPortalWait {
+    res: LoginResponse,
+    pi: PeerInfo,
+    // PORTAL_WAITING -> PORTAL_ANSWERED (set by the portal thread) or PORTAL_ABANDONED
+    // (set by the connection when it ends first). Whoever finds the other's mark frees
+    // the capture nobody is going to use (release_unused_wayland_capture).
+    state: Arc<std::sync::atomic::AtomicU8>,
+    // the "waiting for the remote user" box went out (tell_controller_portal_wait)
+    told_controller: bool,
+}
+
+#[cfg(target_os = "linux")]
+const PORTAL_WAITING: u8 = 0;
+#[cfg(target_os = "linux")]
+const PORTAL_ANSWERED: u8 = 1;
+#[cfg(target_os = "linux")]
+const PORTAL_ABANDONED: u8 = 2;
+// TBFDesk: tell the controller once the portal request has waited this long. With a
+// restore token the portal answers in a fraction of a second and nothing is shown, as
+// before; without one the request is waiting for the local user to click Share.
+#[cfg(target_os = "linux")]
+const WAYLAND_PORTAL_NOTICE_AFTER: Duration = Duration::from_millis(1000);
 
 impl ConnInner {
     pub fn new(id: i32, tx: Option<Sender>, tx_video: Option<Sender>) -> Self {
@@ -440,6 +480,11 @@ impl Connection {
         tokio::spawn(async move {
             Self::post_seq_loop(rx_post_seq).await;
         });
+        // TBFDesk: the Wayland portal thread answers here (start_wayland_portal_wait).
+        // It exists on every platform because a select! arm cannot be cfg'd; the holder
+        // keeps a sender alive for the whole loop, so recv() never returns None and spins.
+        let (_tx_wayland_portal_holder, mut rx_wayland_portal) =
+            mpsc::unbounded_channel::<ResultType<Vec<DisplayInfo>>>();
 
         #[cfg(not(any(target_os = "android", target_os = "ios")))]
         let tx_cloned = tx.clone();
@@ -535,6 +580,10 @@ impl Connection {
             #[cfg(not(target_os = "ios"))]
             terminal_user_token: None,
             terminal_generic_service: None,
+            #[cfg(target_os = "linux")]
+            wayland_portal_wait: None,
+            #[cfg(target_os = "linux")]
+            tx_wayland_portal: _tx_wayland_portal_holder.clone(),
         };
         let addr = hbb_common::try_into_v4(addr);
         if !conn.on_open(addr).await {
@@ -1031,9 +1080,19 @@ impl Connection {
                         _ => {}
                     }
                 }
+                Some(_displays) = rx_wayland_portal.recv() => {
+                    // TBFDesk: the portal thread has the displays (or the error): send
+                    // the login response that was held back for them.
+                    #[cfg(target_os = "linux")]
+                    if !conn.on_wayland_portal_answer(_displays).await {
+                        break;
+                    }
+                }
                 _ = second_timer.tick() => {
                     #[cfg(windows)]
                     conn.portable_check();
+                    #[cfg(target_os = "linux")]
+                    conn.tell_controller_portal_wait().await;
                     raii::AuthedConnID::check_wake_lock_on_setting_changed();
                     if let Some((instant, minute)) = conn.auto_disconnect_timer.as_ref() {
                         if instant.elapsed().as_secs() > minute * 60 {
@@ -1087,6 +1146,10 @@ impl Connection {
         {
             conn.try_empty_file_clipboard();
         }
+
+        // TBFDesk: the session ended while its Wayland login still waited for the portal.
+        #[cfg(target_os = "linux")]
+        conn.abandon_wayland_portal_wait();
 
         if let Some(video_privacy_conn_id) = privacy_mode::get_privacy_mode_conn_id() {
             if video_privacy_conn_id == id {
@@ -1834,51 +1897,89 @@ impl Connection {
             self.last_supported_encoding = Some(supported_encoding.clone());
             log::info!("peer info supported_encoding: {:?}", supported_encoding);
             pi.encoding = Some(supported_encoding).into();
-            if let Some(msg_out) = super::display_service::is_inited_msg() {
-                self.send(msg_out).await;
-            }
 
             try_activate_screen();
 
-            match super::display_service::update_get_sync_displays_on_login().await {
-                Err(err) => {
-                    res.set_error(format!("{}", err));
-                }
-                Ok(displays) => {
-                    // For compatibility with old versions, we need to send the displays to the peer.
-                    // But the displays may be updated later, before creating the video capturer.
-                    #[cfg(target_os = "macos")]
-                    {
-                        self.retina.set_displays(&displays);
-                    }
-                    pi.displays = displays;
-                    pi.current_display = self.display_idx as _;
-                    #[cfg(not(any(target_os = "android", target_os = "ios")))]
-                    {
-                        pi.resolutions = Some(SupportedResolutions {
-                            resolutions: pi
-                                .displays
-                                .get(self.display_idx)
-                                .map(|d| crate::platform::resolutions(&d.name))
-                                .unwrap_or(vec![]),
-                            ..Default::default()
-                        })
-                        .into();
-                    }
-                    res.set_peer_info(pi);
-                    sub_service = true;
-
-                    #[cfg(target_os = "linux")]
-                    {
-                        // use rdp_input when uinput is not available in wayland. Ex: flatpak
-                        if input_service::wayland_use_rdp_input() {
-                            let _ = setup_rdp_input().await;
-                        }
-                    }
-                }
+            // TBFDesk: on Wayland, setting up capture asks xdg-desktop-portal and may
+            // wait minutes for the local user to answer GNOME's share dialog. Do that on
+            // a thread of its own and send the login response when it answers
+            // (on_wayland_portal_answer); meanwhile this connection's loop keeps running,
+            // so heartbeats and test-delays flow and the controller is told what it is
+            // waiting for (tell_controller_portal_wait). Every Wayland login goes this
+            // way, also when capture is already set up or a restore token makes the
+            // portal answer at once: the answer then arrives a few milliseconds later,
+            // and no path is left that could re-enter the portal on the tokio task.
+            #[cfg(target_os = "linux")]
+            if !crate::platform::linux::is_x11() {
+                self.start_wayland_portal_wait(res, pi);
+                return true;
             }
+
+            let displays = super::display_service::update_get_sync_displays_on_login().await;
+            sub_service = self.set_login_displays(&mut res, pi, displays).await;
             self.on_remote_authorized();
         }
+        self.finish_logon_response(res, sub_service, wait_session_id_confirm)
+            .await
+    }
+
+    // The displays part of a remote session's login response, shared by the inline
+    // path of send_logon_response_and_keep_alive and the Wayland portal answer
+    // (on_wayland_portal_answer). Returns whether the session gets its services.
+    async fn set_login_displays(
+        &mut self,
+        res: &mut LoginResponse,
+        mut pi: PeerInfo,
+        displays: ResultType<Vec<DisplayInfo>>,
+    ) -> bool {
+        match displays {
+            Err(err) => {
+                res.set_error(format!("{}", err));
+                false
+            }
+            Ok(displays) => {
+                // For compatibility with old versions, we need to send the displays to the peer.
+                // But the displays may be updated later, before creating the video capturer.
+                #[cfg(target_os = "macos")]
+                {
+                    self.retina.set_displays(&displays);
+                }
+                pi.displays = displays;
+                pi.current_display = self.display_idx as _;
+                #[cfg(not(any(target_os = "android", target_os = "ios")))]
+                {
+                    pi.resolutions = Some(SupportedResolutions {
+                        resolutions: pi
+                            .displays
+                            .get(self.display_idx)
+                            .map(|d| crate::platform::resolutions(&d.name))
+                            .unwrap_or(vec![]),
+                        ..Default::default()
+                    })
+                    .into();
+                }
+                res.set_peer_info(pi);
+
+                #[cfg(target_os = "linux")]
+                {
+                    // use rdp_input when uinput is not available in wayland. Ex: flatpak
+                    if input_service::wayland_use_rdp_input() {
+                        let _ = setup_rdp_input().await;
+                    }
+                }
+                true
+            }
+        }
+    }
+
+    // Send the login response and start what the session type needs: the tail of
+    // send_logon_response_and_keep_alive, also run by on_wayland_portal_answer.
+    async fn finish_logon_response(
+        &mut self,
+        res: LoginResponse,
+        sub_service: bool,
+        wait_session_id_confirm: bool,
+    ) -> bool {
         let mut msg_out = Message::new();
         msg_out.set_login_response(res);
         self.send(msg_out).await;
@@ -1912,6 +2013,129 @@ impl Connection {
             }
         }
         true
+    }
+
+    // TBFDesk: hold the login response back and set Wayland capture up on a thread of
+    // its own (see WaylandPortalWait for why it may not run on this task). The thread
+    // answers on tx_wayland_portal, handled by on_wayland_portal_answer.
+    #[cfg(target_os = "linux")]
+    fn start_wayland_portal_wait(&mut self, res: LoginResponse, pi: PeerInfo) {
+        use std::sync::atomic::{AtomicU8, Ordering::SeqCst};
+        let conn_id = self.inner.id();
+        let state = Arc::new(AtomicU8::new(PORTAL_WAITING));
+        self.wayland_portal_wait = Some(WaylandPortalWait {
+            res,
+            pi,
+            state: state.clone(),
+            told_controller: false,
+        });
+        log::info!(
+            "#{} Wayland: setting up screen capture on a portal thread; the login response waits for it",
+            conn_id
+        );
+        let tx = self.tx_wayland_portal.clone();
+        let spawned = std::thread::Builder::new()
+            .name("wayland-portal".to_owned())
+            .spawn(move || {
+                let displays = super::wayland::get_displays_blocking();
+                if state
+                    .compare_exchange(PORTAL_WAITING, PORTAL_ANSWERED, SeqCst, SeqCst)
+                    .is_ok()
+                {
+                    tx.send(displays).ok();
+                } else {
+                    log::info!(
+                        "#{} Wayland: the portal answered after the session had ended",
+                        conn_id
+                    );
+                    release_unused_wayland_capture(conn_id);
+                }
+            });
+        if let Err(err) = spawned {
+            log::error!(
+                "#{} Failed to start the Wayland portal thread: {}",
+                conn_id,
+                err
+            );
+            self.tx_wayland_portal
+                .send(Err(hbb_common::anyhow::anyhow!(
+                    "Failed to start screen capture: {}",
+                    err
+                )))
+                .ok();
+        }
+    }
+
+    // TBFDesk: the portal thread's answer -- finish the login that was held back.
+    #[cfg(target_os = "linux")]
+    async fn on_wayland_portal_answer(&mut self, displays: ResultType<Vec<DisplayInfo>>) -> bool {
+        let Some(wait) = self.wayland_portal_wait.take() else {
+            return true;
+        };
+        log::info!(
+            "#{} Wayland: portal answered ({}), sending the login response",
+            self.inner.id(),
+            if displays.is_ok() { "ok" } else { "error" }
+        );
+        let mut res = wait.res;
+        let sub_service = self.set_login_displays(&mut res, wait.pi, displays).await;
+        self.on_remote_authorized();
+        self.finish_logon_response(res, sub_service, false).await
+    }
+
+    // TBFDesk: once the portal has been waiting for the local user for a moment (GNOME's
+    // share dialog is open), tell the controller what it is waiting for. Once per login;
+    // called from the connection's 1 s timer. The box goes when the login response
+    // arrives ("Connected, waiting for image..." replaces it in both UIs).
+    #[cfg(target_os = "linux")]
+    async fn tell_controller_portal_wait(&mut self) {
+        let Some(wait) = self.wayland_portal_wait.as_mut() else {
+            return;
+        };
+        if wait.told_controller {
+            return;
+        }
+        let dialog_open = scrap::wayland::pipewire::portal_request_waiting()
+            .map_or(false, |waited| waited >= WAYLAND_PORTAL_NOTICE_AFTER);
+        if !dialog_open {
+            return;
+        }
+        wait.told_controller = true;
+        log::info!(
+            "#{} Wayland: the portal is waiting for the local user to allow screen sharing; telling the controller",
+            self.inner.id()
+        );
+        self.send(super::wayland::portal_wait_msg()).await;
+    }
+
+    // TBFDesk: the connection ends while its Wayland login still waits for the portal
+    // (the controller cancelled, or the connection dropped). If the portal thread is
+    // still in the handshake it frees the capture when it returns; if it has already
+    // answered, nobody will use that capture, so free it here. Without another remote
+    // session waiting for the same dialog, close the dialog too.
+    #[cfg(target_os = "linux")]
+    fn abandon_wayland_portal_wait(&mut self) {
+        use std::sync::atomic::Ordering::SeqCst;
+        let Some(wait) = self.wayland_portal_wait.take() else {
+            return;
+        };
+        let conn_id = self.inner.id();
+        if wait
+            .state
+            .compare_exchange(PORTAL_WAITING, PORTAL_ABANDONED, SeqCst, SeqCst)
+            .is_ok()
+        {
+            log::info!(
+                "#{} Wayland: session ended while the portal was still waiting for the local user",
+                conn_id
+            );
+            if !Self::other_remote_session_open(conn_id) {
+                scrap::wayland::pipewire::cancel_portal_request();
+            }
+        } else {
+            // Off this task: freeing the capturers stops PipeWire pipelines, which waits.
+            std::thread::spawn(move || release_unused_wayland_capture(conn_id));
+        }
     }
 
     fn try_sub_camera_displays(&mut self) {
@@ -2851,6 +3075,17 @@ impl Connection {
             }
         } else if self.authorized {
             if self.port_forward_socket.is_some() {
+                return true;
+            }
+            // TBFDesk: a Wayland login whose response is still held back for the portal
+            // (start_wayland_portal_wait). `authorized` is already true, but the session
+            // has not started: GNOME's "share your screen" dialog may be open and is the
+            // local user's to answer. Ignore everything except what is handled above
+            // (CloseReason, TestDelay, LoginRequest), as before the session is approved
+            // in approve mode -- otherwise mouse and key events from the controller would
+            // already be injected (uinput needs no portal) and could answer that dialog.
+            #[cfg(target_os = "linux")]
+            if self.wayland_portal_wait.is_some() {
                 return true;
             }
             match msg.union {
@@ -5659,6 +5894,27 @@ async fn start_ipc(
             }
         }
     }
+}
+
+// TBFDesk: free the Wayland capture set up for session `conn_id`, which ended before
+// it used it (see Connection::abandon_wayland_portal_wait). Only when no other remote
+// session is open: such a session is using that capture, or is about to, and its video
+// service frees it when it ends. Runs on a plain thread (the portal thread, or one
+// spawned for it), never on a tokio task: freeing stops PipeWire pipelines, which waits.
+#[cfg(target_os = "linux")]
+fn release_unused_wayland_capture(conn_id: i32) {
+    if Connection::other_remote_session_open(conn_id) {
+        return;
+    }
+    if super::wayland::clear_if_unused() {
+        log::info!(
+            "Wayland: released the screen capture set up for session #{}, which ended before using it",
+            conn_id
+        );
+    }
+    // What AuthedConnID::drop does when the last remote session ends; there it found
+    // the portal request still running and left the session alone.
+    scrap::wayland::pipewire::try_close_session();
 }
 
 // in case screen is sleep and blank, here to activate it

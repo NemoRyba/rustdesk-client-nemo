@@ -349,14 +349,15 @@ pub(super) fn check_update_displays(all: &Vec<Display>) {
     SYNC_DISPLAYS.lock().unwrap().check_changed(displays);
 }
 
-pub fn is_inited_msg() -> Option<Message> {
-    #[cfg(target_os = "linux")]
-    if !is_x11() {
-        return super::wayland::is_inited();
-    }
-    None
-}
+// TBFDesk: `is_inited_msg()` is gone. Its Wayland "select the screen to be shared" box
+// went out right before the login blocked on the portal; the login no longer blocks
+// there, and the waiting box is now sent by the connection once the portal is really
+// waiting for the local user (connection.rs `tell_controller_portal_wait`).
 
+/// The displays for a login. On Wayland (`!is_x11()`) this sets capture up through the
+/// xdg-desktop-portal and can wait minutes for the local user: never await it on a
+/// connection's task there -- connection.rs runs it on a thread of its own
+/// (`start_wayland_portal_wait` -> `wayland::get_displays_blocking`).
 pub async fn update_get_sync_displays_on_login() -> ResultType<Vec<DisplayInfo>> {
     #[cfg(target_os = "linux")]
     {

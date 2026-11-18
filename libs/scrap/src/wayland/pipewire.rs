@@ -6,7 +6,7 @@ use std::sync::{
     atomic::{AtomicBool, AtomicU8, Ordering},
     Arc, Mutex,
 };
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tracing::{debug, error, info, trace, warn};
 
 use dbus::{
@@ -34,6 +34,62 @@ use super::screencast_portal::OrgFreedesktopPortalScreenCast as screencast_porta
 
 lazy_static! {
     pub static ref RDP_SESSION_INFO: Mutex<Option<RdpSessionInfo>> = Mutex::new(None);
+    // TBFDesk: when the portal request in progress started waiting for its answers
+    // (`request_remote_desktop`), `None` while no request is open. Read by the
+    // connections waiting for capture, to tell their controller that the local user
+    // still has to answer the screen-sharing dialog.
+    static ref PORTAL_REQUEST_SINCE: Mutex<Option<Instant>> = Mutex::new(None);
+}
+
+// TBFDesk: set to make the open portal request give up (see `cancel_portal_request`).
+static PORTAL_REQUEST_CANCEL: AtomicBool = AtomicBool::new(false);
+
+/// TBFDesk: how long the open portal request has been waiting for its answers, or
+/// `None` when no request is open. This is the interactive part: without a usable
+/// restore token GNOME shows its "share your screen" dialog here and the request waits
+/// for the local user. With a restore token it is over in a fraction of a second.
+/// Never blocks for longer than a field update.
+pub fn portal_request_waiting() -> Option<Duration> {
+    PORTAL_REQUEST_SINCE
+        .lock()
+        .ok()
+        .and_then(|since| since.map(|t| t.elapsed()))
+}
+
+/// TBFDesk: make the open portal request give up, because the session that wanted it
+/// has ended. The wait loop stops within 100 ms and drops its D-Bus connection, so
+/// xdg-desktop-portal closes the request and GNOME's dialog goes away with it. No-op
+/// when no request is open.
+pub fn cancel_portal_request() {
+    if let Ok(since) = PORTAL_REQUEST_SINCE.lock() {
+        // Under the lock, so this cannot hit a request that starts right after the
+        // open one ends (PortalRequestWait resets the flag under the same lock).
+        if since.is_some() {
+            PORTAL_REQUEST_CANCEL.store(true, Ordering::SeqCst);
+        }
+    }
+}
+
+// Marks a portal request as waiting for its answers for as long as it lives.
+struct PortalRequestWait;
+
+impl PortalRequestWait {
+    fn start() -> Self {
+        if let Ok(mut since) = PORTAL_REQUEST_SINCE.lock() {
+            PORTAL_REQUEST_CANCEL.store(false, Ordering::SeqCst);
+            *since = Some(Instant::now());
+        }
+        Self
+    }
+}
+
+impl Drop for PortalRequestWait {
+    fn drop(&mut self) {
+        if let Ok(mut since) = PORTAL_REQUEST_SINCE.lock() {
+            *since = None;
+            PORTAL_REQUEST_CANCEL.store(false, Ordering::SeqCst);
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -76,11 +132,40 @@ pub fn close_session() {
 
 #[inline]
 pub fn is_rdp_session_hold() -> bool {
-    RDP_SESSION_INFO.lock().unwrap().is_some()
+    // TBFDesk: try_lock. `get_capturables` holds this lock for the whole portal
+    // request, i.e. for as long as the local user leaves GNOME's share dialog open, and
+    // the caller here is the ipc server, a current-thread runtime that would stall for
+    // every ipc client meanwhile. A session that is still being set up is not held yet.
+    match RDP_SESSION_INFO.try_lock() {
+        Ok(rdp_info) => rdp_info.is_some(),
+        Err(_) => false,
+    }
 }
 
 pub fn try_close_session() {
-    let mut rdp_info = RDP_SESSION_INFO.lock().unwrap();
+    // TBFDesk: no plain lock() here. This runs when the last remote session ends
+    // (AuthedConnID::drop, on the connection's tokio task). If that session was still
+    // waiting for the portal, the portal thread holds this lock until the local user
+    // answers the dialog (up to 3 minutes) and lock() would pin the tokio worker for
+    // that long. A session being created is not ours to close; the connection's portal
+    // thread releases it when it returns (connection.rs, release_unused_wayland_capture).
+    // Other holders (input via uinput.rs / input_service.rs) keep it for moments only,
+    // so wait a little for those instead of leaving the session open by accident.
+    let mut tries = 0;
+    let mut rdp_info = loop {
+        match RDP_SESSION_INFO.try_lock() {
+            Ok(rdp_info) => break rdp_info,
+            Err(std::sync::TryLockError::Poisoned(e)) => break e.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => {
+                tries += 1;
+                if portal_request_waiting().is_some() || tries >= 20 {
+                    info!("Screen-cast session busy (portal request in progress?), not closing it now.");
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+    };
     let mut close = false;
     if let Some(rdp_info) = &*rdp_info {
         // If is server running and restore token is supported, there's no need to keep the session.
@@ -675,6 +760,7 @@ pub fn request_remote_desktop(
     )?;
 
     // wait 3 minutes for user interaction
+    let wait = PortalRequestWait::start();
     for _ in 0..1800 {
         conn.process(Duration::from_millis(100))?;
         // Once we got a file descriptor we are done!
@@ -685,7 +771,13 @@ pub fn request_remote_desktop(
         if failure_res.load(Ordering::SeqCst) {
             break;
         }
+
+        if PORTAL_REQUEST_CANCEL.load(Ordering::SeqCst) {
+            warn!("Portal request given up: the session waiting for it has ended.");
+            break;
+        }
     }
+    drop(wait);
     let fd_res = fd_res.lock().unwrap();
     let streams_res = streams_res.lock().unwrap();
     let session_res = session_res.lock().unwrap();
