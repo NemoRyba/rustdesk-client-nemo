@@ -885,6 +885,7 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("nemo_copy_log_tip", "Kopiert das Ende des Protokolls dieses Clients und seiner letzten Sitzung in die Zwischenablage, ohne Passwörter und Schlüssel, fertig zum Einfügen in eine Supportanfrage."),
         ("nemo_copy_log_done", "Das aktuelle Protokoll ist in der Zwischenablage. Fügen Sie es in Ihre Supportanfrage ein; Passwörter und Schlüssel wurden entfernt. Entnommen aus:"),
         ("nemo_copy_log_failed", "Das Protokoll konnte nicht kopiert werden:"),
+        ("nemo_copy_failed", "Kopieren in die Zwischenablage fehlgeschlagen:"),
         ("nemo_ab_signin_tip", "Melden Sie sich an, um die Computer zu sehen, auf die Ihr Konto zugreifen darf."),
         ("nemo_policy_not_applied", "Die Richtlinie des Servers wird auf diesem Computer nicht übernommen:"),
         ("nemo_policy_clock_ahead", "Die Uhr dieses Computers geht {min} Min. gegenüber dem Server vor. Bitte „Datum und Uhrzeit automatisch ermitteln“ einschalten (und die Zeitzone prüfen)."),

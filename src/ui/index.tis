@@ -68,6 +68,16 @@ var svg_menu = <svg #menu viewBox="0 0 512 512">
 	<circle cx="256" cy="64" r="64"/>
 </svg>;
 var svg_refresh_password = <svg #refresh-password xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 2v6h6M2.66 15.57a10 10 0 1 0 .57-8.38"/></svg>;
+// Two overlapping sheets, drawn with paths only (like the refresh icon) so Sciter's SVG renders it.
+var svg_copy_password = <svg #copy-password xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M11 9h9a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-9a2 2 0 0 1-2-2v-9a2 2 0 0 1 2-2z"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>;
+// Which field shows the short "Copied" note ("id" / "otp" / ""), see nemoCopyToClipboard.
+var nemo_copied_what = "";
+var nemo_copied_seq = 0;
+// Phase flags OR'ed into evt.type, resolved once (see nemoMouseIs). Sciter's SINKING is
+// 0x8000 (PHASE_MASK; this TIScript has no Event.SINKING name); HANDLED is Event.HANDLED.
+var nemo_evt_sinking = 0x8000;
+var nemo_evt_handled = 0;
+try { nemo_evt_handled = Event.HANDLED || 0; } catch (e) { nemo_evt_handled = 0; }
 
 var my_id = handler.get_id();
 function get_id() {
@@ -891,6 +901,7 @@ class MyIdMenu: Reactor.Component {
         return <div #myid>
             {this.renderPop()}
             ID
+            {nemo_copied_what == "id" ? <span .nemo-copied>{translate('Copied')}</span> : ""}
         </div>;
     }
 
@@ -1938,7 +1949,15 @@ class NemoSettingsDialog: Reactor.Component {
         } else if (kind == "tshell") {
             handler.set_option("nemo-terminal-shell", id == "tshell-cmd" ? "cmd" : "");
         } else if (kind == "tpl") {
-            handler.set_option('temporary-password-length', id.substring(4));
+            var tpl_new = id.substring(4);
+            var tpl_old = handler.get_option('temporary-password-length') || "6";
+            handler.set_option('temporary-password-length', tpl_new);
+            // A new length takes effect at once, as in the old Sciter password menu and the
+            // Android length dialog; before, the old-length password stayed until the next
+            // rotation. Re-clicking the current length (unset = 6) changes nothing. (Flutter
+            // desktop rotates from its poll, server_model.dart, which skips the first change
+            // away from an unset length -- logged parity gap.)
+            if (tpl_new != tpl_old) handler.update_temporary_password();
             if (passwordArea) passwordArea.update();
         } else if (kind == "tfa") {
             nemoToggle2fa();
@@ -2135,7 +2154,7 @@ class App: Reactor.Component
                         {outgoing_only ? <div style="position:absolute; left:-10000px; top:-10000px; width:0; height:0; overflow:hidden"><MyIdMenu /></div> : ""}
                         {!outgoing_only && <div .your-desktop>
                             <MyIdMenu />
-                            {key_confirmed ? <input type="text" readonly value={formatId(get_id())}/> : translate("Generating ...")}
+                            {key_confirmed ? <div .nemo-id-field><input type="text" readonly value={formatId(get_id())}/></div> : translate("Generating ...")}
                         </div>}
                         {!outgoing_only && <PasswordArea />}
                     </div>
@@ -2175,6 +2194,17 @@ class App: Reactor.Component
 
     event click $(button#connect) {
         this.newRemote("connect");
+    }
+
+    // Double-click on the "Your Desktop" ID copies it (as Flutter desktop). The input stays
+    // rendered here, because this render's get_id() also refreshes my_id (the 1 s status
+    // poll re-renders the App until my_id matches the service's ID).
+    function onMouse(evt) {
+        if (!nemoMouseIs(evt, Event.MOUSE_DCLICK)) return false;
+        var inp = nemoEventInput(evt);
+        if (inp && inp.parent && inp.parent.$is(div.nemo-id-field) && nemoDoubleClickOnce(this, evt))
+            self.timer(10ms, nemoCopyMyId);
+        return false;
     }
 
     event click $(button#file-transfer) {
@@ -2404,20 +2434,124 @@ function watch_screen_recording() {
     self.timer(1s, watch_screen_recording);
 }
 
+// ---- Copy the ID / one-time password (FT-04, parity P7) ------------------------------
+// Flutter desktop copies on double-click and says "Copied"; Android has a copy icon. Here:
+// double-click on the ID or the password, or the copy icon next to the password. Copying
+// only puts text on the clipboard (Rust nemo_copy_text): it never touches the one-time
+// password. That changes only on the refresh icon, when an authorized session ends, after
+// 10 wrong attempts, or when the server process restarts -- each named in the server log.
+function nemoRerenderCopied(what) {
+    if (what == "otp") { if (passwordArea) passwordArea.update(); }
+    else if (what == "id") { if (myIdMenu) myIdMenu.update(); }
+}
+
+function nemoCopyToClipboard(text, what) {
+    var r = handler.nemo_copy_text(text || "") || "";
+    if (r != "OK") {
+        msgbox("custom-error", translate('Copy to clipboard'), translate('nemo_copy_failed') + " " + r.substr(4));
+        return;
+    }
+    var prev = nemo_copied_what;
+    nemo_copied_what = what;
+    nemo_copied_seq += 1;
+    var seq = nemo_copied_seq;
+    if (prev && prev != what) nemoRerenderCopied(prev);
+    nemoRerenderCopied(what);
+    // A short note, no dialog; the layout of the icons never moves (no mis-click on refresh).
+    self.timer(1500ms, function() {
+        if (seq != nemo_copied_seq) return;
+        var was = nemo_copied_what;
+        nemo_copied_what = "";
+        nemoRerenderCopied(was);
+    });
+}
+
+function nemoOtpHidden() {
+    return handler.get_option('approve-mode') == 'click' || handler.get_option('verification-method') == 'use-permanent-password';
+}
+
+// Copies the one-time password as it is now, and shows that same value in the field.
+function nemoCopyOtp() {
+    if (nemoOtpHidden()) return;
+    var pw = handler.temporary_password() || "";
+    if (!pw) return;
+    // Re-render here, not only on a successful copy: once the cache holds the new value the
+    // 1 s poll (updatePasswordArea) sees no change, so a failed copy would leave the old
+    // password in the field.
+    if (password_cache[0] != pw) {
+        password_cache[0] = pw;
+        if (passwordArea) passwordArea.update();
+    }
+    nemoCopyToClipboard(pw, "otp");
+}
+
+// A mouse event of `type` in any phase. The read-only field's own edit behaviour handles
+// the double-click (word selection) and may consume it before it bubbles, so the
+// containers below also look at the SINKING phase.
+function nemoMouseIs(evt, type) {
+    var t = evt.type;
+    return t == type || t == (type | nemo_evt_sinking) || (nemo_evt_handled != 0 && t == (type | nemo_evt_handled));
+}
+
+// The <input> an event is aimed at (the input itself, or something inside it), or null.
+function nemoEventInput(evt) {
+    var t = evt.target;
+    if (!t) return null;
+    return t.tag == "input" ? t : t.$p(input);
+}
+
+// True once per double-click on a read-only <input> inside `comp` (both phases arrive).
+// The caller runs the copy from a short timer, after the event: re-rendering in the
+// middle of its dispatch would disturb the field's own word selection.
+function nemoDoubleClickOnce(comp, evt) {
+    if (!nemoMouseIs(evt, Event.MOUSE_DCLICK)) return false;
+    if (!nemoEventInput(evt)) return false;
+    if (comp.nemo_dbl_busy) return false;
+    comp.nemo_dbl_busy = true;
+    self.timer(400ms, function() { comp.nemo_dbl_busy = false; });
+    return true;
+}
+
+// The ID as shown, with the display spaces: the same text Flutter desktop
+// (model.serverId.text) and Android (serverId.value.text) copy. Every ID field strips them.
+function nemoCopyMyId() {
+    var id = get_id() || "";
+    if (id) nemoCopyToClipboard(formatId(id), "id");
+}
+
 class PasswordEyeArea : Reactor.Component {
     render() {
-        var method = handler.get_option('verification-method');
-        var mode= handler.get_option('approve-mode');
-        var hide_one_time = mode == 'click' ||  method == 'use-permanent-password';
+        var hide_one_time = nemoOtpHidden();
         var value = hide_one_time ? "-" : password_cache[0];
+        // Copy first (next to the field it acts on), refresh last with a wider gap. Each
+        // gap is a margin -- dead space -- not part of an icon's click target (FT-04).
         return
             <div .eye-area style="width: *">
                 <input|text @{this.input} readonly value={value} />
-                {hide_one_time ? "" : svg_refresh_password}
+                {hide_one_time ? "" : <span .nemo-otp-btn .nemo-otp-copy title={translate('Copy to clipboard')}>{svg_copy_password}</span>}
+                {hide_one_time ? "" : <span .nemo-otp-btn .nemo-otp-refresh title={translate('Refresh Password')}>{svg_refresh_password}</span>}
             </div>;
     }
 
+    function onMouse(evt) {
+        if (nemoMouseIs(evt, Event.MOUSE_DOWN)) {
+            var t = evt.target;
+            this.nemo_last_down = (t && (t.id == "refresh-password" || t.$p(svg#refresh-password))) ? "refresh" : "other";
+        } else if (nemoDoubleClickOnce(this, evt)) {
+            self.timer(10ms, nemoCopyOtp);
+        }
+        return false;
+    }
+
+    event click $(svg#copy-password) (_, me) {
+        nemoCopyOtp();
+    }
+
     event click $(svg#refresh-password) (_, me) {
+        // FT-04: only a click that also STARTED on the icon. A selection drag begun in the
+        // password field and released over the icon must not change the password. (No
+        // mousedown seen at all leaves it undefined: the click still works.)
+        if (this.nemo_last_down == "other") return;
         handler.update_temporary_password();
         this.update();
     }
@@ -2480,7 +2614,7 @@ class PasswordArea: Reactor.Component {
         self.timer(1ms, function() { me.toggleMenuState() });
         return 
         <div .your-desktop>
-            <div>{translate('One-time Password')}</div>
+            <div .nemo-copy-head>{translate('One-time Password')}{nemo_copied_what == "otp" ? <span .nemo-copied>{translate('Copied')}</span> : ""}</div>
             <div .password style="flow:horizontal">
                 {this.renderPop()}
                 <PasswordEyeArea />

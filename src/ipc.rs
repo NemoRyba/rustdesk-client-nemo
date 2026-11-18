@@ -895,6 +895,9 @@ async fn handle(data: Data, stream: &mut Connection) {
                     Config::set_id(&value);
                 } else if name == "temporary-password" {
                     password::update_temporary_password();
+                    // FT-04: the only UI path that changes it (refresh icon, or Flutter on a
+                    // one-time-password length change). Copying never sends this.
+                    log::info!("Temporary password rotated: refresh requested by the UI");
                 } else if name == "permanent-password" {
                     if Config::is_disable_change_permanent_password() {
                         log::warn!("Changing permanent password is disabled");

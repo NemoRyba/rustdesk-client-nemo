@@ -438,9 +438,18 @@ class _DesktopHomePageState extends State<DesktopHomePage>
 
   buildPasswordBoard2(BuildContext context, ServerModel model) {
     RxBool refreshHover = false.obs;
+    RxBool copyHover = false.obs;
     final textColor = Theme.of(context).textTheme.titleLarge?.color;
     final showOneTime = model.approveMode != 'click' &&
         model.verificationMethod != kUsePermanentPassword;
+    // FT-04 / P7: double-click on the field or the copy icon (as Sciter and Android).
+    // Copying only puts the text on the clipboard; it never changes the password.
+    void copyOneTimePassword() {
+      final text = model.serverPasswd.text.trim();
+      if (!showOneTime || text.isEmpty || text == '-') return;
+      Clipboard.setData(ClipboardData(text: text));
+      showToast(translate("Copied"));
+    }
     return Container(
       margin: EdgeInsets.only(left: 20.0, right: 16, top: 13, bottom: 13),
       child: Row(
@@ -468,13 +477,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
                     children: [
                       Expanded(
                         child: GestureDetector(
-                          onDoubleTap: () {
-                            if (showOneTime) {
-                              Clipboard.setData(
-                                  ClipboardData(text: model.serverPasswd.text));
-                              showToast(translate("Copied"));
-                            }
-                          },
+                          onDoubleTap: copyOneTimePassword,
                           child: TextFormField(
                             controller: model.serverPasswd,
                             readOnly: true,
@@ -487,6 +490,23 @@ class _DesktopHomePageState extends State<DesktopHomePage>
                           ).workaroundFreezeLinuxMint(),
                         ),
                       ),
+                      // Copy first (next to the field), refresh last with a wider gap,
+                      // the same order as the Sciter window.
+                      if (showOneTime)
+                        Tooltip(
+                          message: translate('Copy to clipboard'),
+                          child: InkWell(
+                            onTap: copyOneTimePassword,
+                            onHover: (value) => copyHover.value = value,
+                            child: Obx(() => Icon(
+                                  Icons.copy_outlined,
+                                  color: copyHover.value
+                                      ? textColor
+                                      : Color(0xFFDDDDDD),
+                                  size: 20,
+                                )),
+                          ),
+                        ).marginOnly(right: 14, top: 4),
                       if (showOneTime)
                         AnimatedRotationWidget(
                           onPressed: () => bind.mainUpdateTemporaryPassword(),

@@ -630,6 +630,10 @@ pub async fn start_server(is_server: bool, no_server: bool) {
 
     if is_server {
         crate::common::set_server_running(true);
+        // FT-04: the one-time password lives in this process's memory only, so a new
+        // server process starts with a new one (Linux service: hourly / after the last
+        // session / when the display is re-detected -- see platform/linux.rs).
+        log::info!("Server process started: the one-time password is new for this process");
         std::thread::spawn(move || {
             if let Err(err) = crate::ipc::start("") {
                 log::error!("Failed to start ipc: {}", err);

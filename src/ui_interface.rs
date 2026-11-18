@@ -746,7 +746,12 @@ pub fn temporary_password() -> String {
 #[inline]
 pub fn update_temporary_password() {
     #[cfg(any(target_os = "android", target_os = "ios"))]
-    password_security::update_temporary_password();
+    {
+        // FT-04: Android serves in-process, so this is the rotation itself (the IPC
+        // handler in ipc.rs logs the same line for the desktop UIs).
+        password_security::update_temporary_password();
+        log::info!("Temporary password rotated: refresh requested by the UI");
+    }
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     allow_err!(ipc::update_temporary_password());
 }

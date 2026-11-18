@@ -300,6 +300,7 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("nemo_copy_log_tip", "Copies the end of this client's log and of its newest session log to the clipboard, with passwords and keys removed, ready to paste into a support request."),
         ("nemo_copy_log_done", "The recent log is on the clipboard. Paste it into your support request; passwords and keys were removed. Taken from:"),
         ("nemo_copy_log_failed", "Could not copy the log:"),
+        ("nemo_copy_failed", "Could not copy to the clipboard:"),
         ("nemo_ab_signin_tip", "Sign in to see the computers your account may access."),
         ("nemo_policy_not_applied", "The server's policy is not applied on this computer:"),
         ("nemo_policy_clock_ahead", "this computer's clock is {min} min ahead of the server. Turn on automatic date and time (and check the time zone)."),
