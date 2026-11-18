@@ -359,7 +359,7 @@ mod test {
         for key in [
             crate::nemo_control::LOGIN_MSG_LOCAL_PASSWORD_DISABLED,
             "Password login disabled by policy",
-            "Your administrator has disabled this computer's passwords: neither the one-time nor the permanent password is accepted. A session is admitted by a TBFDesk sign-in that may control this computer or, where the approval mode allows it, when you accept it here.",
+            "Your administrator has disabled this computer's passwords: neither the one-time nor the permanent password is accepted. Only a TBFDesk sign-in that may control this computer admits a session.",
             "Signed-in users connect without password (policy)",
             "Your administrator lets users who are signed in to TBFDesk and may control this computer connect without its password. Everybody else still needs the password.",
         ] {

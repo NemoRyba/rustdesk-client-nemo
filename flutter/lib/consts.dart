@@ -98,7 +98,7 @@ const String kNemoOptionDisableLocalPassword = "nemo-disable-local-password";
 // Their tooltips: the untranslated keys (German in src/lang/de.rs), the same text
 // as Sciter's NEMO_SETTING_TIPS entries for these two option keys.
 const String kNemoTipDisableLocalPassword =
-    "Your administrator has disabled this computer's passwords: neither the one-time nor the permanent password is accepted. A session is admitted by a TBFDesk sign-in that may control this computer or, where the approval mode allows it, when you accept it here.";
+    "Your administrator has disabled this computer's passwords: neither the one-time nor the permanent password is accepted. Only a TBFDesk sign-in that may control this computer admits a session.";
 const String kNemoTipLdapLoginSufficient =
     "Your administrator lets users who are signed in to TBFDesk and may control this computer connect without its password. Everybody else still needs the password.";
 

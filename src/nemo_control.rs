@@ -302,9 +302,10 @@ pub enum LoginRoute {
 ///   valid ticket; "" = a ticket without a signed-in user, which proves no person).
 /// - `click_only`: approve mode "click" (and not the logon-screen password exception):
 ///   the local user must accept every session, a ticket included.
-/// - `click_offered`: the approve mode shows the local user an Accept button at all
-///   ("click" or "password or click"); with "password" it does not, so asking would be
-///   a dead end for the controller.
+/// - `_click_offered`: whether the approve mode shows an Accept button. No longer part of
+///   the decision (operator decision 2026-11-18): with the local password disabled, a
+///   login without a signed-in ticket is REFUSED in every approve mode -- nobody who only
+///   knows the ID can raise an Accept popup on such a machine.
 ///
 /// Both policies off -> always `Normal`: these switches can only change a machine that
 /// opted in, never weaken one that did not.
@@ -313,17 +314,21 @@ pub fn login_route(
     ldap_sufficient: bool,
     local_password_disabled: bool,
     click_only: bool,
-    click_offered: bool,
+    _click_offered: bool,
 ) -> LoginRoute {
     let signed_in = ticket_user.map(|u| !u.trim().is_empty()).unwrap_or(false);
-    if signed_in && (ldap_sufficient || local_password_disabled) && !click_only {
-        LoginRoute::Admit
-    } else if local_password_disabled {
-        if click_offered {
+    if local_password_disabled {
+        // The machine's own passwords are off: only a signed-in user may get in at all,
+        // and approve mode "click" still asks the local user for that user's session.
+        if !signed_in {
+            LoginRoute::Refuse
+        } else if click_only {
             LoginRoute::AskLocalUser
         } else {
-            LoginRoute::Refuse
+            LoginRoute::Admit
         }
+    } else if signed_in && ldap_sufficient && !click_only {
+        LoginRoute::Admit
     } else {
         LoginRoute::Normal
     }
@@ -395,12 +400,13 @@ mod tests {
             // ...click still means the local user accepts every session...
             (alice, true, true, MODE_CLICK, AskLocalUser),
             (alice, false, true, MODE_CLICK, AskLocalUser),
-            // ...a session that is not signed in goes to the local user where the approve
-            // mode offers an Accept button...
-            (None, false, true, MODE_BOTH, AskLocalUser),
-            (None, true, true, MODE_CLICK, AskLocalUser),
-            (Some(""), false, true, MODE_BOTH, AskLocalUser),
-            // ...and is refused where it does not ("password only": nobody to ask).
+            // ...and a session that is not signed in is refused in EVERY approve mode
+            // (operator decision 2026-11-18: no Accept popup for strangers)...
+            (None, false, true, MODE_BOTH, Refuse),
+            (None, true, true, MODE_CLICK, Refuse),
+            (None, false, true, MODE_CLICK, Refuse),
+            (Some(""), false, true, MODE_BOTH, Refuse),
+            (Some(""), false, true, MODE_CLICK, Refuse),
             (None, false, true, MODE_PASSWORD, Refuse),
             (None, true, true, MODE_PASSWORD, Refuse),
             (Some(""), true, true, MODE_PASSWORD, Refuse),
@@ -463,6 +469,23 @@ mod tests {
                         login_route(user, ldap, true, click_only, click_offered),
                         LoginRoute::Normal,
                         "user={user:?} ldap={ldap}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_disabled_local_password_refuses_everyone_not_signed_in() {
+        // Operator decision 2026-11-18: whatever the approve mode, a login without a
+        // signed-in ticket never reaches the password, the local user or a session.
+        for ldap in [false, true] {
+            for (click_only, click_offered) in [MODE_PASSWORD, MODE_BOTH, MODE_CLICK] {
+                for user in [None, Some(""), Some("  ")] {
+                    assert_eq!(
+                        login_route(user, ldap, true, click_only, click_offered),
+                        LoginRoute::Refuse,
+                        "user={user:?} ldap={ldap} click_only={click_only}"
                     );
                 }
             }
