@@ -260,13 +260,35 @@ pub fn start(args: &mut [String]) {
         page
     ));
     let hide_cm = *cm::HIDE_CM.lock().unwrap();
-    if !args.is_empty() && args[0] == "--cm" && hide_cm {
+    let is_cm = !args.is_empty() && args[0] == "--cm";
+    if is_cm && hide_cm {
         // run_app calls expand(show) + run_loop, we use collapse(hide) + run_loop instead to create a hidden window
         frame.collapse(true);
         frame.run_loop();
+        #[cfg(target_os = "linux")]
+        exit_cm_now();
         return;
     }
     frame.run_app();
+    #[cfg(target_os = "linux")]
+    if is_cm {
+        exit_cm_now();
+    }
+}
+
+/// Linux: the connection manager ends right after its window, without the normal process
+/// teardown. Its window quits (gtk_main_quit) while the ipc thread, the clipboard and
+/// Sciter still hold thread-locals; returning from main then ran thread-local destructors
+/// that touched another one -- "cannot access a Thread Local Storage value during or after
+/// destruction" -- and the process aborted, so Ubuntu showed "TBFDesk closed unexpectedly"
+/// every time a session ended from the popup (lab, 1.4.25 dev, Ubuntu 26.04). The session
+/// is already over here and nothing is left to save, so flush the log and leave at once.
+#[cfg(target_os = "linux")]
+fn exit_cm_now() -> ! {
+    log::info!("connection manager window closed; exiting");
+    log::logger().flush();
+    // SAFETY: _exit ends the process immediately; no Rust state is used afterwards.
+    unsafe { hbb_common::libc::_exit(0) }
 }
 
 struct UI {}
