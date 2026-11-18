@@ -1659,8 +1659,9 @@ impl Connection {
         // this session by clicking Switch Sides, which is their own decision like the
         // Accept click (ipc::Data::Authorize takes require_2fa). Or it is the switch back of
         // the controller this machine admitted, with whatever 2FA that login needed, in the
-        // session that started the first switch. Nobody here is asked then. The ticket, blocklist and "disable
-        // local password" were already checked (authorize_switch_sides).
+        // session that started the first switch. Nobody here is asked then. The ticket,
+        // blocklist and "disable local password" were already checked
+        // (authorize_switch_sides).
         if self.require_2fa.is_some() && !self.is_recent_session(true) && !self.from_switch {
             self.require_2fa.as_ref().map(|totp| {
                 let bot = crate::auth_2fa::TelegramBot::get();
